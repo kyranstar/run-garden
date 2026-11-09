@@ -178,6 +178,8 @@ describe("reconciliation", () => {
       expect.objectContaining({
         op: "accept_user_move",
         newStart: "2026-08-05T13:50:00Z",
+        // What the plan says, for a move the worker refuses (a done session, one under way): it puts this back.
+        resource: d.resource,
       }),
     ]);
   });

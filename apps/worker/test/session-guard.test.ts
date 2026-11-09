@@ -1298,9 +1298,9 @@ describe("a finished session's day doesn't follow COROS", () => {
   });
 });
 
-// ── The Calendar, which JOINT's Fix 5 leaves as it is ────────────────────────────────────────────────────────────────
+// ── The Calendar (JOINT Fix 5): a drag of a protected session is refused at its write, and the event put back ─────────
 
-describe("GAP, named: the Calendar sits below the guard until JOINT Fix 5, and a drag still moves the row", () => {
+describe("the Calendar's drag of a done session, or one under way: refused where it is written, the event back on the plan's time", () => {
   async function calendarWorld(id: () => Promise<string>, w: World) {
     const key = Buffer.alloc(32, 7).toString("base64");
     const prefs = await loadPreferences(w.db, w.userId);
@@ -1316,47 +1316,112 @@ describe("GAP, named: the Calendar sits below the guard until JOINT Fix 5, and a
     await syncCalendar(w.db, env, w.userId);
     const event = [...google.events.values()].find((e) => e.body.extendedProperties?.private?.rgWorkoutId === workout);
     expect(event, "the session's event is on the calendar").toBeTruthy();
-    /** The athlete drags the event `days` on, in Google. */
+    const planned = { start: event!.body.start.dateTime, end: event!.body.end.dateTime };
+    /** The athlete drags the event `days` on, in Google; the next sync reads it. */
     const drag = async (days: number) => {
       const shift = (iso: string) => new Date(Date.parse(iso) + days * 86_400_000).toISOString();
       event!.body = { ...event!.body, start: { ...event!.body.start, dateTime: shift(event!.body.start.dateTime) }, end: { ...event!.body.end, dateTime: shift(event!.body.end.dateTime) } };
       event!.seq = ++(google as unknown as { seq: number }).seq;
       await syncCalendar(w.db, env, w.userId);
     };
-    return { workout, drag };
+    /** Where the event stands on the calendar now. */
+    const onCalendar = () => ({ start: event!.body.start.dateTime, end: event!.body.end.dateTime });
+    /** Google writes to this event since `from` (an index into its call log). */
+    const writesTo = (from: number) => google.calls.slice(from).filter((c) => !c.startsWith("GET") && c.endsWith(`/${event!.id}`));
+    return { workout, drag, planned, onCalendar, writesTo, google };
   }
 
-  it("a drag on a session under way re-dates it: the phone's save still lands, on the slot's new day", async () => {
+  it("a session under way: the drag isn't taken, the event goes back to the plan's time, the next sync leaves it (no loop); the phone's save lands on its day", async () => {
     const w = await world();
     let build: any;
-    const { workout, drag } = await calendarWorld(async () => {
+    const cal = await calendarWorld(async () => {
       const id = await slotOn(w, D);
       setClock(D, "18:00");
       build = await buildAndStart(w, id);
       return id;
     }, w);
-    await drag(2);
-    expect(rowOf(w, workout)).toMatchObject({ date: addDays(D, 2), content: "started" });
-    expect((await saved(w, workout, build, D)).json.status).toBe("saved");
-    expect(rowOf(w, workout)).toMatchObject({ date: addDays(D, 2), completion: "completed" });
+    const trail = overrides(w, cal.workout);
+    await cal.drag(2);
+    expect(rowOf(w, cal.workout)).toMatchObject({ date: D, content: "started" });
+    expect(overrides(w, cal.workout)).toBe(trail);
+    expect(cal.onCalendar()).toEqual(cal.planned);
+    const from = cal.google.calls.length;
+    await syncCalendar(w.db, env, w.userId);
+    expect(cal.writesTo(from)).toEqual([]);
+    expect((await saved(w, cal.workout, build, D)).json.status).toBe("saved");
+    expect(rowOf(w, cal.workout)).toMatchObject({ date: D, completion: "completed" });
   });
 
-  it("a drag on a done session re-dates it, and the walk credits it twice: the double credit Fix 5 is for", async () => {
+  it("a done session: the drag isn't taken, the event goes back, and the walk credits it once, on its day, by its one activity", async () => {
     const w = await world();
     let build: any;
-    const { workout, drag } = await calendarWorld(async () => {
+    const cal = await calendarWorld(async () => {
       const id = await slotOn(w, FRI);
       setClock(FRI, "18:00");
       build = await buildAndStart(w, id);
       return id;
     }, w);
-    expect((await saved(w, workout, build, FRI)).json.status).toBe("saved");
+    expect((await saved(w, cal.workout, build, FRI)).json.status).toBe("saved");
     await drive(w, addDays(FRI, 1), addDays(FRI, 2));
-    await drag(4);
-    expect(rowOf(w, workout)).toMatchObject({ date: TUE, completion: "completed" });
+    const control = fork(w);
+    await cal.drag(4);
+    expect(rowOf(w, cal.workout)).toMatchObject({ date: FRI, completion: "completed" });
+    expect(cal.onCalendar()).toEqual(cal.planned);
     await drive(w, addDays(FRI, 3), addDays(TUE, 3));
+    await drive(control, addDays(FRI, 3), addDays(TUE, 3));
     const after = record(w);
-    expect(after.counters.strength + after.counters.yoga).toBe(2);
-    expect(after.credits.flatMap((c) => c.completed.map((x) => [c.date, x.workoutId]))).toEqual([[FRI, workout], [TUE, workout]]);
+    expect(after.counters.strength + after.counters.yoga).toBe(1);
+    expect(after.credits.flatMap((c) => c.completed.map((x) => [c.date, x.workoutId, x.activityId]))).toEqual(record(control).credits.flatMap((c) => c.completed.map((x) => [c.date, x.workoutId, x.activityId])));
+    expect(after.credits.flatMap((c) => c.completed.map((x) => [c.date, x.workoutId]))).toEqual([[FRI, cal.workout]]);
+    expect({ ...after, rows: [] }).toEqual({ ...record(control), rows: [] });
+  });
+
+  it("the phone's save landing inside the drag's move (a session started days ago, past its window): the guarded write refuses it, the event goes back, one credit on its day", async () => {
+    const w = await world();
+    let build: any;
+    const cal = await calendarWorld(async () => {
+      const id = await slotOn(w, D);
+      setClock(D, "18:00");
+      build = await buildAndStart(w, id);
+      return id;
+    }, w);
+    setClock(addDays(D, 2), "09:00");
+    let landed = false;
+    gates.move = async () => {
+      const answer = await w.call("PUT", `/api/sessions/performed/p-cal`, wire({ id: "p-cal", workoutId: cal.workout, build, startedAt: instant(D, "18:00"), endedAt: instant(D, "18:30") }));
+      expect(answer.json.status, JSON.stringify(answer.json)).toBe("saved");
+      landed = true;
+    };
+    await cal.drag(5);
+    expect(landed).toBe(true);
+    expect(rowOf(w, cal.workout)).toMatchObject({ date: D, completion: "completed", content: "done" });
+    expect(cal.onCalendar()).toEqual(cal.planned);
+    await drive(w, addDays(D, 3), addDays(D, 7));
+    expect(record(w).credits.flatMap((c) => c.completed.map((x) => [c.date, x.workoutId]))).toEqual([[D, cal.workout]]);
+  });
+
+  it("a session neither done nor under way still follows the drag, as before", async () => {
+    const w = await world();
+    const cal = await calendarWorld(() => slotOn(w, D), w);
+    setClock(addDays(D, -1), "12:00");
+    await cal.drag(2);
+    expect(rowOf(w, cal.workout).date).toBe(addDays(D, 2));
+  });
+
+  it("the way out of a wrong completion still works with the Calendar: Undo match, then the drag is taken; the activity stays, unplanned on its own day", async () => {
+    const w = await world();
+    let build: any;
+    const cal = await calendarWorld(async () => {
+      const id = await slotOn(w, FRI);
+      setClock(FRI, "18:00");
+      build = await buildAndStart(w, id);
+      return id;
+    }, w);
+    expect((await saved(w, cal.workout, build, FRI)).json.status).toBe("saved");
+    setClock(FRI, "19:00");
+    expect((await w.call("POST", `/api/plan/workouts/${cal.workout}/unmatch`)).status).toBe(200);
+    await cal.drag(4);
+    expect(rowOf(w, cal.workout)).toMatchObject({ date: TUE });
+    expect(record(w).activities).toHaveLength(1);
   });
 });

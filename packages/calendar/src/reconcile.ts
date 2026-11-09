@@ -45,6 +45,8 @@ export type ReconcileOp =
       eventId: string;
       newStart: string;
       newEnd: string;
+      /** The event as the plan has it: written back when the worker refuses the move (a protected session). */
+      resource: GoogleEventResource;
     }
   | {
       /** The user deleted the managed event — do not recreate; offer restore. */
@@ -138,6 +140,7 @@ export function reconcileCalendar(input: ReconcileInput): ReconcileOp[] {
         eventId: actual.eventId,
         newStart: actual.startDateTime!,
         newEnd: actual.endDateTime!,
+        resource: desired.resource,
       });
       continue;
     }

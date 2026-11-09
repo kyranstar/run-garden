@@ -30,6 +30,7 @@ import {
   workoutIdFromEvent,
   type ActualEvent,
   type DesiredEvent,
+  type GoogleEventResource,
   type ReconcileOp,
 } from "@rg/calendar";
 import type { Env } from "../env.js";
@@ -38,6 +39,7 @@ import { plannedRowColumns, type PlannedRow } from "./planned-columns.js";
 import { googleCalendarClient, type GoogleCalendarClient } from "./google-calendar.js";
 import { activeSyncNotes, postSyncNote } from "./sync-notes.js";
 import { applyMove } from "./jobs.js";
+import { guardRefusal, readGuarded, stillOpen } from "./session-guard.js";
 import { isRestoring, loadAccountState, patchAccountState, restoreInProgress } from "./account-state.js";
 
 /**
@@ -117,6 +119,8 @@ export interface CalendarSyncStats {
   updated: number;
   deleted: number;
   userMovesAccepted: number;
+  /** Drags of a done session, or one under way, not taken: their events put back on the plan's time (JOINT Fix 5). */
+  userMovesRestored: number;
   userDeletions: number;
   notesPreserved: number;
   skipped: boolean;
@@ -218,6 +222,7 @@ export async function syncCalendar(
     updated: 0,
     deleted: 0,
     userMovesAccepted: 0,
+    userMovesRestored: 0,
     userDeletions: 0,
     notesPreserved: 0,
     skipped: false,
@@ -606,40 +611,7 @@ async function executeOneOp(
           op.op === "preserve_notes_update"
             ? rebuildWithNotes(op.resource, op.userNotes)
             : op.resource;
-        await client.patchEvent(calendarId, op.eventId, resource);
-        const fp = eventContentFingerprint(resource);
-        // AN UNLINKED EVENT OF OURS IS ADOPTED HERE (re-review C-2b). A run killed between Google's insert and the
-        // link's insert leaves an event that carries this workout's id and no link; the reconcile reads it as ours
-        // and patches it. The link write used to be an UPDATE, which matched no row — so the event stayed unlinked
-        // and was patched again on every run, for ever. One statement either way: the link is written if missing.
-        await db
-          .insert(calendarEventLinks)
-          .values({
-            id: newId(),
-            workoutId: op.workoutId,
-            calendarId,
-            eventId: op.eventId,
-            state: "synced",
-            lastWrittenFingerprint: fp,
-            lastWrittenAt: now,
-            userNotes: op.op === "preserve_notes_update" ? op.userNotes : null,
-            createdAt: now,
-            updatedAt: now,
-          })
-          .onConflictDoUpdate({
-            target: calendarEventLinks.workoutId,
-            set: {
-              lastWrittenFingerprint: fp,
-              lastWrittenAt: now,
-              state: "synced",
-              userNotes: op.op === "preserve_notes_update" ? op.userNotes : undefined,
-              updatedAt: now,
-            },
-          });
-        await db
-          .update(plannedWorkouts)
-          .set({ calendarSyncState: "synced", updatedAt: now })
-          .where(eq(plannedWorkouts.id, op.workoutId));
+        await writeEvent(db, client, calendarId, { workoutId: op.workoutId, eventId: op.eventId, resource, userNotes: op.op === "preserve_notes_update" ? op.userNotes : undefined }, now);
         if (op.op === "preserve_notes_update") stats.notesPreserved += 1;
         else stats.updated += 1;
         break;
@@ -660,14 +632,37 @@ async function executeOneOp(
           `${get("year")}-${get("month")}-${get("day")}`,
           Math.floor(startMinutes / 1440),
         );
-        await applyMove(db, {
-          userId,
-          workoutId: op.workoutId,
-          toDate,
-          toTime,
-          source: "calendar_edit",
-          corosWritesEnabled: prefs.corosWritesEnabled,
-        });
+        // A DONE SESSION KEEPS ITS DAY, AND ONE UNDER WAY ISN'T MOVED FROM UNDER ITS DEVICE (session-guard.ts; JOINT Fix 5).
+        // A drag of one is refused here, where the Calendar's change is written: read, and held in the move's own write
+        // (`stillOpen`), so a save or a Start landing in between is refused too. Its event goes back to the plan's time
+        // (`op.resource`), so the calendar says where the session is, and the next sync finds nothing to adopt: no loop.
+        // The way out of a wrong completion is Undo match, which opens the row; a drag after it is taken.
+        const row = await readGuarded(db, userId, op.workoutId);
+        const putBack = async () => {
+          await writeEvent(db, client, calendarId, { workoutId: op.workoutId, eventId: op.eventId, resource: op.resource, userNotes: undefined }, now);
+          stats.userMovesRestored += 1;
+        };
+        if (row && guardRefusal(row, todayInZone(prefs.timezone))) {
+          await putBack();
+          break;
+        }
+        try {
+          await applyMove(db, {
+            userId,
+            workoutId: op.workoutId,
+            toDate,
+            toTime,
+            source: "calendar_edit",
+            corosWritesEnabled: prefs.corosWritesEnabled,
+            ...(row ? { onlyIf: stillOpen(row) } : {}),
+          });
+        } catch (e) {
+          if (e instanceof Error && e.message === "session_changed") {
+            await putBack();
+            break;
+          }
+          throw e;
+        }
         stats.userMovesAccepted += 1;
         break;
       }
@@ -694,6 +689,53 @@ async function executeOneOp(
       }
     }
   }
+}
+
+/**
+ * Write the plan's event over Google's, and its link (the plan's fingerprint, so the next reconcile finds them equal).
+ * AN UNLINKED EVENT OF OURS IS ADOPTED HERE (re-review C-2b). A run killed between Google's insert and the
+ * link's insert leaves an event that carries this workout's id and no link; the reconcile reads it as ours
+ * and patches it. The link write used to be an UPDATE, which matched no row — so the event stayed unlinked
+ * and was patched again on every run, for ever. One statement either way: the link is written if missing.
+ * `userNotes`: the athlete's notes the event keeps (`preserve_notes_update`); undefined leaves the link's as they are.
+ */
+async function writeEvent(
+  db: Db,
+  client: GoogleCalendarClient,
+  calendarId: string,
+  e: { workoutId: string; eventId: string; resource: GoogleEventResource; userNotes: string | undefined },
+  now: string,
+): Promise<void> {
+  await client.patchEvent(calendarId, e.eventId, e.resource);
+  const fp = eventContentFingerprint(e.resource);
+  await db
+    .insert(calendarEventLinks)
+    .values({
+      id: newId(),
+      workoutId: e.workoutId,
+      calendarId,
+      eventId: e.eventId,
+      state: "synced",
+      lastWrittenFingerprint: fp,
+      lastWrittenAt: now,
+      userNotes: e.userNotes ?? null,
+      createdAt: now,
+      updatedAt: now,
+    })
+    .onConflictDoUpdate({
+      target: calendarEventLinks.workoutId,
+      set: {
+        lastWrittenFingerprint: fp,
+        lastWrittenAt: now,
+        state: "synced",
+        userNotes: e.userNotes,
+        updatedAt: now,
+      },
+    });
+  await db
+    .update(plannedWorkouts)
+    .set({ calendarSyncState: "synced", updatedAt: now })
+    .where(eq(plannedWorkouts.id, e.workoutId));
 }
 
 /** One formatter per zone for the moves' local clock: building one costs far more than using it, and a run can
