@@ -19,7 +19,7 @@ import {
   type CorosWriteResult,
   type UserPreferences,
 } from "@rg/domain";
-import { guardFailed, guardOrFail, runAtomically, type AtomicStatement, type Db } from "./db.js";
+import { guardFailed, guardOrFail, rowGone, runAtomically, whileRowThere, type AtomicStatement, type Db } from "./db.js";
 import { cloudPresence } from "./sync-status.js";
 import { applyStudioJobResult } from "./studio-push.js";
 import { intentStatements, openIntentFor, openMoveIntents, recordIntent, resolveIntent } from "./sync-intents.js";
@@ -50,9 +50,10 @@ export interface MoveRequest {
    * A condition the row must still meet as it is moved (`stillOpen`, the athlete's own route; the coach's approve, its card's
    * row; a sync note's Undo). The whole move is then ONE batch — its row, override, intent, jobs, the watch copy taken off,
    * the build unlocked, the mirror's mark and its audit — and its row's write fails the batch when the condition no longer
-   * holds (`guardOrFail`): all of it lands, or none of it, and then this throws `session_changed`. A fault anywhere in it
-   * leaves nothing behind either, so a retry makes the whole move. Without it the move is exactly as it always was, its row
-   * written last.
+   * holds (`guardOrFail`): all of it lands, or none of it, and then this throws `session_changed`. A row gone before the batch
+   * fails it too (its override is written `whileRowThere`): nothing lands, and this throws `workout_not_found`, as a row
+   * missing at the read does. A fault anywhere in it leaves nothing behind either, so a retry makes the whole move. Without it
+   * the move is exactly as it always was, its row written last.
    */
   onlyIf?: SQL;
 }
@@ -335,7 +336,8 @@ async function guardedMove(
     m.row,
     db.insert(scheduleOverrides).values({
       id: newId(),
-      workoutId: workout.id,
+      // The row while it is there: gone, the batch fails here (`whileRowThere`), as the row's guard can't.
+      workoutId: whileRowThere(req.userId, workout.id),
       kind: fromDate === req.toDate ? "time_change" : "user_move",
       fromDate,
       toDate: req.toDate,
@@ -369,6 +371,7 @@ async function guardedMove(
     await runAtomically(db, statements);
   } catch (e) {
     if (guardFailed(e)) throw new Error("session_changed");
+    if (rowGone(e)) throw new Error("workout_not_found");
     throw e;
   }
   return { workoutId: workout.id, corosSyncState: m.corosSyncState, ...(job ? { jobId: job.jobId } : {}) };

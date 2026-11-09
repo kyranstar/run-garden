@@ -331,6 +331,8 @@ syncRoutes.post("/notes/:id/undo", async (c) => {
       } catch (e) {
         const msg = e instanceof Error ? e.message : "move_failed";
         if (msg === "session_changed") return c.json(await refusalNow(db, userId, workout.id, today), 409);
+        // Gone before its move was written (a hard delete): as a row gone before the read. The note stays.
+        if (msg === "workout_not_found") return c.json({ error: "not_found" }, 404);
         return c.json({ error: msg }, msg === "races_cannot_move" ? 422 : 500);
       }
       await dismissSyncNote(db, userId, noteId);
@@ -370,6 +372,8 @@ syncRoutes.post("/notes/:id/undo", async (c) => {
       } catch (e) {
         const msg = e instanceof Error ? e.message : "move_failed";
         if (msg === "session_changed") return c.json(await refusalNow(db, userId, workout.id, today), 409);
+        // Gone before its move was written (a hard delete): as a row gone before the read. The note stays.
+        if (msg === "workout_not_found") return c.json({ error: "not_found" }, 404);
         return c.json({ error: msg }, msg === "races_cannot_move" ? 422 : 500);
       }
       await dismissSyncNote(db, userId, noteId);

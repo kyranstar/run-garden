@@ -1,7 +1,7 @@
 import { and, eq, isNull, sql, type SQL } from "drizzle-orm";
 import { plannedWorkouts, syncIntents } from "@rg/database";
 import { newId, nowInstant } from "@rg/domain";
-import type { Db } from "./db.js";
+import { whileRowThere, type Db } from "./db.js";
 
 export type IntentSource =
   | "user_move" | "calendar_drag" | "studio_push" | "studio_retire"
@@ -35,9 +35,10 @@ export async function recordIntent(db: Db, input: RecordIntentInput): Promise<st
 
 /**
  * `recordIntent` as statements for a caller's atomic batch: the open intents of the same kind superseded, the new one
- * inserted — `resolvedAt`, when given, for an intent that closes as it is made.
+ * inserted — `resolvedAt`, when given, for an intent that closes as it is made. `whileThere`: its target written as the
+ * workout's row while it is there (`whileRowThere`), so the batch fails when the row is gone.
  */
-export function intentStatements(db: Db, input: RecordIntentInput, now: string, resolvedAt?: string) {
+export function intentStatements(db: Db, input: RecordIntentInput, now: string, resolvedAt?: string, opts: { whileThere?: boolean } = {}) {
   const id = newId();
   return {
     id,
@@ -58,7 +59,7 @@ export function intentStatements(db: Db, input: RecordIntentInput, now: string, 
         id,
         userId: input.userId,
         targetKind: input.targetKind,
-        targetId: input.targetId,
+        targetId: opts.whileThere ? whileRowThere(input.userId, input.targetId) : input.targetId,
         kind: input.kind,
         payload: input.payload ?? null,
         source: input.source,

@@ -1050,6 +1050,26 @@ describe("what sits below the routes, and the corrections, keep working", () => 
     expect(record(w).credits.flatMap((c) => c.completed.map((x) => [c.date, x.workoutId, x.activityId]))).toEqual([[addDays(D, 1), id, "coros:lbl-undo"]]);
   });
 
+  it.each(["adopted_coros_change", "kept_local_change"] as const)("sync-note Undo (%s), its row hard-deleted at the last instant before its move is written (M-1): 404 `not_found`, as a row gone before the read is; nothing written, the note kept", async (kind) => {
+    const w = await world();
+    setClock(D, "12:00");
+    const id = await failedMoveOn(w, "scheduled");
+    await postSyncNote(w.db, { userId: w.userId, workoutId: id, kind, payload: kind === "adopted_coros_change" ? { previousDate: addDays(D, 3), newDate: addDays(D, 1) } : { displacedDate: addDays(D, 3), keptDate: addDays(D, 1) } });
+    const [note] = q(w, `select id from sync_notes where workout_id = ?`, id);
+    const overridesBefore = overrides(w, id);
+    const intentsBefore = q(w, `select count(*) as n from sync_intents where target_id = ?`, id)[0].n;
+    gates.batch = async () => {
+      raw(w).prepare(`delete from planned_workouts where id = ?`).run(id);
+    };
+    const answer = await w.call("POST", `/api/sync/notes/${note.id}/undo`);
+    expect(gates.batch).toBeNull();
+    expect([answer.status, answer.json]).toEqual([404, { error: "not_found" }]);
+    expect(overrides(w, id)).toBe(overridesBefore);
+    expect(q(w, `select count(*) as n from sync_intents where target_id = ?`, id)[0].n).toBe(intentsBefore);
+    expect(q(w, `select count(*) as n from audit_events where kind = 'workout_moved'`)[0].n).toBe(0);
+    expect(q(w, `select dismissed_at from sync_notes where id = ?`, note.id)[0].dismissed_at).toBeNull();
+  });
+
   it("sync-note Undo's feed: a session still to come keeps its Undo (no `undoable` said)", async () => {
     const w = await world();
     setClock(D, "12:00");

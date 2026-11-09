@@ -91,6 +91,24 @@ export function guardFailed(e: unknown): boolean {
 }
 
 /**
+ * THE ROW'S ID WHILE IT IS THERE, else null: a subselect, written as a NOT NULL column of a guarded batch's insert (the move's
+ * override, a re-time's or an ease's content claim), it fails the batch when the row is gone. A guard (`guardOrFail`) alone
+ * can't see that: an UPDATE matching no row fails nothing, and the rest of the batch would land for a row that isn't there.
+ */
+export const whileRowThere = (userId: string, workoutId: string): SQL =>
+  sql`(select id from planned_workouts where id = ${workoutId} and user_id = ${userId})`;
+
+const ROW_GONE = /NOT NULL constraint failed: (schedule_overrides\.workout_id|sync_intents\.target_id)/;
+
+/** The error a batch answers when a `whileRowThere` column found its row gone (D1 may wrap it, as `cause`). */
+export function rowGone(e: unknown): boolean {
+  for (let x: unknown = e, i = 0; x && i < 4; i++, x = (x as { cause?: unknown }).cause) {
+    if (x instanceof Error && ROW_GONE.test(x.message)) return true;
+  }
+  return false;
+}
+
+/**
  * `runAtomically`, answering how many rows its FIRST statement wrote: a guarded write the rest of the batch follows, each
  * of them gated in its own SQL on what that write leaves (an UPDATE matching no row doesn't fail a batch). The first
  * statement must end in `.returning(...)`.

@@ -40,11 +40,11 @@ import {
   type WorkoutDoc,
 } from "@rg/domain";
 import { runBlockRoles } from "@rg/coros";
-import { chunkIds, chunkedInsert, guardFailed, guardOrFail, insertBatches, runAtomically, runAtomicallyFirst, type AtomicStatement, type Db } from "./db.js";
+import { chunkIds, chunkedInsert, guardFailed, guardOrFail, insertBatches, rowGone, runAtomically, runAtomicallyClaim, runAtomicallyFirst, type AtomicStatement, type Db } from "./db.js";
 import { separateDayCollisions, windowTimeFor } from "./day-placement.js";
 import { coachStamp, recordedStampFor, stampName, takenStampsOn, takenStampsOnDays } from "./coros-stamp.js";
 import { applyMove } from "./jobs.js";
-import { openIntentFor, recordIntent } from "./sync-intents.js";
+import { intentStatements, openIntentFor } from "./sync-intents.js";
 import { takesWatchCopy, unmarkedFingerprint, watchCopyBase } from "./watch-copy-marker.js";
 import {
   enqueueUnpushIfOurs,
@@ -749,6 +749,8 @@ export async function ownershipProofFor(
   db: Db,
   userId: string,
   workout: { id: string; sourceProgramId: string | null; sourceContentFingerprint: string },
+  /** The athlete's approved claim is written in the same batch as the rewrite (`contentConvergencePlan`'s `claimed`). */
+  opts: { claimed?: boolean } = {},
 ): Promise<OwnershipProof | ConvergeRefusal> {
   const recordedName = await recordedStampFor(db, userId, workout.id);
   if (recordedName) return { kind: "stamp", recordedName };
@@ -758,8 +760,7 @@ export async function ownershipProofFor(
   // half-proof is not a proof.
   if (!workout.sourceProgramId || !workout.sourceContentFingerprint) return "no_ownership_proof";
   if (!isUpstreamFingerprint(workout.sourceContentFingerprint)) return "stale_local_fingerprint";
-  const intent = await openIntentFor(db, userId, workout.id, "content");
-  if (!intent) return "not_athlete_approved";
+  if (!opts.claimed && !(await openIntentFor(db, userId, workout.id, "content"))) return "not_athlete_approved";
   return {
     kind: "imported",
     importedProgramId: workout.sourceProgramId,
@@ -801,9 +802,24 @@ export interface ConvergeOutcome {
  * rewrite, and a fingerprint-of-destination alone would have skipped it and left
  * the watch holding B forever.
  */
-export async function enqueueContentConvergence(
-  db: Db,
-  v: {
+export async function enqueueContentConvergence(db: Db, v: ConvergeInput): Promise<ConvergeOutcome> {
+  const plan = await contentConvergencePlan(db, v);
+  for (const statement of plan.statements) await statement;
+  return plan.outcome;
+}
+
+/**
+ * `enqueueContentConvergence`'s reads, and the writes it would make as statements for a caller's batch (a re-time's, an
+ * ease's: the claim, the row and the rewrite land together or not at all). `claimed`: the caller's batch writes the
+ * athlete's content claim before these, so the imported row's proof doesn't look for one already on record.
+ */
+export async function contentConvergencePlan(db: Db, v: ConvergeInput & { claimed?: boolean }): Promise<{ outcome: ConvergeOutcome; statements: AtomicStatement[] }> {
+  const statements: AtomicStatement[] = [];
+  const outcome = await convergeInto(db, v, statements);
+  return { outcome, statements };
+}
+
+interface ConvergeInput {
     userId: string;
     /** The row as it stood BEFORE the rewrite: its fingerprint and address are
      *  what COROS is still holding. */
@@ -839,8 +855,9 @@ export async function enqueueContentConvergence(
      * collide with that VERIFIED row — a no-op that reports a job queued while nothing runs, forever.
      */
     idTag?: string;
-  },
-): Promise<ConvergeOutcome> {
+}
+
+async function convergeInto(db: Db, v: ConvergeInput & { claimed?: boolean }, statements: AtomicStatement[]): Promise<ConvergeOutcome> {
   if (!v.corosWritesEnabled) return { refused: "writes_disabled" };
   // The row as the caller read it may still carry the "keep the watch's version" mark that its own write has just
   // lifted: its proof and its claim are on what the watch holds (watch-copy-marker.ts).
@@ -849,7 +866,7 @@ export async function enqueueContentConvergence(
   if (appAuthoredRow(v.workout)) return { refused: "app_authored" };
   const address = watchAddressOf(v.workout);
   if (!address) return { refused: "not_on_the_watch" };
-  const proof = await ownershipProofFor(db, v.userId, v.workout);
+  const proof = await ownershipProofFor(db, v.userId, v.workout, { claimed: v.claimed === true });
   if (typeof proof === "string") return { refused: proof };
 
   // A stale rewrite must never outlive the change that replaced it: an ease to B
@@ -857,16 +874,18 @@ export async function enqueueContentConvergence(
   // `enqueueMoveJob` does, scoped to this kind — a pending CREATE is untouched
   // (superseding one strands the session app-only forever, audit#2 #12) and so
   // is a pending unpush, which is a removal, not a competing content claim.
-  await db
-    .update(corosWriteJobs)
-    .set({ status: "superseded", updatedAt: v.now })
-    .where(
-      and(
-        eq(corosWriteJobs.workoutId, v.workout.id),
-        eq(corosWriteJobs.kind, "coach_update_workout"),
-        inArray(corosWriteJobs.status, ["queued", "claimed", "in_progress", "verifying"]),
+  statements.push(
+    db
+      .update(corosWriteJobs)
+      .set({ status: "superseded", updatedAt: v.now })
+      .where(
+        and(
+          eq(corosWriteJobs.workoutId, v.workout.id),
+          eq(corosWriteJobs.kind, "coach_update_workout"),
+          inArray(corosWriteJobs.status, ["queued", "claimed", "in_progress", "verifying"]),
+        ),
       ),
-    );
+  );
 
   const from = v.workout.sourceContentFingerprint;
   const to = fingerprint(v.session);
@@ -898,7 +917,8 @@ export async function enqueueContentConvergence(
     // exactly that.
     if (proof.kind === "imported") return { refused: "cannot_unpush_imported" };
     const jobId = `${v.workout.id}-unpush-${to}`;
-    await db
+    statements.push(
+      db
       .insert(corosWriteJobs)
       .values({
         ...common,
@@ -913,7 +933,8 @@ export async function enqueueContentConvergence(
           corosPlanId: address.corosPlanId,
         },
       })
-      .onConflictDoNothing();
+      .onConflictDoNothing(),
+    );
     return { jobId, kind: "coach_delete_workout" };
   }
 
@@ -969,7 +990,7 @@ export async function enqueueContentConvergence(
       },
       requestedAt: v.now,
     });
-  await (v.reviveFailed
+  statements.push(v.reviveFailed
     ? insert.onConflictDoUpdate({
         target: corosWriteJobs.id,
         // Only a FAILED row is revived — or one a restore switched off
@@ -996,18 +1017,20 @@ export async function enqueueContentConvergence(
 
 /**
  * A STRUCTURED RUN'S RE-TIME, WRITTEN (the owner's decision, 2026-10-20; adjust-retime.ts). What an ease writes, for
- * the steps the rule made:
+ * the steps the rule made, ALL IN ONE BATCH (re-review 2, I-1: a fault after the row left it re-timed with no claim and
+ * no rewrite, and the next approve found the length made):
  *  - the row: its length (the rule's), its stage summary and distance, `calendar_only` until the watch confirms — a
  *    designed run's own columns, a plan run's a coach session's (`sessionColumns`, as an ease) keeping its name, category
  *    and subtype; "keep the watch's version" lifted (`unmarkedFingerprint`: the newer change stands, review-S3 A1);
- *  - its document's next revision, and its stage rows replaced — in one batch with the row;
+ *  - its document's next revision, and its stage rows replaced;
  *  - the app's claim on its content (`coach_adjust`), so a COROS read never hands the row back to the older copy;
- *  - a create of it still queued: the new session, so the watch never gets the old one;
- *  - its watch copy rewritten (`enqueueContentConvergence`, on what the watch holds: the row as it was read) — refused
- *    quietly when it isn't on the watch, or writes are off: the session not on the watch just gets its new stages.
- * Statements (design-approve.ts `RETIME_COST`): the batch (row, revision, delete, the inserts), the claim (2), the
- * create (1), the rewrite (at most 4) — after the applier's row and stage reads. Answers how many queued creates it
- * brought up to date (0 or 1).
+ *  - its watch copy rewritten (`contentConvergencePlan`, on what the watch holds: the row as it was read) — refused
+ *    quietly when it isn't on the watch, or writes are off: the session not on the watch just gets its new stages;
+ *  - a create of it still queued: the new session, so the watch never gets the old one.
+ * A fault anywhere leaves nothing, so the next approve writes all of it. A row gone before the batch fails it (the claim
+ * is written `whileRowThere`): nothing written (`written: false`). Statements (design-approve.ts `RETIME_COST`): the row,
+ * revision, delete, the inserts, the claim (2), the rewrite (at most 2), the create (1) — after the applier's row and
+ * stage reads and the rewrite's. Answers how many queued creates it brought up to date (0 or 1).
  */
 export async function writeRetimed(
   db: Db,
@@ -1024,8 +1047,7 @@ export async function writeRetimed(
     runWire: RunWire;
     /**
      * A condition the row must still meet as it is written (the designer's approve, `guards`): the row's write fails the
-     * batch when it no longer holds (`guardOrFail`), so its revision and stage rows land with it or not at all, and then
-     * nothing else is written (`written: false`). Without it, as it always was.
+     * batch when it no longer holds (`guardOrFail`), and then nothing of it is written (`written: false`).
      */
     onlyIf?: SQL;
   },
@@ -1056,25 +1078,18 @@ export async function writeRetimed(
       updatedAt: v.now,
     })
     .where(and(eq(pw.id, row.id), eq(pw.userId, v.userId)));
-  try {
-    await runAtomically(db, [
-      rowWrite,
-      ...(w.doc ? [revisionInsert(db, { userId: v.userId, workoutId: row.id, sourceKind: "coach", sourceRef: v.proposalId, now: v.now })] : []),
-      db.delete(plannedWorkoutStages).where(eq(plannedWorkoutStages.workoutId, row.id)),
-      ...insertBatches(w.stages).map((batch) => db.insert(plannedWorkoutStages).values(batch)),
-    ]);
-  } catch (e) {
-    if (v.onlyIf && guardFailed(e)) return { createsUpdated: 0, written: false };
-    throw e;
-  }
   const watch = w.family === "designed" ? w.session : w.watchSession;
-  await recordIntent(db, {
+  // The app's claim, held to the row (`whileRowThere`): a row gone fails the batch here.
+  const claim = intentStatements(db, { userId: v.userId, targetKind: "workout", targetId: row.id, kind: "content", payload: { fingerprint: fingerprint(watch) }, source: "coach_adjust" }, v.now, undefined, { whileThere: true });
+  const rewrite = await contentConvergencePlan(db, {
     userId: v.userId,
-    targetKind: "workout",
-    targetId: row.id,
-    kind: "content",
-    payload: { fingerprint: fingerprint(watch) },
-    source: "coach_adjust",
+    workout: row,
+    session: watch,
+    now: v.now,
+    corosWritesEnabled: v.prefs.corosWritesEnabled ?? false,
+    ...(v.thresholdPaceSecPerKm !== undefined ? { thresholdPaceSecPerKm: v.thresholdPaceSecPerKm } : {}),
+    runWire: v.runWire,
+    claimed: true,
   });
   // A create not yet run carries the session it was queued with: it goes with the new one — ONLY WHILE IT IS STILL
   // `queued` (review-L minor 1; the guard is in the WHERE, and the rows it changed are counted). A create the lane has
@@ -1085,7 +1100,7 @@ export async function writeRetimed(
   // requeued one whose retry finds the old session an earlier attempt landed — leaves it open: the row reads "Older on
   // watch" (`content_stale`) and Send is the athlete's: safer than a rewrite queued after a verify no request is there
   // to see.
-  const retargeted = await db
+  const retarget = db
     .update(corosWriteJobs)
     .set({ payload: sql`json_set(${corosWriteJobs.payload}, '$.session', json(${JSON.stringify(watch)}))`, expectedContentFingerprint: fingerprint(watch), updatedAt: v.now })
     .where(
@@ -1097,16 +1112,23 @@ export async function writeRetimed(
       ),
     )
     .returning({ id: corosWriteJobs.id });
-  await enqueueContentConvergence(db, {
-    userId: v.userId,
-    workout: row,
-    session: watch,
-    now: v.now,
-    corosWritesEnabled: v.prefs.corosWritesEnabled ?? false,
-    ...(v.thresholdPaceSecPerKm !== undefined ? { thresholdPaceSecPerKm: v.thresholdPaceSecPerKm } : {}),
-    runWire: v.runWire,
-  });
-  return { createsUpdated: retargeted.length, written: true };
+  let retargeted: number;
+  try {
+    // The retarget last: the batch answers how many creates it brought up to date (`runAtomicallyClaim`).
+    retargeted = await runAtomicallyClaim(db, [
+      rowWrite,
+      ...(w.doc ? [revisionInsert(db, { userId: v.userId, workoutId: row.id, sourceKind: "coach", sourceRef: v.proposalId, now: v.now })] : []),
+      db.delete(plannedWorkoutStages).where(eq(plannedWorkoutStages.workoutId, row.id)),
+      ...insertBatches(w.stages).map((batch) => db.insert(plannedWorkoutStages).values(batch)),
+      ...claim.statements,
+      ...rewrite.statements,
+      retarget,
+    ]);
+  } catch (e) {
+    if ((v.onlyIf && guardFailed(e)) || rowGone(e)) return { createsUpdated: 0, written: false };
+    throw e;
+  }
+  return { createsUpdated: retargeted, written: true };
 }
 
 /**
@@ -1420,40 +1442,17 @@ export async function applyOps(
         // meanwhile as it was).
         const doc = sessionDoc(op.workoutId, op.session, prefs.weightUnit, thresholdPaceSecPerKm);
         const guard = opts.guards?.get(op.workoutId);
-        const wrote = await runAtomicallyFirst(db, [
-          db
-            .update(plannedWorkouts)
-            .set({
-              ...sessionColumns(op.session),
-              ...updateDocColumns(doc),
-              // A new change of the app's after "keep the watch's version": the app's claim is live again, and the
-              // fingerprint the mark kept is what the watch holds (watch-copy-marker.ts).
-              sourceContentFingerprint: unmarkedFingerprint(plannedWorkouts.sourceContentFingerprint),
-              updatedAt: now,
-            })
-            .where(and(eq(plannedWorkouts.id, op.workoutId), eq(plannedWorkouts.userId, userId), guard))
-            .returning({ id: plannedWorkouts.id }),
-          // The revision of the document the row now holds: none when the guarded write didn't land.
-          ...(doc ? revisionOfWritten(db, userId, op.workoutId, doc, proposalId, now) : []),
-        ]);
-        if (wrote === 0) {
-          out.missed.push(GUARD_LOST);
-          break;
-        }
+        // ONE BATCH, all of it (re-review 2, I-1: a fault after the row left a session eased with no stage rows and no
+        // claim, and the next approve found it made): the row — guarded, it fails the batch when the session isn't as the
+        // approve read it (`guardOrFail`) — its revision, its stage rows, the app's claim and the watch's rewrite.
+        //
         // The body, too: a run eased into a lift loses the run's stage rows,
         // and a lift eased into a run loses the lift's exercise list.
-        await writeStages(db, op.workoutId, op.session, thresholdPaceSecPerKm);
+        //
         // The approved edit is the app's permanent claim on this session's
         // content — without it, import rule 7 hands the row back to the
-        // COROS snapshot within one pull (audit#3 D1).
-        await recordIntent(db, {
-          userId,
-          targetKind: "workout",
-          targetId: op.workoutId,
-          kind: "content",
-          payload: { fingerprint: fingerprint(op.session) },
-          source: "coach_ease",
-        });
+        // COROS snapshot within one pull (audit#3 D1). Held to the row (`whileRowThere`): a row gone fails the batch.
+        //
         // …AND THE WATCH IS TOLD (2026-08-17). This is the athlete's own
         // complaint — "my plan for today on the app and in coros completely
         // don't match" — and it was structural, not a slip: `ease` rewrote the
@@ -1466,14 +1465,42 @@ export async function applyOps(
         // the ordinary case (the session was never pushed) and leaves the row
         // exactly as `sessionColumns` wrote it — `calendar_only`, with the intent
         // open, which is the honest report that COROS does not have this.
-        await enqueueContentConvergence(db, {
+        const rewrite = await contentConvergencePlan(db, {
           userId,
           workout: target,
           session: op.session,
           now,
           corosWritesEnabled: prefs.corosWritesEnabled ?? false,
           thresholdPaceSecPerKm,
+          claimed: true,
         });
+        try {
+          await runAtomically(db, [
+            db
+              .update(plannedWorkouts)
+              .set({
+                ...sessionColumns(op.session),
+                ...updateDocColumns(doc),
+                // A new change of the app's after "keep the watch's version": the app's claim is live again, and the
+                // fingerprint the mark kept is what the watch holds (watch-copy-marker.ts).
+                sourceContentFingerprint: unmarkedFingerprint(plannedWorkouts.sourceContentFingerprint),
+                ...(guard ? { effectiveDate: guardOrFail(guard, plannedWorkouts.effectiveDate) } : {}),
+                updatedAt: now,
+              })
+              .where(and(eq(plannedWorkouts.id, op.workoutId), eq(plannedWorkouts.userId, userId))),
+            ...(doc ? revisionOfWritten(db, userId, op.workoutId, doc, proposalId, now) : []),
+            db.delete(plannedWorkoutStages).where(eq(plannedWorkoutStages.workoutId, op.workoutId)),
+            ...insertBatches(coachStageRows(op.workoutId, op.session, thresholdPaceSecPerKm)).map((batch) => db.insert(plannedWorkoutStages).values(batch)),
+            ...intentStatements(db, { userId, targetKind: "workout", targetId: op.workoutId, kind: "content", payload: { fingerprint: fingerprint(op.session) }, source: "coach_ease" }, now, undefined, { whileThere: true }).statements,
+            ...rewrite.statements,
+          ]);
+        } catch (e) {
+          if ((guard && guardFailed(e)) || rowGone(e)) {
+            out.missed.push(GUARD_LOST);
+            break;
+          }
+          throw e;
+        }
         // An ease REPLACES the session, so it also replaces how long the day's
         // block is — a 35-minute jog where a 100-minute session was leaves a
         // gap, and a longer one can land on top of its neighbour.
@@ -1505,8 +1532,8 @@ export async function applyOps(
               ...(guard ? { onlyIf: guard } : {}),
             });
           } catch (e) {
-            // The guarded row write first, nothing written: the session isn't the one the approve read.
-            if (e instanceof Error && e.message === "session_changed") {
+            // The guarded batch failed, nothing written: the session isn't the one the approve read, or it is gone.
+            if (e instanceof Error && (e.message === "session_changed" || e.message === "workout_not_found")) {
               out.missed.push(GUARD_LOST);
               break;
             }

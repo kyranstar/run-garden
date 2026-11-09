@@ -28,7 +28,7 @@ import { sendToWatch, takeOffWatch, unpushBuild } from "../src/services/watch-pu
 import { connectTestCoros, makeTestDb, makeTestUser, mountRoutes } from "./helpers.js";
 import { DAY, NOON, rowOf, seedCatalog, seedProgram, seedSlot, seedTmj, switchOn, TOMORROW } from "./watch-push-fixture.js";
 
-const { coachProposals, coachRuns, corosWriteJobs, plannedWorkouts, scheduleOverrides, sessionBuilds, syncIntents } = schema;
+const { auditEvents, coachProposals, coachRuns, corosWriteJobs, plannedWorkouts, scheduleOverrides, sessionBuilds, syncIntents } = schema;
 
 /**
  * Hold a request at `sentBuildIdOf`, which a move of a sent session reads before it writes anything of the watch's: the
@@ -436,6 +436,49 @@ describe("the save's day check for a sent build COROS moved", () => {
     const after = await trail(workoutId, buildId);
     expect(after.jobs.filter((j) => j[1] === "coach_delete_workout")).toEqual([]);
     expect({ ...after, jobs: after.jobs.length }).toEqual({ ...control, jobs: control.jobs.length });
+  });
+
+  it("a guarded /move whose row is hard-deleted at the last instant before its batch (M-1): the route's answer for a missing row, and nothing of the move written — no override, intent, unpush or audit", async () => {
+    const { workoutId, buildId } = await sentSlot({ verified: true });
+    const before = await trail(workoutId, buildId);
+    const moved = async () => (await db.select().from(auditEvents).where(eq(auditEvents.kind, "workout_moved"))).length;
+    gates.batch = async () => {
+      await db.delete(plannedWorkouts).where(eq(plannedWorkouts.id, workoutId));
+    };
+    const answer = await planRoute(workoutId, "move", { toDate: TOMORROW, toTime: "18:00" });
+    expect(gates.batch).toBeNull();
+    // What the route answers a row it can't find at all.
+    const missing = await planRoute("no-such-row", "move", { toDate: TOMORROW, toTime: "18:00" });
+    expect([answer.status, answer.json]).toEqual([missing.status, missing.json]);
+    expect(answer.json.error).toBe("workout_not_found");
+    expect(await trail(workoutId, buildId)).toEqual(before);
+    expect(await moved()).toBe(0);
+  });
+
+  it("an approve's move whose row is hard-deleted at the last instant before its batch (M-1): refused `not_found`, nothing of the move written", async () => {
+    const { workoutId, buildId } = await sentSlot({ verified: true });
+    const runId = `run-${newId()}`;
+    await db.insert(coachRuns).values({ id: runId, userId, parentId: null, role: "main", scope: { kind: "auto" }, request: "x", status: "active", state: null, steps: 0, costUsd: 0, createdAt: NOON, updatedAt: NOON });
+    const r = await adjustPlan.run({ db, env: switchOn({ COACH_DESIGNER: "1" }), userId, run: { id: runId, role: "main", scope: { kind: "auto" }, parentId: null, rehearsal: false }, now: new Date(), toolUseId: `t_${newId()}` }, { workoutId, change: { kind: "move", toDate: TOMORROW, toTime: "18:00" }, why: "A freer day." });
+    if (isToolErr(r)) throw new Error(`${r.error} ${r.why}`);
+    const proposal = designProposalId(runId);
+    await db.update(coachProposals).set({ status: "pending" }).where(eq(coachProposals.id, proposal));
+    const before = await trail(workoutId, buildId);
+    // The guarded move's batch: the next one after the applier's reads (`sentBuildIdOf` reads last).
+    gates.sent = async () => {
+      gates.batch = async () => {
+        await db.delete(plannedWorkouts).where(eq(plannedWorkouts.id, workoutId));
+      };
+    };
+    const cookie = `${SESSION_COOKIE}=${await createSession(db, userId)}`;
+    const res = await mountRoutes(db, "/api/coach", coachRoutes).request(`/api/coach/proposals/${proposal}/approve`, { method: "POST", headers: { Cookie: cookie, "Content-Type": "application/json" }, body: "{}" }, switchOn({ COACH_DESIGNER: "1" }), { waitUntil: () => undefined, passThroughOnException: () => undefined, props: {} } as never);
+    const json = (await res.json()) as Record<string, any>;
+    expect(gates.batch).toBeNull();
+    expect(res.status).toBe(200);
+    expect(json.changed).toEqual([]);
+    expect(json.refused).toEqual([expect.objectContaining({ opId: planAdjustId(workoutId), error: "not_found" })]);
+    expect(await trail(workoutId, buildId)).toEqual(before);
+    expect((await db.select().from(auditEvents).where(eq(auditEvents.kind, "workout_moved"))).length).toBe(0);
   });
 
   it("HAZARD, as it stands (JOINT §3.2; the guard neither causes nor stops it): Discard on a sent build, then a move: the move unsends it and the phone's save answers 422 for good", async () => {

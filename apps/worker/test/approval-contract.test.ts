@@ -8,7 +8,35 @@
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 /** Hold an approve at the applier's door: after its plan read and its claim, before the applier reads or writes a row. */
-const gates = vi.hoisted(() => ({ beforeApply: null as null | (() => Promise<void>) }));
+const gates = vi.hoisted(() => ({
+  beforeApply: null as null | (() => Promise<void>),
+  /** The next batch, whichever runner writes it (set from the door: the applier's own batch, after its reads of the row). */
+  batch: null as null | (() => Promise<void>),
+}));
+vi.mock("../src/services/db.js", async (importOriginal) => {
+  const real = await importOriginal<typeof import("../src/services/db.js")>();
+  return {
+    ...real,
+    runAtomically: async (...args: Parameters<typeof real.runAtomically>) => {
+      const hold = gates.batch;
+      gates.batch = null;
+      if (hold) await hold();
+      return real.runAtomically(...args);
+    },
+    runAtomicallyFirst: async (...args: Parameters<typeof real.runAtomicallyFirst>) => {
+      const hold = gates.batch;
+      gates.batch = null;
+      if (hold) await hold();
+      return real.runAtomicallyFirst(...args);
+    },
+    runAtomicallyClaim: async (...args: Parameters<typeof real.runAtomicallyClaim>) => {
+      const hold = gates.batch;
+      gates.batch = null;
+      if (hold) await hold();
+      return real.runAtomicallyClaim(...args);
+    },
+  };
+});
 vi.mock("../src/services/coach-apply.js", async (importOriginal) => {
   const real = await importOriginal<typeof import("../src/services/coach-apply.js")>();
   return {
@@ -61,6 +89,7 @@ beforeEach(async () => {
   vi.useFakeTimers({ toFake: ["Date"] });
   vi.setSystemTime(new Date(NOW));
   gates.beforeApply = null;
+  gates.batch = null;
   writes = [];
   db = cloneTestDb(migrated, { boundVariableCap: 100, onStatement: (s) => void (isWrite(s) && writes.push(s)) });
   ({ userId } = await makeTestUser(db));
@@ -558,5 +587,112 @@ describe("a length re-timed by the rule, its write faulting mid-batch", () => {
     expect(after.stages).not.toEqual(before.stages);
     expect(after.claims).toBe(1);
     expect(after.rewrites).toBe(1);
+  });
+});
+
+describe("a re-time's or an ease's writes after its row, faulting: nothing of it lands, the next approve writes all of it", () => {
+  /** A structured run of the coach's lane on the watch: seven 5-minute stages, its copy verified there. */
+  async function tempoOnTheWatch(id: string): Promise<void> {
+    const date = day(2);
+    await db.insert(plannedWorkouts).values({
+      id, userId, planId: "coach-plan", sourceWorkoutId: "123:2", sourceIdInPlan: "2", sourceProgramId: "92", title: "Tempo", category: "quality", qualitySubtype: "tempo", sport: "run",
+      originalPlanDate: date, lastVerifiedCorosDate: date, effectiveDate: date, effectiveTime: "12:00", sourceContentFingerprint: "0123456789abcdef", calendarBlockDurationSeconds: 2100,
+      fallbackEstimatedDurationSeconds: 2100, corosSyncState: "synced", createdAt: nowInstant(), updatedAt: nowInstant(),
+    });
+    const blocks = [["warmup", "easy"], ...Array.from({ length: 5 }, () => ["work", "threshold"]), ["cooldown", "easy"]] as const;
+    await db.insert(schema.plannedWorkoutStages).values(blocks.map(([kind, label], i) => ({ id: `${id}:${i}`, workoutId: id, parentStageId: null, ord: i, kind, repeatCount: null, durationType: "time", durationSeconds: 300, distanceMeters: null, label })));
+    await db.insert(schema.corosWriteJobs).values({
+      id: `${id}-push`, userId, workoutId: id, kind: "coach_create_workout", expectedContentFingerprint: "x", originalDate: date, destinationDate: date,
+      requestedAt: nowInstant(), status: "verified", verifiedAt: nowInstant(), updatedAt: nowInstant(), payload: { workoutId: id, happenDay: date, name: `Tempo ~ ${id}` },
+    });
+  }
+  const raw = () => (db as unknown as { $client: { exec(sql: string): void } }).$client;
+  /** Everything a re-time or an ease writes of the session's: its row, stage rows, content claims, watch jobs and revisions. */
+  const everything = async (id: string) => {
+    const r = (await db.select().from(plannedWorkouts).where(eq(plannedWorkouts.id, id)))[0];
+    return {
+      row: r ? { seconds: r.fallbackEstimatedDurationSeconds, summary: r.stageSummary, title: r.title, category: r.category, doc: r.workoutDoc, rev: r.workoutDocRev, fingerprint: r.sourceContentFingerprint, sync: r.corosSyncState } : null,
+      stages: (await db.select().from(schema.plannedWorkoutStages).where(eq(schema.plannedWorkoutStages.workoutId, id))).map((x) => [x.id, x.kind, x.durationSeconds, x.label].join(" ")).sort(),
+      claims: (await db.select().from(schema.syncIntents).where(and(eq(schema.syncIntents.targetId, id), eq(schema.syncIntents.kind, "content")))).map((i) => [i.source, JSON.stringify(i.payload), i.resolvedAt === null, i.supersededBy === null].join(" ")).sort(),
+      jobs: (await db.select().from(schema.corosWriteJobs).where(eq(schema.corosWriteJobs.workoutId, id))).map((j) => [j.id, j.kind, j.status, j.expectedContentFingerprint].join(" ")).sort(),
+      revisions: (await db.select().from(schema.workoutDocRevisions).where(eq(schema.workoutDocRevisions.workoutId, id))).map((v) => [v.id, v.sourceKind].join(" ")).sort(),
+    };
+  };
+  /** `f` run against another database (a fork): the routes and the reads above read `db`. */
+  async function on<T>(other: Db, f: () => Promise<T>): Promise<T> {
+    const keep = db;
+    db = other;
+    try {
+      return await f();
+    } finally {
+      db = keep;
+    }
+  }
+  const fault = (table: string, when: string) => `CREATE TRIGGER after_row_fault BEFORE INSERT ON ${table} WHEN ${when} BEGIN SELECT RAISE(ABORT, 'D1_ERROR: synthetic fault after the row'); END;`;
+  const RETIME = { kind: "adjust", durationMinutes: 27 };
+  const EASE = { kind: "ease", durationMinutes: 25 };
+
+  it.each([
+    ["a re-time, its content claim faulting (H1b)", RETIME, fault("sync_intents", "NEW.kind = 'content'")],
+    ["a re-time, the watch's rewrite faulting (H1c)", RETIME, fault("coros_write_jobs", "NEW.kind = 'coach_update_workout'")],
+    ["an ease, its stage rows faulting (H1e)", EASE, fault("planned_workout_stages", "1")],
+    ["an ease, its content claim faulting", EASE, fault("sync_intents", "NEW.kind = 'content'")],
+    ["an ease, the watch's rewrite faulting", EASE, fault("coros_write_jobs", "NEW.kind = 'coach_update_workout'")],
+  ] as const)("%s: the approve fails and leaves the session as it was; the next approve leaves what an approve with no fault leaves", async (_name, change, trigger) => {
+    await savePreferences(db, userId, { ...(await loadPreferences(db, userId)), corosWritesEnabled: true });
+    await tempoOnTheWatch("cw-t-1");
+    const id = await changes(adjust("cw-t-1", change));
+    const before = await everything("cw-t-1");
+    // The control: the same approve, from the same rows, with no fault.
+    const control = cloneTestDb(db, { boundVariableCap: 100 });
+    expect((await on(control, () => approve(id, {}))).json.changed.map((c: { opId: string }) => c.opId)).toEqual([planAdjustId("cw-t-1")]);
+    const made = await on(control, () => everything("cw-t-1"));
+    expect(made.claims).toHaveLength(1);
+    expect(made.jobs.filter((j) => j.includes("coach_update_workout"))).toHaveLength(1);
+    raw().exec(trigger);
+    const spy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const first = await approve(id, {}).catch((e: Error) => ({ status: 500, json: { error: e.message } as Record<string, any> }));
+    spy.mockRestore();
+    expect(first.status).toBe(500);
+    expect(await everything("cw-t-1")).toEqual(before);
+    raw().exec(`DROP TRIGGER after_row_fault;`);
+    const again = await approve(id, {});
+    expect(again.json.changed.map((c: { opId: string }) => c.opId)).toEqual([planAdjustId("cw-t-1")]);
+    expect(await everything("cw-t-1")).toEqual(made);
+  });
+
+  it("a re-time of a thread-coach run whose create record is gone: its copy proved as COROS's own (no stamp), on the claim the same batch writes — its rewrite queued with the claim", async () => {
+    await savePreferences(db, userId, { ...(await loadPreferences(db, userId)), corosWritesEnabled: true });
+    await tempoOnTheWatch("cw-t-1");
+    await db.delete(schema.corosWriteJobs).where(eq(schema.corosWriteJobs.id, "cw-t-1-push"));
+    const id = await changes(adjust("cw-t-1", RETIME));
+    const res = await approve(id, {});
+    expect(res.json.changed.map((c: { opId: string }) => c.opId)).toEqual([planAdjustId("cw-t-1")]);
+    expect((await everything("cw-t-1")).claims).toHaveLength(1);
+    const rewrites = await db.select().from(schema.corosWriteJobs).where(and(eq(schema.corosWriteJobs.workoutId, "cw-t-1"), eq(schema.corosWriteJobs.kind, "coach_update_workout")));
+    expect(rewrites).toHaveLength(1);
+    expect(rewrites[0]!.payload).toMatchObject({ importedProgramId: "92", importedFingerprint: "0123456789abcdef" });
+  });
+
+  it.each([
+    ["a re-time", RETIME],
+    ["an ease", EASE],
+  ] as const)("%s whose row is hard-deleted after the applier read it, before its batch: refused `not_found`, and nothing of it is written — no stage rows, no claim, no rewrite, no revision", async (_name, change) => {
+    await savePreferences(db, userId, { ...(await loadPreferences(db, userId)), corosWritesEnabled: true });
+    await tempoOnTheWatch("cw-t-1");
+    const id = await changes(adjust("cw-t-1", change));
+    let deleted = false;
+    gates.beforeApply = async () => {
+      gates.batch = async () => {
+        raw().exec(`DELETE FROM planned_workouts WHERE id = 'cw-t-1'; DELETE FROM planned_workout_stages WHERE workout_id = 'cw-t-1'; DELETE FROM coros_write_jobs WHERE workout_id = 'cw-t-1';`);
+        deleted = true;
+      };
+    };
+    const res = await approve(id, {});
+    expect(deleted).toBe(true);
+    expect(res.status).toBe(200);
+    expect(res.json.changed).toEqual([]);
+    expect(res.json.refused).toEqual([expect.objectContaining({ opId: planAdjustId("cw-t-1"), error: "not_found" })]);
+    expect(await everything("cw-t-1")).toEqual({ row: null, stages: [], claims: [], jobs: [], revisions: [] });
   });
 });
