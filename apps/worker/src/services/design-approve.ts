@@ -197,6 +197,8 @@ import {
 import { EXERCISES, type ExerciseRecord } from "@rg/exercise-library";
 import { deriveDoc, makeLibraryIndex, startEditing, toProposable, type DocDerived, type DocIssue } from "@rg/workout";
 import type { Db } from "./db.js";
+import { underWayNow, underWaySql, UNDER_WAY_WORDS } from "./session-guard.js";
+import { FROZEN_STATES } from "./workout-doc-store.js";
 import { accountLibraryFrom, forgetAccountLibrary, loadAccountLibrary, personalMovesSql, reseedAccountLibrary, type AccountLibrary } from "./account-library.js";
 import { CALENDAR_OPS_PER_REQUEST } from "./calendar-sync.js";
 import { applyOps, applyStructuralChunk, NOT_ACTIONABLE, RETIME_CHANGED, STRUCTURAL_MIN_BUDGET, whyNotActionable, type StructuralProgress } from "./coach-apply.js";
@@ -776,6 +778,8 @@ interface RowState {
   resolution: string | null;
   /** Its stage summary: a length re-timed by the rule is there when it says what the card's re-time does. */
   stageSummary: string | null;
+  /** What says whether it is under way (`underWaySql`, read with it). */
+  underWay: unknown;
 }
 
 interface Plan {
@@ -832,7 +836,7 @@ async function readPlan(
         'category', ${pw.category}, 'sport', ${pw.sport}, 'origin', ${pw.origin}, 'content', ${pw.contentState},
         'completion', ${pw.completionState}, 'rev', ${pw.workoutDocRev}, 'archived', ${pw.archivedAt},
         'seconds', ${pw.fallbackEstimatedDurationSeconds}, 'sourceSeconds', ${pw.sourceEstimatedDurationSeconds}, 'subtype', ${pw.qualitySubtype},
-        'resolution', ${pw.resolutionDate}, 'stages', ${pw.stageSummary},
+        'resolution', ${pw.resolutionDate}, 'stages', ${pw.stageSummary}, 'underWay', ${underWaySql()},
         'pinned', exists(select 1 from ${scheduleOverrides} so where so.workout_id = ${pw.id} and so.kind = 'time_change'),
         'summary', case when json_valid(${pw.workoutDoc}) then json_extract(${pw.workoutDoc}, '$.intent.summary') end))
         from ${pw} where ${pw.userId} = ${userId} and ${pw.id} in (${values([...keyOf.values(), ...revised])})) as rows,
@@ -871,6 +875,7 @@ async function readPlan(
       minutes: typeof x.sourceSeconds === "number" ? Math.round(x.sourceSeconds / 60) : typeof x.seconds === "number" ? Math.round(x.seconds / 60) : null,
       resolution: typeof x.resolution === "string" ? x.resolution : null,
       stageSummary: typeof x.stages === "string" ? x.stages : null,
+      underWay: x.underWay,
     });
   }
   // Each revision id names one op's revision; its ref was checked in the read (the op's own).
@@ -1106,6 +1111,11 @@ function planVerdict(
   const claimed = claimMade(op, row, today);
   if (claimed) return claimed;
   if ((c.kind === "skip" || c.kind === "restore") && effectThere(c, row)) return { made: beforeOf(row), replayFrom: null };
+  // A session under way isn't changed out from under the device playing it (R-APP-N2): its card stays, and says why. Its state
+  // answers first when that is done with; a restore only ever reaches a skipped session.
+  if (c.kind !== "restore" && !(FROZEN_STATES as readonly string[]).includes(row.dto.completionState) && underWayNow({ contentState: row.dto.contentState ?? null, effectiveDate: row.dto.date }, row.underWay, today)) {
+    return { refusal: { ...notEditable("under_way"), why: UNDER_WAY_WORDS } };
+  }
   // A restore reaches a skipped session (the thread coach's rule), its day not yet gone; any other change a session
   // still to come (the applier's own rule).
   const why =

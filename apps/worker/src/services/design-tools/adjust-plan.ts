@@ -26,7 +26,8 @@
  *
  * REFUSED, each teachable, nothing written:
  *  - a session that isn't the athlete's or is off the plan (`not_found`), or can't change by coach-apply's own rule —
- *    done, skipped, missed, its day gone, under way (`not_changeable`; `whyNotActionable`, the applier's words);
+ *    done, skipped, missed, its day gone (`not_changeable`; `whyNotActionable`, the applier's words), started with its save still
+ *    able to land (`under_way`: session-guard.ts);
  *  - a length for a session its build decides (ruling 3-R13): a programme or on-demand session is skipped or moved,
  *    never re-timed (`programme_session`: skip it and propose the shorter workout — for a set, brief it); a revisable
  *    workout is revised (`revise_instead`);
@@ -62,8 +63,8 @@
  * load away: nothing is read. Other changes of the same proposal are not counted (as a designed run's validate counts
  * none): the plan as it stands.
  *
- * Two statements: the athlete with the session, the proposal, the restore marker and the week's sanctioned skips in one
- * read — and, for an ease, a swap or a length of a session with a document, the account's library its
+ * Two statements: the athlete with the session (whether it is under way too: `underWaySql`), the proposal, the restore marker
+ * and the week's sanctioned skips in one read — and, for an ease, a swap or a length of a session with a document, the account's library its
  * document's discipline is derived in (`revisability`'s run); for a change that can add load, the running around its day
  * — and the proposal's guarded upsert (propose_workout's own: never a pending proposal, never one another write changed
  * meanwhile).
@@ -73,6 +74,8 @@ import { z } from "zod";
 import { accountState, coachProposals, corosWriteJobs, plannedWorkouts, plannedWorkoutStages, programs } from "@rg/database";
 import { addDays, appAuthoredRow, coachOpSchema, dayLabel, docOriginRow, hasWatchAddress, humanizeWorkoutTitle, type Revisability } from "@rg/domain";
 import type { ConditionProfile } from "@rg/exercise-library";
+import { underWayNow, underWaySql, UNDER_WAY_WORDS } from "../session-guard.js";
+import { FROZEN_STATES } from "../workout-doc-store.js";
 import { runWireOf } from "../../env.js";
 import { accountLibraryFrom, personalMovesSql } from "../account-library.js";
 import { retimeOfRow, type RetimeExpectation, type RetimeStageFields } from "../adjust-retime.js";
@@ -143,6 +146,8 @@ interface Row {
   completion: string;
   /** Under way or done in the app (`revisability`'s under_way). */
   content?: string | null;
+  /** What says whether it is under way now (`underWaySql`, read with it). */
+  underWay?: unknown;
   archived: string | null;
   sourceSec: number | null;
   fallbackSec: number | null;
@@ -252,6 +257,11 @@ function refusalOf(
 ): ToolErr | null {
   if (!row || row.archived) {
     return refuse("not_found", `No planned session of the athlete's has id ${JSON.stringify(workoutId)}.`, "Use an id from read_plan.");
+  }
+  // Started, and its save could still land: it may be running on another device (R-APP-N2). Its state answers first when that
+  // is done with, and a restore only ever reaches a skipped session.
+  if (c.kind !== "restore" && !(FROZEN_STATES as readonly string[]).includes(row.completion) && underWayNow({ contentState: row.content ?? null, effectiveDate: row.date }, row.underWay, today)) {
+    return refuse("under_way", UNDER_WAY_WORDS, "Leave this session as it is, and change one still to come.");
   }
   // A restore reaches a skipped session (the thread coach's one op whose purpose is a resolved row), still to come.
   if (c.kind === "restore") {
@@ -585,7 +595,7 @@ export const adjustPlan: DesignTool = {
     const pw = plannedWorkouts;
     const { athlete, extra } = await readAthlete(ctx.db, ctx.userId, ctx.now, {
       row: sql`(select json_object('id', ${pw.id}, 'date', ${pw.effectiveDate}, 'time', ${pw.effectiveTime}, 'title', ${pw.title},
-          'category', ${pw.category}, 'subtype', ${pw.qualitySubtype}, 'origin', ${pw.origin}, 'completion', ${pw.completionState}, 'content', ${pw.contentState},
+          'category', ${pw.category}, 'subtype', ${pw.qualitySubtype}, 'origin', ${pw.origin}, 'completion', ${pw.completionState}, 'content', ${pw.contentState}, 'underWay', ${underWaySql()},
           'archived', ${pw.archivedAt}, 'sourceSec', ${pw.sourceEstimatedDurationSeconds}, 'fallbackSec', ${pw.fallbackEstimatedDurationSeconds},
           'swid', ${pw.sourceWorkoutId}, 'sidp', ${pw.sourceIdInPlan}, 'spid', ${pw.sourceProgramId}, 'lvd', ${pw.lastVerifiedCorosDate},
           'sport', ${pw.sport}, 'meters', ${pw.expectedDistanceMeters}, 'blockSec', ${pw.calendarBlockDurationSeconds}, 'sync', ${pw.corosSyncState},

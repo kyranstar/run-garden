@@ -641,6 +641,117 @@ describe("concurrent updates, forced: what lands between a route's read and its 
   });
 });
 
+// ── The coach ────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+async function mainRun(w: World): Promise<ToolContext> {
+  const id = `run-${newId()}`;
+  const now = nowInstant();
+  await w.db.insert(coachRuns).values({ id, userId: w.userId, parentId: null, role: "main", scope: { kind: "auto" }, request: "Sort out my week", status: "active", state: null, steps: 0, costUsd: 0, createdAt: now, updatedAt: now });
+  return { db: w.db, env, userId: w.userId, run: { id, role: "main", scope: { kind: "auto" }, parentId: null, rehearsal: false }, now: new Date(), toolUseId: `t_${newId()}` };
+}
+const change = (workoutId: string, c: Record<string, unknown>) => ({ workoutId, change: c, why: "It fits the week." });
+async function proposed(w: World, ...inputs: Array<ReturnType<typeof change>>): Promise<string> {
+  const ctx = await mainRun(w);
+  for (const input of inputs) {
+    const r = await adjustPlan.run({ ...ctx, toolUseId: `t_${newId()}` }, input);
+    if (isToolErr(r)) throw new Error(`adjust_plan: ${r.error} ${r.why}`);
+  }
+  const id = designProposalId(ctx.run.id);
+  await w.db.update(coachProposals).set({ status: "pending" }).where(eq(coachProposals.id, id));
+  return id;
+}
+
+describe("the coach and a session under way", () => {
+  it.each([
+    ["a move", { kind: "move", toDate: addDays(D, 3), toTime: "12:00" }],
+    ["a skip", { kind: "skip", reason: "Rest the legs." }],
+  ])("adjust_plan refuses %s at propose while it is under way, and stores nothing", async (_name, c) => {
+    const { w, id } = await startedOn(D);
+    setClock(D, "18:10");
+    const ctx = await mainRun(w);
+    const r = await adjustPlan.run(ctx, change(id, c));
+    expect(isToolErr(r) ? r.error : "stored").toBe("under_way");
+    if (isToolErr(r)) expect(r.why).toContain("may still be running");
+    const [p] = await w.db.select().from(coachProposals).where(eq(coachProposals.id, designProposalId(ctx.run.id)));
+    expect(p?.ops ?? []).toEqual([]);
+  });
+
+  it("approve refuses per op: drawn before Start, the session's move and skip stay open and say why; the other op applies", async () => {
+    for (const c of [{ kind: "move", toDate: addDays(D, 3), toTime: "12:00" }, { kind: "skip", reason: "Rest the legs." }] as Array<Record<string, unknown>>) {
+      const w = await world();
+      const id = await slotOn(w, D);
+      const other = await slotOn(w, addDays(D, 1));
+      setClock(D, "12:00");
+      const proposal = await proposed(w, change(id, c), change(other, { kind: "skip", reason: "Rest." }));
+      setClock(D, "18:00");
+      const build = await buildAndStart(w, id);
+      const before = rowOf(w, id);
+      const trail = overrides(w, id);
+      const res = await w.call("POST", `/api/coach/proposals/${proposal}/approve`, { opIds: [planAdjustId(id), planAdjustId(other)] });
+      expect(res.status).toBe(200);
+      expect(res.json.refused).toEqual([expect.objectContaining({ opId: planAdjustId(id), error: "not_editable", cause: "under_way", why: expect.stringContaining("may still be running") })]);
+      expect(res.json.changed.map((x: { opId: string }) => x.opId)).toEqual([planAdjustId(other)]);
+      expect(rowOf(w, id)).toEqual(before);
+      expect(overrides(w, id)).toBe(trail);
+      expect(rowOf(w, other).completion).toBe("skipped");
+      // The save still lands, once.
+      expect((await saved(w, id, build, D)).json.status).toBe("saved");
+      expect(rowOf(w, id)).toMatchObject({ date: D, completion: "completed" });
+    }
+  });
+
+  it("approve, `{}` from an old bundle and the same approve repeated: refused the same way, nothing applied twice", async () => {
+    const w = await world();
+    const id = await slotOn(w, D);
+    setClock(D, "12:00");
+    const proposal = await proposed(w, change(id, { kind: "skip", reason: "Rest." }));
+    setClock(D, "18:00");
+    await buildAndStart(w, id);
+    for (let i = 0; i < 2; i++) {
+      const res = await w.call("POST", `/api/coach/proposals/${proposal}/approve`, {});
+      expect(res.json.refused.map((r: { cause?: string }) => r.cause)).toEqual(["under_way"]);
+      expect(rowOf(w, id).completion).toBe("scheduled");
+    }
+  });
+
+  it("the card stays open: once the session is discarded, the same approve applies", async () => {
+    const w = await world();
+    const id = await slotOn(w, D);
+    setClock(D, "12:00");
+    const proposal = await proposed(w, change(id, { kind: "skip", reason: "Rest." }));
+    setClock(D, "18:00");
+    await buildAndStart(w, id);
+    expect((await w.call("POST", `/api/coach/proposals/${proposal}/approve`, {})).json.refused).toHaveLength(1);
+    expect((await w.call("POST", `/api/sessions/${id}/unstart`)).status).toBe(200);
+    const res = await w.call("POST", `/api/coach/proposals/${proposal}/approve`, {});
+    expect(res.json.refused).toEqual([]);
+    expect(rowOf(w, id).completion).toBe("skipped");
+  });
+
+  it("past its window the coach's own rule answers, not this one: a day gone is `past_date`", async () => {
+    const w = await world();
+    const id = await slotOn(w, D);
+    setClock(D, "12:00");
+    const proposal = await proposed(w, change(id, { kind: "skip", reason: "Rest." }));
+    setClock(D, "18:00");
+    await buildAndStart(w, id);
+    setClock(addDays(D, 2), "12:00");
+    await w.db.update(coachProposals).set({ expiresAt: addDays(D, 9) }).where(eq(coachProposals.id, proposal));
+    const res = await w.call("POST", `/api/coach/proposals/${proposal}/approve`, {});
+    expect(res.json.refused.map((r: { error: string }) => r.error)).toEqual(["past_date"]);
+  });
+
+  it("GAP, named: a thread coach's op on a session under way still lands; the thread route is not gated (owner P5)", async () => {
+    const { w, id } = await startedOn(D);
+    setClock(D, "18:10");
+    const proposal = `tp-${newId()}`;
+    await w.db.insert(coachProposals).values({ id: proposal, userId: w.userId, planId: null, title: "This week", evidence: "", rationale: "", flags: [], ops: [{ kind: "skip", workoutId: id }], status: "pending", createdAt: nowInstant(), expiresAt: addDays(D, 7) } as never);
+    const res = await w.call("POST", `/api/coach/proposals/${proposal}/approve`);
+    expect(res.status).toBe(200);
+    expect(rowOf(w, id).completion).toBe("skipped");
+  });
+});
+
 // ── What keeps working ───────────────────────────────────────────────────────────────────────────────────────────────
 
 describe("what sits below the routes, and the corrections, keep working", () => {

@@ -776,6 +776,8 @@ async function cell(changeName: string, event: string) {
 const REFUSED_SKIPPED = "refused:not_editable/resolved 2026-10-06 07:00 | Tempo | 40 | skipped";
 const REFUSED_GONE = "refused:not_found 2026-10-06 07:00 | Tempo | 40 | scheduled archived";
 const REFUSED_DONE = "refused:not_editable/resolved 2026-10-06 07:00 | Tempo | 40 | completed";
+/** Started, set directly here, on a session ahead of today (`session-guard.ts` has no lower bound). session-guard.test.ts drives the real Start. */
+const REFUSED_UNDER_WAY = "refused:not_editable/under_way 2026-10-06 07:00 | Tempo | 40 | scheduled";
 
 /** A session that moved on since its card: refused, and the row is as the event left it, whichever change the card holds. */
 const MOVED_ON = {
@@ -799,7 +801,7 @@ const MATRIX: Record<string, Record<string, string>> = {
     hand_skip: "changed 2026-10-06 07:00 | Tempo | 40 | skipped",
     hand_remove: REFUSED_GONE,
     completed_by_match: REFUSED_DONE,
-    under_way: "changed 2026-10-06 07:00 | Tempo | 40 | skipped",
+    under_way: REFUSED_UNDER_WAY,
   },
   move: {
     ...MOVED_ON,
@@ -807,7 +809,7 @@ const MATRIX: Record<string, Record<string, string>> = {
     hand_skip: REFUSED_SKIPPED,
     hand_remove: REFUSED_GONE,
     completed_by_match: REFUSED_DONE,
-    under_way: "changed 2026-10-08 12:00 | Tempo | 40 | scheduled",
+    under_way: REFUSED_UNDER_WAY,
   },
   adjust: {
     ...MOVED_ON,
@@ -815,7 +817,7 @@ const MATRIX: Record<string, Record<string, string>> = {
     hand_skip: REFUSED_SKIPPED,
     hand_remove: REFUSED_GONE,
     completed_by_match: REFUSED_DONE,
-    under_way: "changed 2026-10-06 07:00 | Tempo | 25 | scheduled",
+    under_way: REFUSED_UNDER_WAY,
   },
   ease: {
     ...MOVED_ON,
@@ -823,7 +825,7 @@ const MATRIX: Record<string, Record<string, string>> = {
     hand_skip: REFUSED_SKIPPED,
     hand_remove: REFUSED_GONE,
     completed_by_match: REFUSED_DONE,
-    under_way: "changed 2026-10-06 07:00 | Easy run | 25 | scheduled",
+    under_way: REFUSED_UNDER_WAY,
   },
   swap: {
     ...MOVED_ON,
@@ -831,7 +833,7 @@ const MATRIX: Record<string, Record<string, string>> = {
     hand_skip: REFUSED_SKIPPED,
     hand_remove: REFUSED_GONE,
     completed_by_match: REFUSED_DONE,
-    under_way: "changed 2026-10-06 07:00 | Recovery run | 25 | scheduled",
+    under_way: REFUSED_UNDER_WAY,
   },
   remove: {
     ...MOVED_ON,
@@ -839,7 +841,7 @@ const MATRIX: Record<string, Record<string, string>> = {
     hand_skip: REFUSED_SKIPPED,
     hand_remove: "changed 2026-10-06 07:00 | Tempo | 40 | scheduled archived",
     completed_by_match: REFUSED_DONE,
-    under_way: "changed 2026-10-06 07:00 | Tempo | 40 | scheduled archived",
+    under_way: REFUSED_UNDER_WAY,
   },
 };
 
@@ -1074,7 +1076,7 @@ describe("3b. the sibling classes: which compare what the card saw", () => {
     expect(await rowOf(b)).toMatchObject({ completionState: "scheduled", title: "Mine" });
   });
 
-  it("CHARACTERIZATION: a workout under way: a revision is refused `not_editable`/`under_way`, a skip of the same session is applied (the state set directly: the player isn't driven)", async () => {
+  it("CHARACTERIZATION: a workout under way: a revision and a skip of the same state are both refused `not_editable`/`under_way` (the state set directly: the player isn't driven)", async () => {
     const ctx0 = { today: TODAY, now: NOW, prefs: await loadPreferences(db, userId) };
     const a = await createDocWorkout(db, userId, { date: day(2), time: "12:00", doc: calmDoc({ title: "One" }) as never, clientId: "c-1" }, ctx0);
     const b = await createDocWorkout(db, userId, { date: day(3), time: "12:00", doc: calmDoc({ title: "Two" }) as never, clientId: "c-2" }, ctx0);
@@ -1084,9 +1086,9 @@ describe("3b. the sibling classes: which compare what the card saw", () => {
     const id = await shown(ctx);
     await db.update(plannedWorkouts).set({ contentState: "started" }).where(eq(plannedWorkouts.userId, userId));
     const answers = await approveUntilDone(id, {});
-    expect(answers.flatMap((r) => r.json.refused).map((r: { error: string; cause?: string }) => [r.error, r.cause])).toEqual([["not_editable", "under_way"]]);
-    expect(answers.flatMap((r) => r.json.changed).map((c: { opId: string }) => c.opId)).toEqual([planAdjustId(b.workout.id)]);
-    expect((await rowOf(b.workout.id)).completionState).toBe("skipped");
+    expect(answers.flatMap((r) => r.json.refused).map((r: { error: string; cause?: string }) => [r.error, r.cause])).toEqual([["not_editable", "under_way"], ["not_editable", "under_way"]]);
+    expect(answers.flatMap((r) => r.json.changed)).toEqual([]);
+    expect((await rowOf(b.workout.id)).completionState).toBe("scheduled");
   });
 
   it("CHARACTERIZATION: `programme_change` HAS one (`base`): the settings saved by hand since refuse it `stale`, nothing written", async () => {
