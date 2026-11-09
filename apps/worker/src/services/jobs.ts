@@ -25,7 +25,8 @@ import { applyStudioJobResult } from "./studio-push.js";
 import { openIntentFor, openMoveIntents, recordIntent, resolveIntent } from "./sync-intents.js";
 import { keepsMark, watchCopyBase } from "./watch-copy-marker.js";
 import { postSyncNote } from "./sync-notes.js";
-import { enqueueProgramUnpush, runOwedUnpushes } from "./watch-push.js";
+import { runOwedUnpushes, unpushBuild } from "./watch-push.js";
+import { sentBuildIdOf } from "./session-build.js";
 import { enqueueUnpushIfOurs } from "./plan-mutations.js";
 import { watchJobCondition } from "./watch-jobs.js";
 import { markMirrorOwed } from "./mirror-owed.js";
@@ -46,9 +47,10 @@ export interface MoveRequest {
   source: "app" | "calendar_edit" | "reschedule";
   corosWritesEnabled: boolean;
   /**
-   * A condition the row must still meet as it is moved (`stillOpen`, the athlete's own route): when it no longer does the row
-   * stays where it is and this throws `session_changed`. The override, the intent and any watch job written before that stand: a
-   * race lost in this window leaves a trail, not a moved session. Without it the move is exactly as it always was.
+   * A condition the row must still meet as it is moved (`stillOpen`, the athlete's own route; the coach's approve, its card's
+   * row): the row's write is then the FIRST write, guarded by it, and when it no longer holds this throws `session_changed`
+   * having written nothing — no override, no intent, no job, no watch copy taken off, no build unlocked. Without it the move
+   * is exactly as it always was, its row written last.
    */
   onlyIf?: SQL;
 }
@@ -148,6 +150,71 @@ export async function applyMove(db: Db, req: MoveRequest): Promise<MoveOutcome> 
   if (workout.category === "race") throw new Error("races_cannot_move");
 
   const fromDate = workout.effectiveDate;
+  const appAuthored = appAuthoredRow(workout);
+  const dateChanged = req.toDate !== workout.lastVerifiedCorosDate;
+  const writesPossible =
+    !appAuthored && req.corosWritesEnabled && (await writeCapableDeviceExists(db, req.userId));
+  // WHAT THE MOVE WILL WRITE, READ FIRST, so that a guarded move (`onlyIf`) can write its row before anything else. Rulings
+  // 2a-R4 and 3-R3: a program session's watch copy is never re-dated — its build is made for its day (the pre-check, 2a-R7).
+  // A date change takes a sent copy off the watch (a queued push is superseded, a pushed one gets its stamp-proven unpush)
+  // and unlocks the sent build, so the new day builds as any moved slot does; with nothing sent it is the calendar's move
+  // alone. The sent build is found as the row stands before the move, as it always was.
+  //
+  // A DOCUMENT WORKOUT'S COPY FOLLOWS IT (the watch mirrors the plan §3.4, builder check A4): its old copy comes off — the
+  // sent build's, and an adopted row's held copy, which a move never took off before — and the row is marked owed once it
+  // stands on its new day (below), so the drain or the sweep puts a provisional copy there (M2: the cheap writes here, the
+  // record there). An engine slot keeps its rule: nothing ahead of its day.
+  const takesCopyOff = appAuthored && fromDate !== req.toDate;
+  const sent = takesCopyOff ? await sentBuildIdOf(db, workout.id) : null;
+  const queuesJob = !appAuthored && dateChanged && writesPossible;
+  const corosSyncState = appAuthored
+    ? fromDate !== req.toDate
+      ? "calendar_only"
+      : // A time-only change: COROS has no time of day, so the watch copy (if any) is still right.
+        workout.corosSyncState
+    : !dateChanged
+      ? // Same-COROS-date time change: COROS has no time-of-day, nothing to write.
+        workout.corosSyncState === "needs_attention"
+        ? "needs_attention"
+        : "synced"
+      : !writesPossible
+        ? "calendar_only"
+        : (await anyDeviceOnline(db, req.userId))
+          ? "syncing"
+          : "waiting_for_device";
+
+  // An app session built for its old day is built for that day's date and checks: on another day that build is
+  // superseded (its rows stay), and the slot is an outline until it is built again (ruling 2a-R7). A program's
+  // outline is named by its program as it is now — never by the old build's "<program> · <theme>" (audit 2a-UI M13).
+  const toOutline =
+    fromDate !== req.toDate &&
+    appAuthoredRow(workout) &&
+    workout.contentState === "built";
+  const [program] =
+    toOutline && workout.origin === "program"
+      ? await db.select({ name: programs.name }).from(programs).where(eq(programs.id, workout.planId)).limit(1)
+      : [];
+  const writeRow = () =>
+    db
+      .update(plannedWorkouts)
+      .set({
+        effectiveDate: req.toDate,
+        effectiveTime: req.toTime,
+        corosSyncState,
+        calendarSyncState:
+          workout.calendarSyncState === "user_deleted" ? "user_deleted" : "pending",
+        // Rescheduling an unresolved workout answers "did this run happen?"
+        // with "not yet — it's moving". Without this reset the prompt follows
+        // the workout to its new (possibly future) date, which reads as the app
+        // asking whether a run in the future already happened.
+        ...(workout.completionState === "unresolved" ? { completionState: "scheduled" } : {}),
+        ...(toOutline ? { contentState: "outline", ...(program ? { title: program.name } : {}) } : {}),
+        updatedAt: now,
+      })
+      .where(and(eq(plannedWorkouts.id, workout.id), req.onlyIf))
+      .returning({ id: plannedWorkouts.id });
+  // GUARDED: the row first. Lost, nothing at all is written.
+  if (req.onlyIf && (await writeRow()).length === 0) throw new Error("session_changed");
 
   await db.insert(scheduleOverrides).values({
     id: newId(),
@@ -169,42 +236,18 @@ export async function applyMove(db: Db, req: MoveRequest): Promise<MoveOutcome> 
     source: req.source === "calendar_edit" ? "calendar_drag" : "user_move",
   });
 
-  const appAuthored = appAuthoredRow(workout);
-  const dateChanged = req.toDate !== workout.lastVerifiedCorosDate;
-  const writesPossible =
-    !appAuthored && req.corosWritesEnabled && (await writeCapableDeviceExists(db, req.userId));
-
-  let corosSyncState: string;
   let jobId: string | undefined;
-
   if (appAuthored) {
-    // Rulings 2a-R4 and 3-R3: a program session's watch copy is never
-    // re-dated — its build is made for its day (the pre-check, 2a-R7). The
-    // intent closes at once, so the catch-up pass has nothing to emit. A date
-    // change takes a sent copy off the watch (a queued push is superseded, a
-    // pushed one gets its stamp-proven unpush) and unlocks the sent build, so
-    // the new day builds as any moved slot does; with nothing sent it is the
-    // calendar's move alone.
-    //
-    // A DOCUMENT WORKOUT'S COPY FOLLOWS IT (the watch mirrors the plan §3.4, builder check A4): its old copy comes off —
-    // the sent build's, and an adopted row's held copy, which a move never took off before — and the row is marked owed
-    // once it stands on its new day (below), so the drain or the sweep puts a provisional copy there (M2: the cheap
-    // writes here, the record there). An engine slot keeps its rule: nothing ahead of its day.
+    // The intent closes at once, so the catch-up pass has nothing to emit.
     await resolveIntent(db, intentId, now);
-    if (fromDate !== req.toDate) {
+    if (takesCopyOff) {
       if (docOriginRow(workout)) {
-        await enqueueUnpushIfOurs(db, req.userId, workout, now, { corosWritesEnabled: req.corosWritesEnabled }, { addressPath: false });
-      } else {
-        await enqueueProgramUnpush(db, req.userId, workout, now, { corosWritesEnabled: req.corosWritesEnabled });
+        await enqueueUnpushIfOurs(db, req.userId, workout, now, { corosWritesEnabled: req.corosWritesEnabled }, { addressPath: false, sent });
+      } else if (sent) {
+        await unpushBuild(db, req.userId, workout, sent, now, { corosWritesEnabled: req.corosWritesEnabled });
       }
-      corosSyncState = "calendar_only";
-    } else {
-      // A time-only change: COROS has no time of day, so the watch copy (if any) is still right.
-      corosSyncState = workout.corosSyncState;
     }
   } else if (!dateChanged) {
-    // Same-COROS-date time change: COROS has no time-of-day, nothing to write.
-    corosSyncState = workout.corosSyncState === "needs_attention" ? "needs_attention" : "synced";
     await resolveIntent(db, intentId, now);
     // Moving back to the COROS-verified date makes any in-flight move stale
     // — without this, a pending job would re-move COROS after the user
@@ -218,44 +261,11 @@ export async function applyMove(db: Db, req: MoveRequest): Promise<MoveOutcome> 
           inArray(corosWriteJobs.status, ["queued", "claimed", "in_progress", "verifying"]),
         ),
       );
-  } else if (!writesPossible) {
-    corosSyncState = "calendar_only";
-  } else {
+  } else if (queuesJob) {
     jobId = await enqueueMoveJob(db, { userId: req.userId, workout, toDate: req.toDate, now });
-    corosSyncState = (await anyDeviceOnline(db, req.userId)) ? "syncing" : "waiting_for_device";
   }
 
-  // An app session built for its old day is built for that day's date and checks: on another day that build is
-  // superseded (its rows stay), and the slot is an outline until it is built again (ruling 2a-R7). A program's
-  // outline is named by its program as it is now — never by the old build's "<program> · <theme>" (audit 2a-UI M13).
-  const toOutline =
-    fromDate !== req.toDate &&
-    appAuthoredRow(workout) &&
-    workout.contentState === "built";
-  const [program] =
-    toOutline && workout.origin === "program"
-      ? await db.select({ name: programs.name }).from(programs).where(eq(programs.id, workout.planId)).limit(1)
-      : [];
-
-  const moved = await db
-    .update(plannedWorkouts)
-    .set({
-      effectiveDate: req.toDate,
-      effectiveTime: req.toTime,
-      corosSyncState,
-      calendarSyncState:
-        workout.calendarSyncState === "user_deleted" ? "user_deleted" : "pending",
-      // Rescheduling an unresolved workout answers "did this run happen?"
-      // with "not yet — it's moving". Without this reset the prompt follows
-      // the workout to its new (possibly future) date, which reads as the app
-      // asking whether a run in the future already happened.
-      ...(workout.completionState === "unresolved" ? { completionState: "scheduled" } : {}),
-      ...(toOutline ? { contentState: "outline", ...(program ? { title: program.name } : {}) } : {}),
-      updatedAt: now,
-    })
-    .where(and(eq(plannedWorkouts.id, workout.id), req.onlyIf))
-    .returning({ id: plannedWorkouts.id });
-  if (req.onlyIf && moved.length === 0) throw new Error("session_changed");
+  if (!req.onlyIf) await writeRow();
   // Marked once the row stands on its new day: a sweep that read it before the move does not settle the mark.
   if (fromDate !== req.toDate && docOriginRow(workout)) await markMirrorOwed(db, req.userId, workout.id, now);
 

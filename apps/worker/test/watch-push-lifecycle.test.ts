@@ -23,7 +23,25 @@ import { sendToWatch, takeOffWatch, unpushBuild } from "../src/services/watch-pu
 import { connectTestCoros, makeTestDb, makeTestUser, mountRoutes } from "./helpers.js";
 import { DAY, NOON, rowOf, seedCatalog, seedProgram, seedSlot, seedTmj, switchOn, TOMORROW } from "./watch-push-fixture.js";
 
-const { corosWriteJobs, plannedWorkouts, sessionBuilds } = schema;
+const { corosWriteJobs, plannedWorkouts, scheduleOverrides, sessionBuilds, syncIntents } = schema;
+
+/**
+ * Hold a request at `sentBuildIdOf`, which a move of a sent session reads before it writes anything of the watch's: the
+ * window between the route's guard and the move's own writes. A test sets it; it clears itself.
+ */
+const gates = vi.hoisted(() => ({ sent: null as null | (() => Promise<void>) }));
+vi.mock("../src/services/session-build.js", async (importOriginal) => {
+  const real = await importOriginal<typeof import("../src/services/session-build.js")>();
+  return {
+    ...real,
+    sentBuildIdOf: async (...args: Parameters<typeof real.sentBuildIdOf>) => {
+      const hold = gates.sent;
+      gates.sent = null;
+      if (hold) await hold();
+      return real.sentBuildIdOf(...args);
+    },
+  };
+});
 
 vi.setConfig({ testTimeout: 30_000 });
 vi.mock("../src/services/calendar-sync.js", async (importOriginal) => ({
@@ -39,6 +57,7 @@ let programId: string;
 beforeEach(async () => {
   vi.useFakeTimers({ toFake: ["Date"] });
   vi.setSystemTime(new Date(NOON));
+  gates.sent = null;
   db = makeTestDb({ boundVariableCap: 100 });
   ({ userId, prefs } = await makeTestUser(db, { corosWritesEnabled: true }));
   await connectTestCoros(db, userId);
@@ -55,8 +74,8 @@ const jobsOf = (workoutId: string) => db.select().from(corosWriteJobs).where(eq(
 const buildRows = (workoutId: string) => db.select().from(sessionBuilds).where(eq(sessionBuilds.workoutId, workoutId));
 
 /** A slot built today and sent; `verified` also lands it on the watch (the lane's own writes, by hand). */
-async function sentSlot(opts: { verified?: boolean } = {}): Promise<{ workoutId: string; buildId: string; build: BuildPayload }> {
-  const workoutId = await seedSlot(db, userId, programId, DAY);
+async function sentSlot(opts: { verified?: boolean; programId?: string } = {}): Promise<{ workoutId: string; buildId: string; build: BuildPayload }> {
+  const workoutId = await seedSlot(db, userId, opts.programId ?? programId, DAY);
   const built = await buildSession(db, userId, workoutId, { checks: { tmj: { pre: 2, feelingOff: false } } }, ctx());
   const buildId = built.build!.buildId;
   await sendToWatch(db, switchOn(), userId, workoutId, buildId, ctx());
@@ -247,6 +266,60 @@ describe("the save's day check for a sent build COROS moved", () => {
     await startSession(db, userId, workoutId, buildId, `${FAR}T19:00:00.000Z`);
     vi.setSystemTime(new Date(`${addDays(FAR, 2)}T19:00:00.000Z`));
     expect((await planRoute(workoutId, "skip")).status).toBe(200);
+  });
+
+  /** What a move can leave of the watch's and the plan's: the row's jobs, the build's lock, its overrides and intents. */
+  const trail = async (workoutId: string, buildId: string) => ({
+    jobs: (await jobsOf(workoutId)).map((j) => [j.id, j.kind, j.status]).sort(),
+    locked: (await buildRows(workoutId)).find((b) => b.id === buildId)!.lockedAt !== null,
+    unsent: ((await buildRows(workoutId)).find((b) => b.id === buildId)!.payload as { unsentAt?: string }).unsentAt ?? null,
+    overrides: (await db.select().from(scheduleOverrides).where(eq(scheduleOverrides.workoutId, workoutId))).length,
+    intents: (await db.select().from(syncIntents).where(eq(syncIntents.targetId, workoutId))).length,
+  });
+
+  it("a Start, then the save, landing inside a /move of a session sent to the watch: 409 `session_completed`, and the move wrote nothing — no unpush, the build still locked, no override, no intent", async () => {
+    const { workoutId, buildId, build } = await sentSlot({ verified: true });
+    // What Start and the save leave on their own, with no move beside them: the control.
+    const control = await sentSlot({ verified: true, programId: await seedProgram(db, userId, "Second program") }).then(async (c) => {
+      await startSession(db, userId, c.workoutId, c.buildId, NOON);
+      const w = wireOf(c.workoutId, c.build, DAY);
+      expect(await savePerformedSession(db, userId, w.id, w, { now: NOON, prefs })).toMatchObject({ status: "saved" });
+      return trail(c.workoutId, c.buildId);
+    });
+    gates.sent = async () => {
+      await startSession(db, userId, workoutId, buildId, NOON);
+      const w = wireOf(workoutId, build, DAY);
+      expect(await savePerformedSession(db, userId, w.id, w, { now: NOON, prefs })).toMatchObject({ status: "saved" });
+    };
+    const answer = await planRoute(workoutId, "move", { toDate: TOMORROW, toTime: "18:00" });
+    expect([answer.status, answer.json.error]).toEqual([409, "session_completed"]);
+    expect(await rowOf(db, workoutId)).toMatchObject({ effectiveDate: DAY, completionState: "completed", contentState: "done" });
+    const after = await trail(workoutId, buildId);
+    expect(after.jobs.filter((j) => j[1] === "coach_delete_workout")).toEqual([]);
+    expect({ ...after, jobs: after.jobs.length }).toEqual({ ...control, jobs: control.jobs.length });
+    expect(after).toMatchObject({ locked: true, unsent: null, overrides: 0, intents: 0 });
+  });
+
+  it("a Start alone landing inside a /move of a sent session: 409 `session_under_way`, nothing of the move written", async () => {
+    const { workoutId, buildId } = await sentSlot({ verified: true });
+    gates.sent = async () => {
+      await startSession(db, userId, workoutId, buildId, NOON);
+    };
+    const answer = await planRoute(workoutId, "move", { toDate: TOMORROW, toTime: "18:00" });
+    expect([answer.status, answer.json.error]).toEqual([409, "session_under_way"]);
+    expect(await rowOf(db, workoutId)).toMatchObject({ effectiveDate: DAY, contentState: "started" });
+    expect(await trail(workoutId, buildId)).toMatchObject({ locked: true, unsent: null, overrides: 0, intents: 0 });
+    expect((await jobsOf(workoutId)).map((j) => j.kind)).toEqual(["program_session_push"]);
+  });
+
+  it("the same move with nothing landing: moved, its copy's unpush queued and the build unlocked, as before", async () => {
+    const { workoutId, buildId } = await sentSlot({ verified: true });
+    const answer = await planRoute(workoutId, "move", { toDate: TOMORROW, toTime: "18:00" });
+    expect(answer.status).toBe(200);
+    expect(await rowOf(db, workoutId)).toMatchObject({ effectiveDate: TOMORROW, contentState: "outline" });
+    const after = await trail(workoutId, buildId);
+    expect(after.jobs).toContainEqual([`unpush:${buildId}`, "coach_delete_workout", "queued"]);
+    expect(after).toMatchObject({ locked: false, overrides: 1, intents: 1 });
   });
 
   it("HAZARD, as it stands (JOINT §3.2; the guard neither causes nor stops it): Discard on a sent build, then a move: the move unsends it and the phone's save answers 422 for good", async () => {

@@ -17,21 +17,24 @@ import { addDays, newId, nowInstant, performedSessionSaveSchema, type SourceActi
 
 /** Hold a request between a route's read and its write. A test sets one, and it clears itself. */
 const gates = vi.hoisted(() => ({
-  /** `applyMove`, after its read of the row and before its write of it. */
+  /**
+   * `applyMove`, after its read of the row and before any write of it: at `sentBuildIdOf`, which a move to another day of a
+   * session the app built reads first (a guarded move writes its row next; an unguarded one, the override and the intent).
+   */
   move: null as null | (() => Promise<void>),
   /** `skipWorkout` and `removeFromPlan`, before their writes. */
   mutation: null as null | (() => Promise<void>),
 }));
 
-vi.mock("../src/services/sync-intents.js", async (importOriginal) => {
-  const real = await importOriginal<typeof import("../src/services/sync-intents.js")>();
+vi.mock("../src/services/session-build.js", async (importOriginal) => {
+  const real = await importOriginal<typeof import("../src/services/session-build.js")>();
   return {
     ...real,
-    recordIntent: async (...args: Parameters<typeof real.recordIntent>) => {
+    sentBuildIdOf: async (...args: Parameters<typeof real.sentBuildIdOf>) => {
       const hold = gates.move;
       gates.move = null;
       if (hold) await hold();
-      return real.recordIntent(...args);
+      return real.sentBuildIdOf(...args);
     },
   };
 });
