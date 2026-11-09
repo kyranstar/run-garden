@@ -1103,6 +1103,13 @@ function unchangedSince(row: RowState): SQL {
   )!;
 }
 
+/**
+ * An applier's shortfall the session as it now is explains (`lostRefusal`): its guarded write lost, or its own read found the
+ * session done, skipped, missed or gone ("a session it moves has already been done, …", `NOT_ACTIONABLE`).
+ */
+const saysNow = (missed: string | undefined): boolean =>
+  missed === GUARD_LOST || (missed !== undefined && [NOT_ACTIONABLE.gone, NOT_ACTIONABLE.done, NOT_ACTIONABLE.skipped, NOT_ACTIONABLE.missed].some((w) => missed.includes(` ${w}`)));
+
 /** A session under way, refused (R-APP-N2): the card stays and says so — and no "instead": the table's is the coach's words. */
 const underWayRefusal = (): Omit<Refused, "opId"> => ({ error: "not_editable", cause: "under_way", why: UNDER_WAY_WORDS });
 
@@ -1418,8 +1425,9 @@ export async function approveDesignOps(
     const missed = [...res.missed];
     const done = (c: DesignedPlanOp) => res.updated.includes(c.op.workoutId) || (c.op.kind === "remove" && res.archived.includes(c.op.workoutId));
     const said = new Map(batch.filter((c) => !done(c)).map((c) => [c.id, missed.shift()] as const));
-    // A guarded write that lost: the session as it is now says why (one statement, only when one lost).
-    const lost = batch.filter((c) => said.get(c.id) === GUARD_LOST).map((c) => c.op.workoutId);
+    // A guarded write that lost, or a session the applier's own read found done, skipped, missed or gone (re-review 2,
+    // RR-5: such a session landed at the applier's door): the session as it is now says why — one statement, only then.
+    const lost = batch.filter((c) => saysNow(said.get(c.id))).map((c) => c.op.workoutId);
     const lostNow = lost.length > 0 ? await rowsNow(db, userId, lost) : new Map();
     for (const c of batch) {
       // A remove's session is archived by the applier (the new shape §5), every other change's updated.
@@ -1431,7 +1439,7 @@ export async function approveDesignOps(
         // A re-timed length whose session changed since the card has its own code (review-L minor 5), its words the same.
         const why = said.get(c.id);
         const refusal: Omit<Refused, "opId"> =
-          why === GUARD_LOST
+          saysNow(why)
             ? lostRefusal(lostNow.get(c.op.workoutId), ctx.today)
             : why === RETIME_CHANGED
               ? { error: "changed_since_suggested", why: applierWhy(why) }

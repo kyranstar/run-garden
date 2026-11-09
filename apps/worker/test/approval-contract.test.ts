@@ -504,6 +504,25 @@ describe("a change whose session moved on between approve's read and the applier
     expect(await rowOf(w)).toMatchObject({ workoutDocRev: 1, title: "Tempo" });
   });
 
+  it.each([
+    ["done", { completionState: "completed" }, "resolved"],
+    ["skipped", { completionState: "skipped" }, "resolved"],
+    ["removed", { archivedAt: NOW }, null],
+  ] as const)("the session %s at the applier's door (RR-5): refused in what it now is — never the unknown cause and the coach's 'Read the plan again'", async (_what, set, cause) => {
+    const w = await session("w-1", day(1));
+    const id = await changes(adjust(w, { kind: "move", toDate: day(3), toTime: "12:00" }));
+    gates.beforeApply = async () => {
+      await db.update(plannedWorkouts).set(set).where(eq(plannedWorkouts.id, w));
+    };
+    const res = await approve(id, {});
+    expect(res.json.changed).toEqual([]);
+    const [refusal] = res.json.refused;
+    expect(refusal.cause).not.toBe("unknown");
+    expect(refusal.instead ?? "").not.toContain("Read the plan again");
+    if (cause) expect(refusal).toMatchObject({ error: "not_editable", cause });
+    else expect(refusal).toMatchObject({ error: "not_found" });
+  });
+
   it("nothing lands at the door: each applies as before", async () => {
     const w = await session("w-1", day(1));
     const id = await changes(adjust(w, { kind: "move", toDate: day(3), toTime: "12:00" }));
