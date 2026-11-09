@@ -86,4 +86,13 @@ describe("why an Undo did not happen", () => {
     expect(undoRefusalText(new ApiError(409, { error: "undo_unsupported_rename" }))).toBe("Renamed on COROS — delete it there to re-push.");
     expect(undoRefusalText(new ApiError(500, {}))).toBe("Couldn't undo — try again.");
   });
+
+  it("a session done since, or under way (the session guard's 409): the server's own words; without words, or not a 409, the generic line", () => {
+    const done = "This session is done, so it stays as it is on your plan.";
+    const running = "This session was started and may still be running on another device, so it stays as it is.";
+    expect(undoRefusalText(new ApiError(409, { error: "session_completed", why: done }))).toBe(done);
+    expect(undoRefusalText(new ApiError(409, { error: "session_under_way", why: running }))).toBe(running);
+    expect(undoRefusalText(new ApiError(409, { error: "session_completed" }))).toBe("Couldn't undo — try again.");
+    expect(undoRefusalText(new ApiError(500, { error: "move_failed", why: "Not the athlete's words." }))).toBe("Couldn't undo — try again.");
+  });
 });
