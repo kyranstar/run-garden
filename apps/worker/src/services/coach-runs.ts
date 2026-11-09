@@ -1184,6 +1184,9 @@ export interface CreateRunInput {
   /** A plan's draft's (R62): the plan's last day, from the same reading as its key — its opening says what comes after it is
    * the stretch to propose. Kept in the run's settings. */
   planLastDay?: string;
+  /** A limit for this one run below its scope's, in dollars (a plan's draft: plan-drafts.ts `DRAFT_CEILING_USD`): the
+   * athlete's own lower limit still wins. Kept as the run's ceiling, no statement of its own. */
+  ceilingUsd?: number;
   /**
    * A key the run starts under at most once (plan-drafts.ts: a plan's draft per ending): an `audit_events` row whose id is
    * the key, with `detail` and the run's id, written in the run's own insert batch while no row has that id — so creates
@@ -1361,7 +1364,8 @@ export async function createRun(db: Db, userId: string, input: CreateRunInput, n
   const savesSkip = savesBatchId ? await skipSetOf(db, userId, savesBatchId) : null;
   if (savesBatchId && !savesSkip) throw new SavesBatchError();
   const ceilingKind = startCeilingKind(scope.kind);
-  const lowered = own?.ceilingsUsd?.[ceilingKind];
+  const ownLimit = own?.ceilingsUsd?.[ceilingKind];
+  const lowered = input.ceilingUsd === undefined ? ownLimit : Math.min(input.ceilingUsd, ownLimit ?? input.ceilingUsd);
   // An auto run's set ceiling, for plan_set to raise it to: the athlete's lower set limit, else the default.
   const loweredSet = scope.kind === "auto" ? own?.ceilingsUsd?.set : undefined;
   const state = newRunState("main", scope, {

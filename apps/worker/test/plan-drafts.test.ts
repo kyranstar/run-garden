@@ -11,6 +11,7 @@ import { newId, PLAN_DRAFT_NOTES, type UserPreferences } from "@rg/domain";
 import type { Env } from "../src/env.js";
 import type { Db } from "../src/services/db.js";
 import { hourly } from "../src/index.js";
+import { savePreferences } from "../src/services/calendar-sync.js";
 import { readCoachOpening, readNudges } from "../src/services/coach-nudges.js";
 import { createRun, currentRun, LIVE_STATUSES, runStep, RunKeyTakenError, RUN_CEILING_MICROS, type RunDeps } from "../src/services/coach-runs.js";
 import { STEPPER_LEASE_SET_MS } from "../src/services/coach-run-stepper.js";
@@ -313,9 +314,55 @@ describe("draftEndingPlans", () => {
     expect(all[0]!.request).toBe(draftRequest("Synthetic strength"));
     expect(all[0]!.scope).toEqual({ kind: "next_n", n: 3 });
     const settings = (JSON.parse(all[0]!.state!) as { settings: Record<string, unknown> }).settings;
-    expect(settings).toMatchObject({ origin: "plan_draft", planId: PLAN, conversationId: all[0]!.id, ceilingMicros: RUN_CEILING_MICROS.next_n });
+    expect(settings).toMatchObject({ origin: "plan_draft", planId: PLAN, conversationId: all[0]!.id, ceilingMicros: 3_000_000 });
     // Starting is one step: its object armed once, for a set's lease.
     expect(told).toEqual([{ op: "arm", body: { runId: all[0]!.id, userId, stepping: false, leaseMs: STEPPER_LEASE_SET_MS } }]);
+  });
+
+  it.each([
+    ["no limit of the athlete's: the draft's own", undefined, 3_000_000],
+    ["a higher set limit of the athlete's: still the draft's own", 8, 3_000_000],
+    ["a lower set limit of the athlete's: theirs", 2, 2_000_000],
+  ])("a draft's ceiling is $3, or the athlete's lower limit: %s", async (_what, set, micros) => {
+    if (set !== undefined) await savePreferences(db, userId, { ...prefs, coach: { ceilingsUsd: { set } } });
+    expect(await pass()).toEqual({ started: 1 });
+    const [run] = await runs();
+    expect((JSON.parse(run!.state!) as { settings: { ceilingMicros: number } }).settings.ceilingMicros).toBe(micros);
+  });
+
+  it("the $3 is the draft's alone: the athlete's own run of the same scope keeps a set's ceiling", async () => {
+    const made = await createRun(db, userId, { scope: { kind: "next_n" }, request: "Plan my next workouts." }, NOW);
+    const [run] = await db.select().from(schema.coachRuns).where(eq(schema.coachRuns.id, made.run.id));
+    expect((JSON.parse(run!.state!) as { settings: { ceilingMicros: number } }).settings.ceilingMicros).toBe(RUN_CEILING_MICROS.next_n);
+  });
+
+  it("a draft that reaches its ceiling stops there: nothing more is spent, and the plan's question comes back saying so", async () => {
+    let calls = 0;
+    const deps = drafts([{ ...turn(use("read_plan", {})), costMicros: 3_100_000 }]);
+    const callModel = deps.callModel;
+    const { run, status } = await draftAndDrive({ ...deps, callModel: (...args) => ((calls += 1), callModel(...args)) });
+    expect(status).toBe("stopped_cap");
+    const [row] = await db.select().from(schema.coachRuns).where(eq(schema.coachRuns.id, run.id));
+    expect(row!.error).toBe("run_ceiling");
+    expect(calls).toBe(1);
+    expect((await rowPrompt())?.note).toBe(PLAN_DRAFT_NOTES.no_proposal);
+    expect(await pass()).toEqual({ started: 0 });
+  });
+
+  it("a draft that reaches its ceiling with only a plan change drawn proposes nothing: never 'ready', never silent, and nothing retries", async () => {
+    const { run, status } = await draftAndDrive(drafts([{ ...turn(use("propose_plan", { change: nextBlock, why: "The next four weeks build on this block." })), costMicros: 3_100_000 }]));
+    expect(status).toBe("stopped_cap");
+    const [row] = await db.select().from(schema.coachRuns).where(eq(schema.coachRuns.id, run.id));
+    expect(row!.error).toBe("run_ceiling");
+    // A set's stop proposes reviewed workouts, never a change alone (design-orchestrate.ts `promoteSetOnce`): nothing for the athlete to approve.
+    const pending = await db.select().from(schema.coachProposals).where(and(eq(schema.coachProposals.userId, userId), eq(schema.coachProposals.status, "pending")));
+    expect(pending).toEqual([]);
+    const prompt = await rowPrompt();
+    expect(prompt?.kind).toBe("whats_next");
+    expect(prompt?.note).toBe(PLAN_DRAFT_NOTES.no_proposal);
+    expect((await readCoachOpening(db, userId, prefs, TODAY, NOW, new Set(), { drafts: true })).ready).toBeUndefined();
+    expect(await pass()).toEqual({ started: 0 });
+    expect(await runs()).toHaveLength(1);
   });
 
   it("the key's own statement looks at the plan again: paused or stopped between the pass's read and its write, nothing starts", async () => {

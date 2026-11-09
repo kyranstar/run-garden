@@ -21,8 +21,10 @@
  *    the account has no live run, no restore is under way and the plan is still active and unpaused; the run only beside
  *    its own key. Both land or neither does: a later pass reads the key and finds nothing due, and a pass that raced it to
  *    the write finds the key taken (`RunKeyTakenError`) and starts nothing.
- *  - THE COST: the run's own ceiling (scope `next_n`: a set's, the athlete's lower limit if they set one) and the weekly
- *    cap — a run the week can't pay for never starts (`WeekBudgetError`): its key is written with `outcome: "week_budget"`
+ *  - THE COST: the draft's own ceiling (`DRAFT_CEILING_USD`, whole tree; the athlete's lower set limit if they set one;
+ *    the owner's call, R64) and the weekly cap. A run past its ceiling stops there, its sub-runs with it, as a set's stop
+ *    does: reviewed workouts are proposed, a plan change alone is not (`promoteSetOnce`), and with nothing proposed the plan's
+ *    question comes back. A run the week can't pay for never starts (`WeekBudgetError`): its key is written with `outcome: "week_budget"`
  *    and nothing retries. So does any other start that fails (R60: `outcome: "start_failed"`), rather than a retry every
  *    hour while the plan says nothing. A run that ends without a proposal is read as such from the run itself (R52: never
  *    stored twice). Either way the plan's question comes back, saying plainly what happened (@rg/domain `planPrompt`'s
@@ -69,6 +71,11 @@ export const draftRequest = (planName: string): string => `Draft the next stretc
 
 /** A draft's scope: the next workouts, as many as the athlete's setting (Settings → Coach). */
 export const DRAFT_SCOPE: RunScope = { kind: "next_n" };
+
+/** What one draft may spend, main run and everything under it (R64): under a third of a set's. It is the one spend the
+ * athlete didn't start. A next stretch as one plan change is the coach's own work; as designed workouts, two or three
+ * (plan_set sizes a set to what is left). */
+export const DRAFT_CEILING_USD = 3;
 
 /**
  * The plan a draft is due for, of the account's plans as read with their drafts: see the header's WHICH PLAN. Its ending is
@@ -153,6 +160,7 @@ async function draftForAccount(db: Db, env: Env, userId: string, storedPrefs: un
         planId: plan.id,
         // Its opening names the plan's last day, the key's own reading of it (R62): the next stretch is what comes after.
         planLastDay: plan.lastDay!,
+        ceilingUsd: DRAFT_CEILING_USD,
         once: {
           key,
           kind: PLAN_DRAFT_KIND,
