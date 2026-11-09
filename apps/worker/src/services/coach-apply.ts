@@ -40,7 +40,7 @@ import {
   type WorkoutDoc,
 } from "@rg/domain";
 import { runBlockRoles } from "@rg/coros";
-import { chunkIds, chunkedInsert, guardFailed, guardOrFail, insertBatches, rowGone, runAtomically, runAtomicallyClaim, runAtomicallyFirst, type AtomicStatement, type Db } from "./db.js";
+import { chunkIds, chunkedInsert, guardFailed, guardOrFail, insertBatches, rowGone, runAtomically, runAtomicallyFirst, type AtomicStatement, type Db } from "./db.js";
 import { separateDayCollisions, windowTimeFor } from "./day-placement.js";
 import { coachStamp, recordedStampFor, stampName, takenStampsOn, takenStampsOnDays } from "./coros-stamp.js";
 import { applyMove } from "./jobs.js";
@@ -1031,7 +1031,7 @@ async function convergeInto(db: Db, v: ConvergeInput & { claimed?: boolean }, st
  * A fault anywhere leaves nothing, so the next approve writes all of it. A row gone before the batch fails it (the claim
  * is written `whileRowThere`): nothing written (`written: false`). Statements (design-approve.ts `RETIME_COST`): the row,
  * revision, delete, the inserts, the claim (2), the rewrite (at most 2), the create (1) — after the applier's row and
- * stage reads and the rewrite's. Answers how many queued creates it brought up to date (0 or 1).
+ * stage reads and the rewrite's. Answers whether it was written.
  */
 export async function writeRetimed(
   db: Db,
@@ -1052,7 +1052,7 @@ export async function writeRetimed(
      */
     onlyIf?: SQL;
   },
-): Promise<{ createsUpdated: number; written: boolean }> {
+): Promise<{ written: boolean }> {
   const { row, write: w } = v;
   const pw = plannedWorkouts;
   const seconds = v.minutes * 60;
@@ -1113,10 +1113,8 @@ export async function writeRetimed(
       ),
     )
     .returning({ id: corosWriteJobs.id });
-  let retargeted: number;
   try {
-    // The retarget last: the batch answers how many creates it brought up to date (`runAtomicallyClaim`).
-    retargeted = await runAtomicallyClaim(db, [
+    await runAtomically(db, [
       rowWrite,
       ...(w.doc ? [revisionInsert(db, { userId: v.userId, workoutId: row.id, sourceKind: "coach", sourceRef: v.proposalId, now: v.now })] : []),
       db.delete(plannedWorkoutStages).where(eq(plannedWorkoutStages.workoutId, row.id)),
@@ -1126,10 +1124,10 @@ export async function writeRetimed(
       retarget,
     ]);
   } catch (e) {
-    if ((v.onlyIf && guardFailed(e)) || rowGone(e)) return { createsUpdated: 0, written: false };
+    if ((v.onlyIf && guardFailed(e)) || rowGone(e)) return { written: false };
     throw e;
   }
-  return { createsUpdated: retargeted, written: true };
+  return { written: true };
 }
 
 /**

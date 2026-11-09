@@ -303,7 +303,7 @@ describe("a plan run re-timed by its stage rows", () => {
     expect((await jobsOf(db, id)).map((j) => j.kind)).toEqual(["coach_create_workout"]);
   });
 
-  it("the create's update says how many rows it changed: one while it is queued, none once it is claimed", async () => {
+  it("a create still queued is brought up to date with the re-time; one claimed already is left as it is", async () => {
     const { db, userId, prefs, today } = await setup();
     const added = await applyOps(db, userId, prefs, "tp-1", [{ kind: "add", date: addDays(today, 3), session: tempo35 }]);
     const id = added.created[0]!;
@@ -313,9 +313,14 @@ describe("a plan run re-timed by its stage rows", () => {
       if (r.kind !== "retimed") throw new Error("not re-timed");
       return writeRetimed(db, { userId, row, minutes: r.minutes, write: r.write, proposalId: "dp-2", now: nowInstant(), prefs, runWire: "v1" });
     };
-    expect(await write(25)).toEqual({ createsUpdated: 1, written: true });
+    const create = async () => (await jobsOf(db, id)).find((j) => j.kind === "coach_create_workout")!.expectedContentFingerprint;
+    const queued = await create();
+    expect(await write(25)).toEqual({ written: true });
+    const retargeted = await create();
+    expect(retargeted).not.toBe(queued);
     await db.update(corosWriteJobs).set({ status: "claimed" }).where(eq(corosWriteJobs.id, `${id}-push`));
-    expect(await write(20)).toEqual({ createsUpdated: 0, written: true });
+    expect(await write(20)).toEqual({ written: true });
+    expect(await create()).toBe(retargeted);
   });
 
   it("guarded (`onlyIf`, the designer's approve): a row no longer as read writes nothing — not its length, its stage rows, its revision, its claim or the create", async () => {
@@ -328,7 +333,7 @@ describe("a plan run re-timed by its stage rows", () => {
     if (r.kind !== "retimed") throw new Error("not re-timed");
     const jobs = await jobsOf(db, id);
     const out = await writeRetimed(db, { userId, row, minutes: r.minutes, write: r.write, proposalId: "dp-2", now: nowInstant(), prefs, runWire: "v1", onlyIf: sql`0` });
-    expect(out).toEqual({ createsUpdated: 0, written: false });
+    expect(out).toEqual({ written: false });
     expect(await rowOf(db, id)).toEqual(row);
     expect(await stagesOf(db, id)).toEqual(stages);
     expect(await jobsOf(db, id)).toEqual(jobs);

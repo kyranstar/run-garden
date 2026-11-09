@@ -7,8 +7,11 @@ import { PROVISIONAL_KIND, PROVISIONAL_KIND_PATH, pushJobId, SETTLED_PUSH, UNSTA
 /**
  * THE SESSION GUARD: what the athlete's plan routes and the coach refuse, so a finished session's credit stays where it landed
  * and a session under way isn't moved out from under the device playing it. It is a server rule because old cached clients and
- * direct calls reach these routes too. Reconcile, the sweep, the retries, sync-note Undo, placement, restore, repairs, the
- * Calendar and the COROS read sit below the routes, in `applyMove` and `removeFromPlan`, and aren't held to it.
+ * direct calls reach these routes too. Held to it, each at its read and in its write: the athlete's move, skip and remove;
+ * the coach's ops, the designer's and the thread's (the applier's own read, `stillOpen` on each write); a plan's bulk archives;
+ * the swap; sync-note Undo; the Calendar's drag (its event put back); and the day's placement (a started session pinned).
+ * Not held to it: reconcile and the sweep (they resolve, never move), the retries (a row's own date), restore and repairs,
+ * and the COROS read for a session under way (its guard follows the session's save days; a done one keeps its day).
  *
  * COMPLETED: moving the row re-dates a credit the garden already walked. Moved ahead the walk credits it again; moved back a
  * later replay loses it (the owner's garden is not rebuilt to repair either).

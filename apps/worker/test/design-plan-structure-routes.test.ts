@@ -319,7 +319,7 @@ describe("approving a whole plan", () => {
     expect((await sessionsOf(`cp-${id}-1`)).filter((r) => !r.archivedAt)).toHaveLength(7);
   });
 
-  it("changes that fill a request never drop the plan: it waits in `remaining` and is applied (review-1 I1's probe: 3 moves and a 14-session plan, approved with {})", async () => {
+  it("changes that fill a request never drop the plan: it waits in `remaining` and is applied (review-1 I1's probe: 3 moves and a 14-session plan, every op named, as `wholeSuggestion` names them)", async () => {
     const move = (w: number, to: number) => ({ workoutId: `w-${w}`, change: { kind: "move", toDate: addDays(today, to), toTime: "12:00" }, why: "A freer day." });
     const id = await planned(createPlan({ perWeek: 7, weeks: 2 }), [move(2, 5), move(3, 6), move(4, 7)]);
     const { answers, costs } = await approveAll(id);

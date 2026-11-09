@@ -285,7 +285,7 @@ describe("a plan change beside corrections, beside an objective change", () => {
     expect(await receipts()).toEqual([expect.stringContaining("5 corrections to your saves; 1 change to your objectives")]);
   });
 
-  it("the whole suggestion's tap (naming nothing) leaves the objective change open, whatever rides beside it", async () => {
+  it("the whole suggestion's tap — every op its cards draw, named (`wholeSuggestion`) — leaves the objective change open, whatever rides beside it", async () => {
     const p = await plan();
     const { lift } = await savedLift();
     const { objectiveId, krId } = await wallSit();

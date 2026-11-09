@@ -72,7 +72,8 @@ const TIME = z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/);
 /**
  * HOW MANY IDS ONE REQUEST MAY NAME (owner P6): 50. It bounds the request's body; it is not the work and not a database quota.
  *  - What a request legitimately names: one card's ops. The most any card draws is the whole suggestion's, 22 (12 workouts,
- *    SET_MAX_WORKOUTS, beside 10 changes, MAX_CHANGES); the client never names more at once (APPROVE_ROUNDS_MAX). Every op a
+ *    SET_MAX_WORKOUTS, beside 10 changes, MAX_CHANGES); the client never names more ids at once (CARD_OPS_MAX in the card,
+ *    which bounds the ids; APPROVE_ROUNDS_MAX bounds its rounds, not its ids). Every op a
  *    proposal can hold, named together by a direct caller: 12 + 10 + 10 corrections (CORRECTIONS_MAX) + 6 objective changes
  *    (OBJECTIVE_CHANGES_MAX) + the plan's structure + the pins = 40, and one change for each programme or plan the run
  *    names; 50 leaves ten of those. A proposal past it is still approved, by its cards or in rounds.
