@@ -1774,6 +1774,8 @@ export interface SyncNoteDto {
   workoutId: string | null;
   payload: Record<string, unknown> | null;
   createdAt: string;
+  /** False when its Undo would move a session done since, or under way: no Undo is offered. Absent: as its kind says. */
+  undoable?: false;
 }
 
 export interface ReadNowResponse {

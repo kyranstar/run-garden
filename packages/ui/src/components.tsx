@@ -888,7 +888,7 @@ export function SyncNotesStack({
             <div className="btn-row">
               {err ? (
                 <span className="faint">{err}</span>
-              ) : DISMISS_ONLY.has(note.kind) ? null : (
+              ) : DISMISS_ONLY.has(note.kind) || note.undoable === false ? null : (
                 <button
                   className="btn btn-small"
                   disabled={undoPendingId === note.id}

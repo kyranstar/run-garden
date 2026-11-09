@@ -1,7 +1,7 @@
-import { and, eq, isNull, ne, or, sql, type SQL } from "drizzle-orm";
+import { and, eq, inArray, isNull, ne, or, sql, type SQL } from "drizzle-orm";
 import { corosWriteJobs, plannedWorkouts, sessionBuilds } from "@rg/database";
 import { addDays, isLocalDate } from "@rg/domain";
-import type { Db } from "./db.js";
+import { chunkIds, type Db } from "./db.js";
 import { provisionalRecord, pushJobId, SETTLED_PUSH, UNSTARTED_AT_PATH } from "./session-build.js";
 
 /**
@@ -76,7 +76,8 @@ export async function readGuarded(db: Db, userId: string, workoutId: string) {
     .limit(1);
   return row;
 }
-type Guarded = NonNullable<Awaited<ReturnType<typeof readGuarded>>>;
+/** What the guard judges: the row's state, and `underWaySql`'s read (null when the row isn't started, or wasn't read with it). */
+type Guarded = Pick<NonNullable<Awaited<ReturnType<typeof readGuarded>>>, "effectiveDate" | "completionState" | "contentState" | "underWay">;
 
 /** Why the athlete's own move, skip or remove can't touch this row today; null when it can. */
 export function guardRefusal(row: Guarded, today: string): GuardRefusal | null {
@@ -85,11 +86,31 @@ export function guardRefusal(row: Guarded, today: string): GuardRefusal | null {
   return null;
 }
 
+/** A guarded write lost to a save or a Start that landed since the guard's read: why, as the row stands now. */
+export async function refusalNow(db: Db, userId: string, id: string, today: string): Promise<GuardRefusal | { error: "session_changed"; why: string }> {
+  const row = await readGuarded(db, userId, id);
+  return (row && guardRefusal(row, today)) ?? { error: "session_changed", why: "This session changed just now. Try again." };
+}
+
+/** Of these sessions, the ones the guard refuses today (one statement a `chunkIds` chunk; none for no ids). */
+export async function guardedNow(db: Db, userId: string, ids: readonly string[], today: string): Promise<Set<string>> {
+  const pw = plannedWorkouts;
+  const out = new Set<string>();
+  for (const chunk of chunkIds([...new Set(ids)])) {
+    const rows = await db
+      .select({ id: pw.id, effectiveDate: pw.effectiveDate, completionState: pw.completionState, contentState: pw.contentState, underWay: sql<unknown>`${underWaySql()}` })
+      .from(pw)
+      .where(and(eq(pw.userId, userId), inArray(pw.id, chunk)));
+    for (const r of rows) if (guardRefusal(r, today)) out.add(r.id);
+  }
+  return out;
+}
+
 /**
  * The same rule in the write's own WHERE, for what the read let through: a save or a Start landing between the read and the write
  * loses nothing. A row read as started and past its days stays writable.
  */
-export function stillOpen(row: Guarded): SQL {
+export function stillOpen(row: Pick<Guarded, "contentState">): SQL {
   const pw = plannedWorkouts;
   return and(ne(pw.completionState, "completed"), row.contentState === "started" ? undefined : or(isNull(pw.contentState), ne(pw.contentState, "started")))!;
 }

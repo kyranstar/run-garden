@@ -835,14 +835,58 @@ describe("what sits below the routes, and the corrections, keep working", () => 
     expect(rowOf(w, id).date).toBe(addDays(D, 3));
   });
 
-  it("GAP, named: sync-note Undo sits below the guard, so a note older than a completion can still move the completed row", async () => {
+  it.each(["adopted_coros_change", "kept_local_change"] as const)("sync-note Undo (%s) on a session done since the note: 409 `session_completed`, nothing moved, the note kept, and the feed offers no Undo for it", async (kind) => {
     const w = await world();
     setClock(D, "12:00");
     const id = await failedMoveOn(w, "completed");
-    await postSyncNote(w.db, { userId: w.userId, workoutId: id, kind: "adopted_coros_change", payload: { previousDate: addDays(D, 3), newDate: addDays(D, 1) } });
+    await postSyncNote(w.db, { userId: w.userId, workoutId: id, kind, payload: kind === "adopted_coros_change" ? { previousDate: addDays(D, 3), newDate: addDays(D, 1) } : { displacedDate: addDays(D, 3), keptDate: addDays(D, 1) } });
     const [note] = q(w, `select id from sync_notes where workout_id = ?`, id);
-    expect((await w.call("POST", `/api/sync/notes/${note.id}/undo`)).status).toBe(200);
-    expect(rowOf(w, id)).toMatchObject({ date: addDays(D, 3), completion: "completed" });
+    const overridesBefore = overrides(w, id);
+    const answer = await w.call("POST", `/api/sync/notes/${note.id}/undo`);
+    expect(answer.status).toBe(409);
+    expect(answer.json).toEqual(COMPLETED_ANSWER);
+    expect(answer.writes).toEqual([]);
+    expect(rowOf(w, id)).toMatchObject({ date: addDays(D, 1), completion: "completed" });
+    expect(overrides(w, id)).toBe(overridesBefore);
+    const feed = await w.call("GET", "/api/sync/notes");
+    expect(feed.json.notes).toEqual([expect.objectContaining({ id: note.id, kind, undoable: false })]);
+  });
+
+  it("sync-note Undo's feed: a session still to come keeps its Undo (no `undoable` said)", async () => {
+    const w = await world();
+    setClock(D, "12:00");
+    const id = await failedMoveOn(w, "scheduled");
+    await postSyncNote(w.db, { userId: w.userId, workoutId: id, kind: "adopted_coros_change", payload: { previousDate: addDays(D, 3), newDate: addDays(D, 1) } });
+    const feed = await w.call("GET", "/api/sync/notes");
+    expect(feed.json.notes).toHaveLength(1);
+    expect(feed.json.notes[0].undoable).toBeUndefined();
+  });
+
+  it("sync-note Undo on a run COROS moved, done since on its new day: refused, and its one credit stays on that day — per activity, as if Undo was never tapped", async () => {
+    const w = await world();
+    const SAT = addDays(D, 3);
+    const id = await watchPlanRun(w, SAT);
+    // The athlete moved it to Wednesday in COROS: adopted, with its note.
+    setClock(addDays(D, -2), "12:00");
+    await corosRead(w, id, D);
+    const [note] = q(w, `select id, kind from sync_notes where workout_id = ?`, id);
+    expect(note.kind).toBe("adopted_coros_change");
+    await drive(w, addDays(D, -1), D);
+    setClock(D, "12:00");
+    await corosReport(w, [corosSource({ label: "lbl-wed", date: D, hhmm: "07:05", seconds: 3550, sport: "run" })]);
+    await drive(w, addDays(D, 1), addDays(D, 1));
+    expect(rowOf(w, id).completion).toBe("completed");
+    const control = fork(w);
+    setClock(addDays(D, 1), "12:00");
+    const answer = await w.call("POST", `/api/sync/notes/${note.id}/undo`);
+    expect([answer.status, answer.json.error]).toEqual([409, "session_completed"]);
+    await drive(w, addDays(D, 2), addDays(SAT, 2));
+    await drive(control, addDays(D, 2), addDays(SAT, 2));
+    const after = record(w);
+    expect(after).toEqual(record(control));
+    expect(after.counters).toMatchObject({ runs: 1, long: 1 });
+    expect(after.credits.flatMap((c) => c.completed.map((x) => [c.date, x.workoutId, x.activityId]))).toEqual([[D, id, "coros:lbl-wed"]]);
+    expect(q(w, `select dismissed_at from sync_notes where id = ?`, note.id)[0].dismissed_at).toBeNull();
   });
 
   it("the watch reports first while the phone still plays (`completed`, still `started`): the routes say done, and the phone's save still lands, on the same activity", async () => {

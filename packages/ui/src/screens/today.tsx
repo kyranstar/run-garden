@@ -27,6 +27,9 @@ export function undoRefusalText(err: unknown): string {
   if (code === "undo_unsupported_rename") return "Renamed on COROS — delete it there to re-push.";
   // The session's plan was retired (Stage 2 Task 9): nothing of it goes back on the watch.
   if (code === "plan_retired") return "That plan is retired.";
+  // The session is done since, or under way (the session guard): its own words.
+  const why = err instanceof ApiError && err.status === 409 ? (err.body as { why?: unknown } | null)?.why : undefined;
+  if (typeof why === "string" && why) return why;
   return "Couldn't undo — try again.";
 }
 

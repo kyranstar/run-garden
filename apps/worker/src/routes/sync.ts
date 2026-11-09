@@ -20,6 +20,7 @@ import { applyMove } from "../services/jobs.js";
 import { executeCloudJobs } from "../services/coros-write-cloud.js";
 import { openMoveIntents } from "../services/sync-intents.js";
 import { activeSyncNotes, dismissSyncNote, DISMISS_ONLY_NOTE_KINDS } from "../services/sync-notes.js";
+import { guardedNow, guardRefusal, refusalNow, stillOpen } from "../services/session-guard.js";
 import { computeSyncStatus, openFailedCoachWrites } from "../services/sync-status.js";
 import { pushStudioPlan, retireStudioPlan, studioPlanRetired, undoStudioAdoption } from "../services/studio-push.js";
 import { corosReadNow } from "../services/coros-read.js";
@@ -238,13 +239,22 @@ syncRoutes.post("/retry", async (c) => {
 
 // ── GET /api/sync/notes ───────────────────────────────────────────────────────
 
-function noteDto(n: Awaited<ReturnType<typeof activeSyncNotes>>[number]) {
-  return { id: n.id, kind: n.kind, workoutId: n.workoutId, payload: n.payload, createdAt: n.createdAt };
+function noteDto(n: Awaited<ReturnType<typeof activeSyncNotes>>[number], held: ReadonlySet<string>) {
+  // A note whose Undo moves its session back, on a session done since, or under way (`session-guard.ts`): no Undo is offered.
+  const undoable = !(MOVES_BACK.includes(n.kind) && n.workoutId !== null && held.has(n.workoutId));
+  return { id: n.id, kind: n.kind, workoutId: n.workoutId, payload: n.payload, createdAt: n.createdAt, ...(undoable ? {} : { undoable: false as const }) };
 }
 
+/** The notes whose Undo is a move of their session back (`applyMove`). */
+const MOVES_BACK: readonly string[] = ["kept_local_change", "adopted_coros_change"];
+
 syncRoutes.get("/notes", async (c) => {
-  const notes = await activeSyncNotes(c.get("db"), c.get("userId"));
-  return c.json({ notes: notes.map(noteDto) });
+  const db = c.get("db");
+  const userId = c.get("userId");
+  const notes = await activeSyncNotes(db, userId);
+  const ids = notes.flatMap((n) => (MOVES_BACK.includes(n.kind) && n.workoutId ? [n.workoutId] : []));
+  const held = ids.length > 0 ? await guardedNow(db, userId, ids, todayInZone((await loadPreferences(db, userId)).timezone)) : new Set<string>();
+  return c.json({ notes: notes.map((n) => noteDto(n, held)) });
 });
 
 // ── POST /api/sync/notes/:id/dismiss ─────────────────────────────────────────
@@ -304,6 +314,10 @@ syncRoutes.post("/notes/:id/undo", async (c) => {
       if (!workout || workout.archivedAt) return c.json({ error: "not_found" }, 404);
       if (appAuthoredRow(workout)) return c.json({ error: "not_undoable" }, 422);
       const prefs = await loadPreferences(db, userId);
+      // A session done since the note keeps its day: its credit is there (`session-guard.ts`). The note stays.
+      const today = todayInZone(prefs.timezone);
+      const refused = guardRefusal({ ...workout, underWay: null }, today);
+      if (refused) return c.json(refused, 409);
       try {
         await applyMove(db, {
           userId,
@@ -312,9 +326,11 @@ syncRoutes.post("/notes/:id/undo", async (c) => {
           toTime: workout.effectiveTime,
           source: "app",
           corosWritesEnabled: prefs.corosWritesEnabled,
+          onlyIf: stillOpen(workout),
         });
       } catch (e) {
         const msg = e instanceof Error ? e.message : "move_failed";
+        if (msg === "session_changed") return c.json(await refusalNow(db, userId, workout.id, today), 409);
         return c.json({ error: msg }, msg === "races_cannot_move" ? 422 : 500);
       }
       await dismissSyncNote(db, userId, noteId);
@@ -337,6 +353,10 @@ syncRoutes.post("/notes/:id/undo", async (c) => {
       // their own dismiss-only kind, `watch_copy_moved`.
       if (appAuthoredRow(workout)) return c.json({ error: "not_undoable" }, 422);
       const prefs = await loadPreferences(db, userId);
+      // A session done since the note keeps its day: its credit is there (`session-guard.ts`). The note stays.
+      const today = todayInZone(prefs.timezone);
+      const refused = guardRefusal({ ...workout, underWay: null }, today);
+      if (refused) return c.json(refused, 409);
       try {
         await applyMove(db, {
           userId,
@@ -345,9 +365,11 @@ syncRoutes.post("/notes/:id/undo", async (c) => {
           toTime: workout.effectiveTime,
           source: "app",
           corosWritesEnabled: prefs.corosWritesEnabled,
+          onlyIf: stillOpen(workout),
         });
       } catch (e) {
         const msg = e instanceof Error ? e.message : "move_failed";
+        if (msg === "session_changed") return c.json(await refusalNow(db, userId, workout.id, today), 409);
         return c.json({ error: msg }, msg === "races_cannot_move" ? 422 : 500);
       }
       await dismissSyncNote(db, userId, noteId);

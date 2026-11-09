@@ -44,3 +44,17 @@ describe("SyncNotesStack — adopted_coros_edit", () => {
     expect(html.toLowerCase()).not.toContain("studio");
   });
 });
+
+describe("SyncNotesStack — a note whose session can't be moved back (the server says `undoable: false`)", () => {
+  it("offers no Undo, and still the dismiss", () => {
+    const html = render([{ ...note("n1", { keptDate: "2026-10-08", displacedDate: "2026-10-09" }), undoable: false }]);
+    expect(html).toContain("Kept your Thu Oct 8");
+    expect(html).not.toContain(">Undo<");
+    expect(html).toContain('aria-label="Dismiss note"');
+  });
+
+  it("a note the server says nothing of keeps its Undo", () => {
+    const html = render([note("n1", { keptDate: "2026-10-08", displacedDate: "2026-10-09" })]);
+    expect(html).toContain(">Undo<");
+  });
+});

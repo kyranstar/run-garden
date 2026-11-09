@@ -96,7 +96,7 @@ import { todayConditions } from "../services/condition-views.js";
 import { watchReviewOffers } from "../services/session-watch-review.js";
 import { plannedRowColumns, type PlannedRow } from "../services/planned-columns.js";
 import { DESIGNED_RUN_SEED } from "../services/designed-runs.js";
-import { guardRefusal, readGuarded, stillOpen } from "../services/session-guard.js";
+import { guardRefusal, readGuarded, refusalNow, stillOpen } from "../services/session-guard.js";
 import { reopenedDocColumns, resolveLibraryName } from "../services/workout-doc-store.js";
 
 export const planRoutes = new Hono<AppContext>();
@@ -1665,12 +1665,6 @@ planRoutes.post("/repair-fidelity", async (c) => {
 });
 
 const moveSchema = z.object({ toDate: z.string().refine(isLocalDate), toTime: z.string() });
-
-/** A guarded write lost to a save or a Start that landed since the guard's read: why, as the row stands now. */
-async function refusalNow(db: Db, userId: string, id: string, today: string) {
-  const row = await readGuarded(db, userId, id);
-  return (row && guardRefusal(row, today)) ?? { error: "session_changed", why: "This session changed just now. Try again." };
-}
 
 /** A move of the athlete's own (`session-guard.ts`: a done session, or one under way, is refused 409 `{error, why}`). */
 planRoutes.post("/workouts/:id/move", async (c) => {
