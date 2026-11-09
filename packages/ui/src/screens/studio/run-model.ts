@@ -919,7 +919,10 @@ function wordsOf(cause: "programme" | "under_way" | "rest" | "race", why: string
 }
 
 /** Codes whose words say it all: the why (the server's words, about this op) adds to the others. */
-const SAID_BY_CODE = new Set(["past_date", "past_time", "no_time_today", "stale_revision", "not_found", "run_unsupported", "restore_in_progress", "race"]);
+const SAID_BY_CODE = new Set(["past_date", "past_time", "no_time_today", "stale_revision", "not_found", "run_unsupported", "restore_in_progress", "race", "changed_since_suggested"]);
+
+/** Causes whose `instead` is the coach's to act on ("Propose one for later."), never the athlete's: not said on the card. */
+const INSTEAD_FOR_THE_COACH = new Set(["under_way"]);
 
 /** How the server begins an `invalid_doc` why (Task 8): what follows is the rule the day now refuses. */
 const DAY_REFUSES = /^The day now refuses it:\s*/;
@@ -937,7 +940,7 @@ export function refusedLine(r: { error: string; why: string; cause?: string; ins
   const named = r.error === "not_editable" && !!r.cause && r.cause !== "unknown";
   const said = SAID_BY_CODE.has(r.error) || named || why.length === 0 || why === lead;
   // What to do instead follows the why, one short line (the server sends it with every not_editable refusal).
-  const instead = r.instead?.trim() ?? "";
+  const instead = r.cause && INSTEAD_FOR_THE_COACH.has(r.cause) ? "" : (r.instead?.trim() ?? "");
   const detail = [said ? "" : why, instead].filter(Boolean).join(" ");
   return { lead, detail: detail || null };
 }

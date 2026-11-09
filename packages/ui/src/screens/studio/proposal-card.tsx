@@ -76,8 +76,14 @@ export const NO_TIME_LEFT_LINE = "No time left today — pick a time";
 /** A designed suggestion's read. */
 export const designProposalQuery = (id: string) => ["coach-design-proposal", id] as const;
 
-/** Approve requests one tap may make: a week's seven workouts and its changes take at most six (Task 8b), doubled. */
-export const APPROVE_ROUNDS_MAX = 12;
+/** The most ops a ProposalCard draws: a set's 12 workouts (SET_MAX_WORKOUTS) and a proposal's 10 changes (MAX_CHANGES). */
+const CARD_OPS_MAX = 12 + 10;
+/**
+ * Approve requests one tap may make: every request moves at least one op on (the worker's "the first always goes"), and the
+ * slowest card moves one a request (each change on a busy day; the reviewer's probe: 22 rounds), plus the one re-read after
+ * `proposal_changed`.
+ */
+export const APPROVE_ROUNDS_MAX = CARD_OPS_MAX + 1;
 
 /** The suggestion is the athlete's in these; never shown in the others (closed with its run, or never theirs). */
 const HIDDEN_STATUSES = new Set(["unreviewed", "cancelled", "rehearsal"]);

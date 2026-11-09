@@ -489,6 +489,7 @@ async function loadWorkoutViews(
       hasFailedJob: failedIds.has(w.id),
       presence,
       writesEnabled: prefs.corosWritesEnabled,
+      done: w.completionState === "completed",
     });
     // A row whose in-flight job was superseded still shows `failed` here while
     // the lane holds nothing — `deriveWorkoutSync` and the action must read the

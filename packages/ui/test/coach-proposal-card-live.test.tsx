@@ -25,7 +25,8 @@ import { QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { DESIGN_APPLYING_STALE_MS, type DesignApproveResponse, type DesignChangeLineDto, type DesignLineDto } from "@rg/api-client";
 import { REVISABILITY_WORDS } from "@rg/domain";
-import { ProposalCard } from "../src/screens/studio/proposal-card.js";
+import { approveUntilDone, ProposalCard } from "../src/screens/studio/proposal-card.js";
+import { ApiError } from "@rg/api-client";
 import { primedClient } from "./studio-fixtures.js";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -694,5 +695,31 @@ describe("a workout card beside the suggestion's own cards (audit fixes, E6 revi
       host?.remove();
       root = null;
     }
+  });
+});
+
+describe("one tap approves the fullest card a ProposalCard draws", () => {
+  /** An approve that moves one op on a request, as the slowest card does (every change on a busy day), after one `proposal_changed`. */
+  const slowest = (ops: number) => {
+    let left = Array.from({ length: ops }, (_, i) => `op-${i}`);
+    let raced = false;
+    return async (): Promise<DesignApproveResponse> => {
+      if (!raced && left.length <= Math.floor(ops / 2)) {
+        raced = true;
+        throw new ApiError(409, { error: "proposal_changed" });
+      }
+      left = left.slice(1);
+      return { ok: true, status: left.length ? "partially_approved" : "approved", applied: [], changed: [], refused: [], settled: [], remaining: left } as DesignApproveResponse;
+    };
+  };
+
+  it("22 ops (12 workouts and 10 changes), one a request, and the one re-read after `proposal_changed`: done in one tap", async () => {
+    const answers = await approveUntilDone(slowest(22), Array.from({ length: 22 }, (_, i) => `op-${i}`), async () => undefined);
+    expect(answers).toHaveLength(22);
+    expect(answers.at(-1)!.status).toBe("approved");
+  });
+
+  it("past that, the tap stops and says not everything was added", async () => {
+    await expect(approveUntilDone(slowest(23), Array.from({ length: 23 }, (_, i) => `op-${i}`), async () => undefined)).rejects.toThrow("approve_unfinished");
   });
 });

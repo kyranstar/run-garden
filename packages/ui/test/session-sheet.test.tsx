@@ -739,7 +739,7 @@ describe("a day ahead, a day gone, a started session", () => {
   });
 
   describe("a session the watch completed (auto-matched: `completed`, still an outline or built)", () => {
-    const WORDS = "This session is done, so it stays on the day it was done.";
+    const WORDS = "This session is done, so it stays as it is on your plan.";
     const done = (over: Partial<SessionDto> = {}) => session({ contentState: "outline", build: null, view: null, checks: {}, profiles: [], completionState: "completed", course: { markDone: null, held: null }, ...over });
 
     it("on its day, and on a day gone: no Move, no Skip, no Move to today", async () => {
@@ -776,6 +776,28 @@ describe("a day ahead, a day gone, a started session", () => {
       await until(() => body().includes(WORDS), "the refusal's words");
       await until(() => !button("Skip"), "the sheet read again");
       expect(calls.filter((c) => c.path === `/api/sessions/${SLOT}` && c.method === "GET").length).toBeGreaterThan(1);
+    });
+
+    it("two refusals in a row: the sheet says the latest, not the first", async () => {
+      const first = "This session was started and may still be running on another device, so it stays as it is.";
+      const second = "This session is done, so it stays as it is on your plan.";
+      mount(session({ date: "2026-10-03", contentState: "outline", checks: {}, build: null, view: null }), {
+        w: slot({ effectiveDate: "2026-10-03", contentState: "outline" }),
+        route: (c) =>
+          c.path.endsWith("/move")
+            ? new Response(JSON.stringify({ error: "session_under_way", why: first }), { status: 409, headers: { "Content-Type": "application/json" } })
+            : c.path.endsWith("/skip")
+              ? new Response(JSON.stringify({ error: "session_completed", why: second }), { status: 409, headers: { "Content-Type": "application/json" } })
+              : undefined,
+      });
+      // The Skip refused first, then Move to today: the newer one is what the athlete just pressed.
+      await until(() => !!button("Skip"), "Skip");
+      await click("Skip");
+      await until(() => body().includes(second), "the first refusal");
+      await until(() => !!button("Move to today"), "the move offer");
+      await click("Move to today");
+      await until(() => body().includes(first), "the second refusal");
+      expect(body()).not.toContain(second);
     });
 
     it("a stale sheet's Move to today, refused while it is under way: the server's words", async () => {
@@ -1027,7 +1049,7 @@ describe("WorkoutDetail branches on origin", () => {
   });
 
   it("a stale workout sheet's Skip it, refused: the server's words on the sheet", async () => {
-    const words = "This session is done, so it stays on the day it was done.";
+    const words = "This session is done, so it stays as it is on your plan.";
     const asking = slot({ id: "run-1", title: "Threshold 5x5", category: "quality", sport: "run", origin: null, contentState: null, programId: null, completionState: "unresolved", effectiveDate: "2026-10-02" });
     mount(session(), {
       detail: true,
@@ -1040,7 +1062,7 @@ describe("WorkoutDetail branches on origin", () => {
   });
 
   it("a stale workout sheet's Remove, refused: the server's words in the dialog", async () => {
-    const words = "This session is done, so it stays on the day it was done.";
+    const words = "This session is done, so it stays as it is on your plan.";
     const run = slot({ id: "run-1", title: "Threshold 5x5", category: "quality", sport: "run", origin: null, contentState: null, programId: null });
     mount(session(), {
       detail: true,
@@ -1054,6 +1076,14 @@ describe("WorkoutDetail branches on origin", () => {
     await until(() => !!confirm(), "the confirm");
     await act(async () => confirm()!.click());
     await until(() => body().includes(words), "the refusal's words");
+  });
+
+  it("a run done on its day, its COROS copy re-dated since, as the server sends it now (corosSyncView `synced`): no pill, no line", async () => {
+    const done = slot({ id: "run-1", title: "Threshold 5x5", category: "quality", sport: "run", origin: null, contentState: null, programId: null, completionState: "completed", lastVerifiedCorosDate: "2026-10-09", corosSyncState: "synced", corosSyncView: "synced" } as Partial<WorkoutDto>);
+    mount(session(), { detail: true, w: done });
+    await until(() => body().includes("Threshold 5x5"), "the workout sheet");
+    expect(body()).not.toContain("Not synced to COROS");
+    expect(body()).not.toContain("still has this on");
   });
 
   it("a run still to come whose day disagrees with COROS keeps its line", async () => {

@@ -9,7 +9,7 @@ import {
   Spinner,
   useRevealInView,
 } from "../components.js";
-import { planRefusal } from "../components/session-sheet-model.js";
+import { latestError, planRefusal, refusedByServer } from "../components/session-sheet-model.js";
 import { isAppSession } from "../components/today-program.js";
 import { watchFollowsChange } from "../components/watch-catch-up.js";
 
@@ -56,8 +56,15 @@ export function MoveSheet({
     enabled: open,
   });
 
+  // Refused, or failed: the session is read again (the plan, today, its own sheet), so what offered this sees why.
+  const readAgain = () => {
+    for (const key of [["today"], ["plan"], ["plan-week"], ["workout", workout.id], ["session", workout.id]]) void qc.invalidateQueries({ queryKey: key });
+  };
+  /** Which of Move and Skip was pressed last: its refusal is the one said. */
+  const [lastChange, setLastChange] = useState<"move" | "skip" | null>(null);
   const move = useMutation({
     mutationFn: ({ date, time }: { date: string; time: string }) => api.move(workout.id, date, time),
+    onMutate: () => setLastChange("move"),
     onSuccess: (res, vars) => {
       // An app-built session the watch mirrors (the watch mirrors the plan §3.4): its copy follows by itself — never "not
       // auto-updated" — the old copy's delete on its way when the move queued one. With COROS writes off, as before.
@@ -82,10 +89,13 @@ export function MoveSheet({
       // (another day's is the drain's, which the move's own answer started).
       if (isAppSession(workout)) void watchFollowsChange([workout.id], () => qc.fetchQuery({ queryKey: ["today"], queryFn: api.today, staleTime: 0 }));
     },
+    onError: readAgain,
   });
 
   const skip = useMutation({
     mutationFn: () => api.skip(workout.id),
+    onMutate: () => setLastChange("skip"),
+    onError: readAgain,
     onSuccess: () => {
       setResult("Workout skipped — later workouts stay where they are.");
       void qc.invalidateQueries({ queryKey: ["today"] });
@@ -100,9 +110,15 @@ export function MoveSheet({
     },
   });
 
+  /** The last press's error, when it was the server's refusal. */
+  const last = latestError({ move, skip }, lastChange);
+  const refused = refusedByServer(last) ? last : null;
   const close = () => {
     setResult(null);
     setCustom(false);
+    move.reset();
+    skip.reset();
+    setLastChange(null);
     onClose();
   };
 
@@ -115,7 +131,15 @@ export function MoveSheet({
             : "This will only change the app calendar — connect COROS in Settings to update your watch."}
         </Banner>
       ) : null}
-      {result ? (
+      {refused ? (
+        // The server refused it (done, or under way): nothing here can change it now — its words, and Done.
+        <div className="stack">
+          <Banner kind="warn">{planRefusal(refused, "")}</Banner>
+          <button className="btn btn-primary" onClick={close}>
+            Done
+          </button>
+        </div>
+      ) : result ? (
         <div className="stack">
           <Banner kind="info">{result}</Banner>
           <button className="btn btn-primary" onClick={close}>

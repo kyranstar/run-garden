@@ -358,7 +358,11 @@ export function deriveWorkoutSync(v: {
   hasFailedJob: boolean;
   presence: CloudPresence;
   writesEnabled: boolean;
+  /** Completed: its day is its credit's, and COROS's copy is the record of it. Nothing is sent for it, so its date differing
+   * from COROS's (the import keeps a done row's day, JOINT Fix 6) is no change waiting: unless a write is on its way, synced. */
+  done?: boolean;
 }): WorkoutSyncView {
+  if (v.done && !v.hasPendingJob) return "synced";
   if (v.effectiveDate === v.lastVerifiedCorosDate && !v.hasPendingJob) {
     return v.hasOpenContentIntent ? "content_stale" : v.takingWatchCopy ? "taking_watch_copy" : "synced";
   }

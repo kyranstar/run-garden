@@ -78,6 +78,7 @@ import { importPlanSnapshot } from "../src/services/import-plan.js";
 import { syncCalendar } from "../src/services/calendar-sync.js";
 import { encryptSecret } from "../src/auth/crypto.js";
 import { postSyncNote } from "../src/services/sync-notes.js";
+import { readGuarded } from "../src/services/session-guard.js";
 import { calmDoc } from "./doc-workout-fixture.js";
 import { FakeGoogle } from "./fake-google-calendar.js";
 import { cloneTestDb, isWrite, makeTestDb, makeTestUser, mountRoutes } from "./helpers.js";
@@ -540,6 +541,24 @@ describe("a session under way: the routes refuse while its save would land", () 
     expect((await w.call("POST", `/api/plan/workouts/${id}/move`, { toDate: addDays(D, 5), toTime: "18:00" })).json).toEqual(COMPLETED_ANSWER);
   });
 
+  it("started, its build unreadable (none locked, none un-started on record): the row's own day stands in, and its next", async () => {
+    const { w, id } = await startedOn(D);
+    await w.db.update(schema.sessionBuilds).set({ lockedAt: null }).where(eq(schema.sessionBuilds.workoutId, id));
+    for (const [day, status] of [[D, 409], [addDays(D, 1), 409], [addDays(D, 2), 200]] as const) {
+      setClock(day, "12:00");
+      const answer = await w.call("POST", `/api/plan/workouts/${id}/skip`);
+      expect([day, answer.status]).toEqual([day, status]);
+    }
+  });
+
+  it("the guard's read binds only its own values: what decides under way adds no bound parameter (D1 allows 100)", async () => {
+    const binds: number[] = [];
+    const db = cloneTestDb(migrated, { boundVariableCap: 100, onBind: (_s, params) => void binds.push(params.length) });
+    await readGuarded(db, "u-1", "w-1");
+    expect(binds).toHaveLength(1);
+    expect(binds[0]).toBeLessThanOrEqual(3);
+  });
+
   it("a slot not started, and one discarded back to built: not refused", async () => {
     const w = await world();
     const a = await slotOn(w, D);
@@ -692,7 +711,7 @@ describe("the coach and a session under way", () => {
       const trail = overrides(w, id);
       const res = await w.call("POST", `/api/coach/proposals/${proposal}/approve`, { opIds: [planAdjustId(id), planAdjustId(other)] });
       expect(res.status).toBe(200);
-      expect(res.json.refused).toEqual([expect.objectContaining({ opId: planAdjustId(id), error: "not_editable", cause: "under_way", why: expect.stringContaining("may still be running") })]);
+      expect(res.json.refused).toEqual([{ opId: planAdjustId(id), error: "not_editable", cause: "under_way", why: expect.stringContaining("may still be running") }]);
       expect(res.json.changed.map((x: { opId: string }) => x.opId)).toEqual([planAdjustId(other)]);
       expect(rowOf(w, id)).toEqual(before);
       expect(overrides(w, id)).toBe(trail);
@@ -729,6 +748,61 @@ describe("the coach and a session under way", () => {
     const res = await w.call("POST", `/api/coach/proposals/${proposal}/approve`, {});
     expect(res.json.refused).toEqual([]);
     expect(rowOf(w, id).completion).toBe("skipped");
+  });
+
+  it("a restore of a session skipped by hand and started since: put back on the plan, approve and propose alike (its skip answers first, not its Start)", async () => {
+    const w = await world();
+    const id = await slotOn(w, D);
+    setClock(D, "12:00");
+    expect((await w.call("POST", `/api/plan/workouts/${id}/skip`)).status).toBe(200);
+    const proposal = await proposed(w, change(id, { kind: "restore" }));
+    setClock(D, "17:55");
+    const built = await w.call("POST", `/api/sessions/${id}/build`, {});
+    expect((await w.call("POST", `/api/sessions/${id}/start`, { buildId: built.json.build.buildId })).status).toBe(200);
+    expect(rowOf(w, id)).toMatchObject({ completion: "skipped", content: "started" });
+    const ctx = await mainRun(w);
+    const r = await adjustPlan.run(ctx, change(id, { kind: "restore" }));
+    expect(isToolErr(r) ? r.error : "stored").toBe("stored");
+    const res = await w.call("POST", `/api/coach/proposals/${proposal}/approve`, {});
+    expect(res.json.refused).toEqual([]);
+    expect(res.json.changed.map((x: { opId: string }) => x.opId)).toEqual([planAdjustId(id)]);
+    expect(rowOf(w, id)).toMatchObject({ completion: "scheduled", content: "started" });
+  });
+
+  it("a restore of a session un-skipped by hand and started since: propose refuses it as under way; approve finds its effect made (the athlete's un-skip) and writes nothing", async () => {
+    const w = await world();
+    const id = await slotOn(w, D);
+    setClock(D, "12:00");
+    expect((await w.call("POST", `/api/plan/workouts/${id}/skip`)).status).toBe(200);
+    const proposal = await proposed(w, change(id, { kind: "restore" }));
+    expect((await w.call("POST", `/api/plan/workouts/${id}/unskip`)).status).toBe(200);
+    setClock(D, "17:55");
+    await buildAndStart(w, id);
+    const ctx = await mainRun(w);
+    const r = await adjustPlan.run(ctx, change(id, { kind: "restore" }));
+    expect(isToolErr(r) ? r.error : "stored").toBe("under_way");
+    const before = rowOf(w, id);
+    const res = await w.call("POST", `/api/coach/proposals/${proposal}/approve`, {});
+    expect(res.json.refused).toEqual([]);
+    expect(res.json.changed.map((x: { opId: string }) => x.opId)).toEqual([planAdjustId(id)]);
+    expect(rowOf(w, id)).toEqual(before);
+  });
+
+  it("a session done while still started (the watch reported first): its state answers, not its Start — approve says resolved, propose says not changeable", async () => {
+    const w = await world();
+    const id = await slotOn(w, D);
+    setClock(D, "12:00");
+    const proposal = await proposed(w, change(id, { kind: "skip", reason: "Rest." }));
+    setClock(D, "18:00");
+    await buildAndStart(w, id);
+    setClock(D, "18:35");
+    await corosReport(w, [corosSource({ label: "lbl-first", date: D, hhmm: "18:01", seconds: 1790, sport: "strength" })]);
+    expect(rowOf(w, id)).toMatchObject({ completion: "completed", content: "started" });
+    const res = await w.call("POST", `/api/coach/proposals/${proposal}/approve`, {});
+    expect(res.json.refused).toEqual([expect.objectContaining({ opId: planAdjustId(id), error: "not_editable", cause: "resolved" })]);
+    const ctx = await mainRun(w);
+    const r = await adjustPlan.run(ctx, change(id, { kind: "move", toDate: addDays(D, 3), toTime: "12:00" }));
+    expect(isToolErr(r) ? r.error : "stored").toBe("not_changeable");
   });
 
   it("past its window the coach's own rule answers, not this one: a day gone is `past_date`", async () => {
@@ -1094,6 +1168,10 @@ describe("a finished session's day doesn't follow COROS", () => {
     expect(after.counters).toMatchObject({ runs: 1, long: 1 });
     expect(after.credits.flatMap((c) => c.completed.map((x) => [c.date, x.workoutId, x.activityId]))).toEqual([[FRI, id, "coros:lbl-long"]]);
     expect(after.events.map((e) => [e.date, e.kind, e.activity])).toEqual(record(control).events.map((e) => [e.date, e.kind, e.activity]));
+    // What the sheet is told: nothing to send, so not "Not synced to COROS" (whose words say the watch has an old date to fix).
+    const dto = await w.call("GET", `/api/plan/workouts/${id}`);
+    expect(dto.json.workout).toMatchObject({ completionState: "completed", effectiveDate: FRI, lastVerifiedCorosDate: TUE, corosSyncView: "synced" });
+    expect(dto.json.workout.syncAction).toBeUndefined();
   });
 
   it("a session still to come follows COROS as before, with its note", async () => {

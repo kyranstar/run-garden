@@ -2,7 +2,7 @@ import { and, eq, inArray, isNull, ne, or, sql, type SQL } from "drizzle-orm";
 import { corosWriteJobs, plannedWorkouts, sessionBuilds } from "@rg/database";
 import { addDays, isLocalDate } from "@rg/domain";
 import { chunkIds, type Db } from "./db.js";
-import { provisionalRecord, pushJobId, SETTLED_PUSH, UNSTARTED_AT_PATH } from "./session-build.js";
+import { PROVISIONAL_KIND, PROVISIONAL_KIND_PATH, pushJobId, SETTLED_PUSH, UNSTARTED_AT_PATH } from "./session-build.js";
 
 /**
  * THE SESSION GUARD: what the athlete's plan routes and the coach refuse, so a finished session's credit stays where it landed
@@ -20,7 +20,8 @@ import { provisionalRecord, pushJobId, SETTLED_PUSH, UNSTARTED_AT_PATH } from ".
  * reconcile is already asking about the session and the API has to offer a way on.
  */
 
-export const COMPLETED_WORDS = "This session is done, so it stays on the day it was done.";
+/** Done: it stays as it is. Not "on the day it was done": a match may be a day off its slot, or made by hand. */
+export const COMPLETED_WORDS = "This session is done, so it stays as it is on your plan.";
 export const UNDER_WAY_WORDS = "This session was started and may still be running on another device, so it stays as it is.";
 
 export interface GuardRefusal {
@@ -28,22 +29,27 @@ export interface GuardRefusal {
   why: string;
 }
 
+/** A constant of this module's as an SQL string literal: never a bound value (a read riding a statement near D1's 100 binds). */
+const literal = (v: string): SQL => sql.raw(`'${v.replace(/'/g, "''")}'`);
+
 /**
- * What decides "under way", as a column of a read of `planned_workouts`, so it costs no statement of its own: null for a row not
- * started, otherwise its started builds' days and whether it holds a live sent copy (`sentBuildIdOf`'s rule).
+ * What decides "under way", as a column of a read of `planned_workouts`, so it costs no statement of its own and binds no value
+ * (every constant in it is a literal): null for a row not started, otherwise its started builds' days and whether it holds a
+ * live sent copy (`sentBuildIdOf`'s rule, a provisional copy's record as `provisionalRecord` says it).
  */
 export const underWaySql = (): SQL => {
   const pw = plannedWorkouts;
   const b = sessionBuilds;
   const j = corosWriteJobs;
-  const live = sql.join(SETTLED_PUSH.map((s) => sql`${s}`), sql`, `);
+  const settled = sql.join(SETTLED_PUSH.map(literal), sql`, `);
   return sql`case when ${pw.contentState} = 'started' then json_object(
     'days', (select json_group_array(json_extract(${b.payload}, '$.build.date')) from ${b}
       where ${b.workoutId} = ${pw.id} and ${b.userId} = ${pw.userId}
-        and (${b.lockedAt} is not null or json_extract(${b.payload}, ${UNSTARTED_AT_PATH}) is not null)),
-    'sent', exists(select 1 from ${b} join ${j} on ${j.id} = ${pushJobId("")} || ${b.id}
-      where ${b.workoutId} = ${pw.id} and (${b.lockedAt} is not null or ${provisionalRecord()})
-        and ${j.kind} = 'program_session_push' and ${j.status} not in (${live}))
+        and (${b.lockedAt} is not null or json_extract(${b.payload}, ${literal(UNSTARTED_AT_PATH)}) is not null)),
+    'sent', exists(select 1 from ${b} join ${j} on ${j.id} = ${literal(pushJobId(""))} || ${b.id}
+      where ${b.workoutId} = ${pw.id}
+        and (${b.lockedAt} is not null or (${b.version} < 0 and json_extract(${b.payload}, ${literal(PROVISIONAL_KIND_PATH)}) = ${literal(PROVISIONAL_KIND)}))
+        and ${j.kind} = 'program_session_push' and ${j.status} not in (${settled}))
   ) end`;
 };
 

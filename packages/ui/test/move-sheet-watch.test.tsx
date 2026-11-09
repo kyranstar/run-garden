@@ -17,6 +17,8 @@ import { MoveSheet } from "../src/screens/move-sheet.js";
 const TODAY = "2026-10-05";
 let root: Root | null = null;
 let host: HTMLDivElement | null = null;
+/** The query client of the sheet last mounted. */
+let lastQc: QueryClient | null = null;
 
 beforeEach(() => {
   vi.useFakeTimers({ toFake: ["Date"] });
@@ -62,6 +64,7 @@ function mount(w: WorkoutDto, moved: { corosSyncState: string; watchDrain?: bool
   document.body.appendChild(host);
   root = createRoot(host);
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  lastQc = qc;
   act(() => {
     root!.render(createElement(QueryClientProvider, { client: qc }, createElement(MoveSheet, { workout: w, open: true, onClose: () => undefined })));
   });
@@ -137,6 +140,17 @@ describe("a refusal says the server's words (the session guard, 409 `{ error, wh
     await pressed("Skip workout");
     await until(() => (document.body.textContent ?? "").includes(WHY), "the refusal's words");
     expect(document.body.textContent).not.toContain("Workout skipped");
+  });
+
+  it("after a refusal the sheet offers no other day and no skip (the session can't be changed), and the plan is read again", async () => {
+    mount(row(), { corosSyncState: "calendar_only" }, { path: "move", status: 409, body: { error: "session_completed", why: "This session is done, so it stays as it is on your plan." } });
+    // What the sheet that opened this one reads, held in the cache as it would be.
+    for (const key of [["today"], ["plan"], ["workout", "w1"], ["session", "w1"]]) lastQc!.setQueryData(key, {});
+    await pressed("Open evening.");
+    await until(() => (document.body.textContent ?? "").includes("stays as it is"), "the refusal's words");
+    expect([...document.querySelectorAll("button")].map((b) => b.textContent)).not.toContain("Skip workout");
+    expect(document.querySelectorAll("button.workout-row")).toHaveLength(0);
+    for (const key of [["today"], ["plan"], ["workout", "w1"], ["session", "w1"]]) expect(lastQc!.getQueryState(key)?.isInvalidated, JSON.stringify(key)).toBe(true);
   });
 
   it("anything else: what it always said", async () => {

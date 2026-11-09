@@ -52,7 +52,7 @@ import { useWatchCatchUp, watchFollows } from "./watch-catch-up.js";
 import { EXERCISES, isProfileId, label as vocab, PROFILES } from "@rg/exercise-library";
 import { effortAdvice } from "@rg/workout";
 import { Banner, CompletionPill, ConfirmDialog, EmptyState, formatDayLong, formatTime, Sheet, Spinner } from "../components.js";
-import { offersMoveAndSkip, offersMoveToToday, planRefusal } from "./session-sheet-model.js";
+import { latestError, offersMoveAndSkip, offersMoveToToday, planRefusal } from "./session-sheet-model.js";
 import { features } from "../features.js";
 import { IconAlert, IconInfo, IconSwap, IconWatch } from "../icons.js";
 import { offlineDb } from "../offline/idb.js";
@@ -538,8 +538,11 @@ export function SessionSheet({
     refreshPlan();
     void qc.invalidateQueries({ queryKey: key });
   };
+  /** Which of Skip and Move to today was pressed last: its refusal is the one the sheet says. */
+  const [lastChange, setLastChange] = useState<"skip" | "today" | null>(null);
   const skip = useMutation({
     mutationFn: () => api.skip(w.id),
+    onMutate: () => setLastChange("skip"),
     onSuccess: () => {
       refreshPlan();
       onClose();
@@ -573,6 +576,7 @@ export function SessionSheet({
   });
   const moveToToday = useMutation({
     mutationFn: () => api.move(w.id, today, w.effectiveTime),
+    onMutate: () => setLastChange("today"),
     onSuccess: () => {
       refreshPlan();
       void qc.invalidateQueries({ queryKey: key });
@@ -1144,7 +1148,7 @@ export function SessionSheet({
         ) : null}
         {skip.isError || moveToToday.isError ? (
           <p className="session-refused" role="alert">
-            {planRefusal(skip.error ?? moveToToday.error, "Couldn't change it. Try again.")}
+            {planRefusal(latestError({ skip, today: moveToToday }, lastChange), "Couldn't change it. Try again.")}
           </p>
         ) : null}
         {editable && !marked ? (

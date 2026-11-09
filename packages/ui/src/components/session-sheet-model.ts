@@ -18,11 +18,26 @@ export const offersMoveAndSkip = (s: SheetPlanState): boolean => !s.completed &&
 
 export const offersMoveToToday = (s: SheetPlanState): boolean => !s.completed && s.past && !s.locked;
 
+/** The server's words when it refused the change (409 `{ error, why }`: the session done, or under way); else null. */
+function refusedWhy(e: unknown): string | null {
+  if (!(e instanceof ApiError) || e.status !== 409) return null;
+  const why = (e.body as { why?: unknown } | null)?.why;
+  return typeof why === "string" && why ? why : null;
+}
+
 /** A refused change's words: the server's own (409 `{ error, why }`), else what it always said. */
 export function planRefusal(e: unknown, otherwise: string): string {
-  if (e instanceof ApiError && e.status === 409) {
-    const why = (e.body as { why?: unknown } | null)?.why;
-    if (typeof why === "string" && why) return why;
-  }
-  return otherwise;
+  return refusedWhy(e) ?? otherwise;
+}
+
+/** The server refused it, so the session can't be changed this way now: a sheet stops offering the change. */
+export const refusedByServer = (e: unknown): boolean => refusedWhy(e) !== null;
+
+/**
+ * Of a sheet's changes, the error to say: the one pressed last (`last`, its name), so an older press's error never hides it;
+ * with that one fine, none; with none pressed yet, the first that failed. Null when there is none.
+ */
+export function latestError<K extends string>(changes: Readonly<Record<K, { isError: boolean; error: unknown }>>, last: K | null): unknown {
+  if (last !== null) return changes[last].isError ? changes[last].error : null;
+  return Object.values<{ isError: boolean; error: unknown }>(changes).find((m) => m.isError)?.error ?? null;
 }

@@ -1102,8 +1102,8 @@ function unchangedSince(row: RowState): SQL {
   )!;
 }
 
-/** A session under way, refused (R-APP-N2): the card stays and says so. */
-const underWayRefusal = (): Omit<Refused, "opId"> => ({ ...notEditable("under_way"), why: UNDER_WAY_WORDS });
+/** A session under way, refused (R-APP-N2): the card stays and says so — and no "instead": the table's is the coach's words. */
+const underWayRefusal = (): Omit<Refused, "opId"> => ({ error: "not_editable", cause: "under_way", why: UNDER_WAY_WORDS });
 
 /** Why a change whose guarded write found its session changed since the approve's read was refused: as the row now is. */
 function lostRefusal(row: { archivedAt: string | null; completionState: string; contentState: string | null; effectiveDate: string; underWay: unknown } | undefined, today: string): Omit<Refused, "opId"> {
@@ -1161,8 +1161,8 @@ function planVerdict(
   if (claimed) return claimed;
   if ((c.kind === "skip" || c.kind === "restore") && effectThere(c, row)) return { made: beforeOf(row), replayFrom: null };
   // A session under way isn't changed out from under the device playing it (R-APP-N2): its card stays, and says why. Its state
-  // answers first when that is done with; a restore only ever reaches a skipped session.
-  if (c.kind !== "restore" && !(FROZEN_STATES as readonly string[]).includes(row.dto.completionState) && underWayNow({ contentState: row.dto.contentState ?? null, effectiveDate: row.dto.date }, row.underWay, today)) {
+  // answers first when that is done with (done, skipped, missed) — so a restore of a skipped session isn't held by a Start.
+  if (!(FROZEN_STATES as readonly string[]).includes(row.dto.completionState) && underWayNow({ contentState: row.dto.contentState ?? null, effectiveDate: row.dto.date }, row.underWay, today)) {
     return { refusal: underWayRefusal() };
   }
   // A restore reaches a skipped session (the thread coach's rule), its day not yet gone; any other change a session

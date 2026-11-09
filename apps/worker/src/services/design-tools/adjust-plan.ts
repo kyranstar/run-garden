@@ -259,8 +259,8 @@ function refusalOf(
     return refuse("not_found", `No planned session of the athlete's has id ${JSON.stringify(workoutId)}.`, "Use an id from read_plan.");
   }
   // Started, and its save could still land: it may be running on another device (R-APP-N2). Its state answers first when that
-  // is done with, and a restore only ever reaches a skipped session.
-  if (c.kind !== "restore" && !(FROZEN_STATES as readonly string[]).includes(row.completion) && underWayNow({ contentState: row.content ?? null, effectiveDate: row.date }, row.underWay, today)) {
+  // is done with (done, skipped, missed) — so a restore of a skipped session isn't held by a Start.
+  if (!(FROZEN_STATES as readonly string[]).includes(row.completion) && underWayNow({ contentState: row.content ?? null, effectiveDate: row.date }, row.underWay, today)) {
     return refuse("under_way", UNDER_WAY_WORDS, "Leave this session as it is, and change one still to come.");
   }
   // A restore reaches a skipped session (the thread coach's one op whose purpose is a resolved row), still to come.

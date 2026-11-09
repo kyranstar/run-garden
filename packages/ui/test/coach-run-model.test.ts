@@ -335,7 +335,7 @@ describe("the plan's refusals, in plain words", () => {
   it("a change whose session changed since the coach suggested it: its own words, then the server's why (review-L)", () => {
     const why = "A session it re-times has changed since it was suggested, so it is as it was.";
     expect(refusalWords({ error: "changed_since_suggested" })).toBe("This session changed since the coach suggested it — ask again.");
-    expect(refusedLine({ error: "changed_since_suggested", why })).toEqual({ lead: "This session changed since the coach suggested it — ask again.", detail: why });
+    expect(refusedLine({ error: "changed_since_suggested", why })).toEqual({ lead: "This session changed since the coach suggested it — ask again.", detail: null });
   });
 
   it("the server's why joins the words only where it adds to them", () => {
@@ -361,11 +361,17 @@ describe("the plan's refusals, in plain words", () => {
 
   it("each cause is the table's words, and what to do instead follows the why (spec §3)", () => {
     const resolved = REVISABILITY_WORDS.resolved.why as (s: string) => string;
-    for (const cause of ["programme", "under_way", "rest", "race"] as const) {
+    for (const cause of ["programme", "rest", "race"] as const) {
       const w = REVISABILITY_WORDS[cause];
       expect(refusalWords({ error: "not_editable", cause })).toBe(w.why);
       expect(refusedLine({ error: "not_editable", cause, why: w.why as string, instead: w.instead })).toEqual({ lead: w.why, detail: w.instead });
     }
+    // Under way: the table's "instead" is the coach's ("Propose one for later."), never said to the athlete.
+    const under = REVISABILITY_WORDS.under_way;
+    expect(refusalWords({ error: "not_editable", cause: "under_way" })).toBe(under.why);
+    expect(refusedLine({ error: "not_editable", cause: "under_way", why: under.why as string, instead: under.instead })).toEqual({ lead: under.why, detail: null });
+    const guard = "This session was started and may still be running on another device, so it stays as it is.";
+    expect(refusedLine({ error: "not_editable", cause: "under_way", why: guard })).toEqual({ lead: guard, detail: null });
     expect(refusedLine({ error: "not_editable", cause: "resolved", why: resolved("skipped"), instead: REVISABILITY_WORDS.resolved.instead })).toEqual({
       lead: "It was skipped.",
       detail: "Propose a new workout.",
