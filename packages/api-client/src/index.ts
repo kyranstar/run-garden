@@ -2722,7 +2722,6 @@ export const api = {
   unskipWorkout: (id: string) => post(`/api/plan/workouts/${id}/unskip`),
   /** A course's session: the athlete says it happened, or takes that back. 409 `{error, why}` says why it can't, in words. */
   markDone: (id: string, done: boolean) => post<{ ok: true }>(`/api/plan/workouts/${encodeURIComponent(id)}/mark-done`, { done }),
-  defer: (id: string) => post(`/api/plan/workouts/${id}/defer`),
   match: (id: string, activityId: string) => post(`/api/plan/workouts/${id}/match`, { activityId }),
   unmatch: (id: string) => post(`/api/plan/workouts/${id}/unmatch`),
   restoreCalendar: (id: string) => post(`/api/plan/workouts/${id}/restore-calendar`),

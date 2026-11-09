@@ -12,13 +12,15 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { eq } from "drizzle-orm";
 import { schema } from "@rg/database";
 import { addDays, newId, type PerformedSessionWireInput, type UserPreferences } from "@rg/domain";
+import { createSession, SESSION_COOKIE } from "../src/auth/sessions.js";
+import { planRoutes } from "../src/routes/plan.js";
 import type { Db } from "../src/services/db.js";
 import { applyMove } from "../src/services/jobs.js";
 import { removeFromPlan } from "../src/services/plan-mutations.js";
 import { buildSession, loadSession, startSession, unstartSession, type BuildPayload } from "../src/services/session-build.js";
 import { InvalidSaveError, savePerformedSession } from "../src/services/session-save.js";
 import { sendToWatch, takeOffWatch, unpushBuild } from "../src/services/watch-push.js";
-import { connectTestCoros, makeTestDb, makeTestUser } from "./helpers.js";
+import { connectTestCoros, makeTestDb, makeTestUser, mountRoutes } from "./helpers.js";
 import { DAY, NOON, rowOf, seedCatalog, seedProgram, seedSlot, seedTmj, switchOn, TOMORROW } from "./watch-push-fixture.js";
 
 const { corosWriteJobs, plannedWorkouts, sessionBuilds } = schema;
@@ -202,5 +204,59 @@ describe("the save's day check for a sent build COROS moved", () => {
     const wire = wireOf(workoutId, built.build!, LATER);
     await expect(savePerformedSession(db, userId, wire.id, wire, { now: `${LATER}T20:00:00.000Z`, prefs })).rejects.toBeInstanceOf(InvalidSaveError);
     expect((await loadSession(db, userId, workoutId, LATER)).contentState).toBe("started");
+  });
+
+  /** The athlete's own route, as a stale tab or a direct call reaches it. */
+  const planRoute = async (workoutId: string, action: "move" | "skip", body?: unknown) => {
+    const cookie = `${SESSION_COOKIE}=${await createSession(db, userId)}`;
+    const app = mountRoutes(db, "/api/plan", planRoutes);
+    const res = await app.request(
+      `/api/plan/workouts/${workoutId}/${action}`,
+      { method: "POST", headers: { Cookie: cookie, "Content-Type": "application/json" }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) },
+      switchOn(),
+      { waitUntil: () => undefined, passThroughOnException: () => undefined, props: {} } as never,
+    );
+    return { status: res.status, json: (await res.json()) as Record<string, unknown> };
+  };
+
+  it("started on a copy COROS moved ahead: under way through the slot's new day and the next, though its build's day is long gone (R3 F6); then the API opens", async () => {
+    const FAR = addDays(DAY, 5);
+    const { workoutId, buildId, build } = await sentSlot({ verified: true });
+    await db.update(plannedWorkouts).set({ effectiveDate: FAR, lastVerifiedCorosDate: FAR }).where(eq(plannedWorkouts.id, workoutId));
+    vi.setSystemTime(new Date(`${FAR}T19:00:00.000Z`));
+    await startSession(db, userId, workoutId, buildId, `${FAR}T19:00:00.000Z`);
+    for (const day of [FAR, addDays(FAR, 1)]) {
+      vi.setSystemTime(new Date(`${day}T19:00:00.000Z`));
+      for (const [action, body] of [["move", { toDate: addDays(FAR, 3), toTime: "18:00" }], ["skip", undefined]] as const) {
+        const answer = await planRoute(workoutId, action, body);
+        expect([answer.status, answer.json.error]).toEqual([409, "session_under_way"]);
+      }
+    }
+    expect(await rowOf(db, workoutId)).toMatchObject({ effectiveDate: FAR, contentState: "started", completionState: "scheduled" });
+    // Its save lands on the slot's new day, the guard having held it there.
+    vi.setSystemTime(new Date(`${FAR}T20:00:00.000Z`));
+    const wire = wireOf(workoutId, build, FAR);
+    expect(await savePerformedSession(db, userId, wire.id, wire, { now: `${FAR}T20:00:00.000Z`, prefs })).toMatchObject({ status: "saved" });
+  });
+
+  it("started on a copy COROS moved, past those days: no longer refused", async () => {
+    const FAR = addDays(DAY, 5);
+    const { workoutId, buildId } = await sentSlot({ verified: true });
+    await db.update(plannedWorkouts).set({ effectiveDate: FAR, lastVerifiedCorosDate: FAR }).where(eq(plannedWorkouts.id, workoutId));
+    vi.setSystemTime(new Date(`${FAR}T19:00:00.000Z`));
+    await startSession(db, userId, workoutId, buildId, `${FAR}T19:00:00.000Z`);
+    vi.setSystemTime(new Date(`${addDays(FAR, 2)}T19:00:00.000Z`));
+    expect((await planRoute(workoutId, "skip")).status).toBe(200);
+  });
+
+  it("HAZARD, as it stands (JOINT §3.2; the guard neither causes nor stops it): Discard on a sent build, then a move: the move unsends it and the phone's save answers 422 for good", async () => {
+    const { workoutId, buildId, build } = await sentSlot({ verified: true });
+    await startSession(db, userId, workoutId, buildId, NOON);
+    await unstartSession(db, userId, workoutId, { today: DAY, now: NOON });
+    // Built again, so the gate is open: the Discard is what said nobody is playing it.
+    expect((await planRoute(workoutId, "move", { toDate: TOMORROW, toTime: "18:00" })).status).toBe(200);
+    expect(await rowOf(db, workoutId)).toMatchObject({ effectiveDate: TOMORROW, contentState: "outline" });
+    const wire = wireOf(workoutId, build, DAY);
+    await expect(savePerformedSession(db, userId, wire.id, wire, { now: `${DAY}T20:00:00.000Z`, prefs })).rejects.toBeInstanceOf(InvalidSaveError);
   });
 });

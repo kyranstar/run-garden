@@ -45,6 +45,12 @@ export interface MoveRequest {
   toTime: string;
   source: "app" | "calendar_edit" | "reschedule";
   corosWritesEnabled: boolean;
+  /**
+   * A condition the row must still meet as it is moved (`stillOpen`, the athlete's own route): when it no longer does the row
+   * stays where it is and this throws `session_changed`. The override, the intent and any watch job written before that stand: a
+   * race lost in this window leaves a trail, not a moved session. Without it the move is exactly as it always was.
+   */
+  onlyIf?: SQL;
 }
 
 export interface MoveOutcome {
@@ -231,7 +237,7 @@ export async function applyMove(db: Db, req: MoveRequest): Promise<MoveOutcome> 
       ? await db.select({ name: programs.name }).from(programs).where(eq(programs.id, workout.planId)).limit(1)
       : [];
 
-  await db
+  const moved = await db
     .update(plannedWorkouts)
     .set({
       effectiveDate: req.toDate,
@@ -247,7 +253,9 @@ export async function applyMove(db: Db, req: MoveRequest): Promise<MoveOutcome> 
       ...(toOutline ? { contentState: "outline", ...(program ? { title: program.name } : {}) } : {}),
       updatedAt: now,
     })
-    .where(eq(plannedWorkouts.id, workout.id));
+    .where(and(eq(plannedWorkouts.id, workout.id), req.onlyIf))
+    .returning({ id: plannedWorkouts.id });
+  if (req.onlyIf && moved.length === 0) throw new Error("session_changed");
   // Marked once the row stands on its new day: a sweep that read it before the move does not settle the mark.
   if (fromDate !== req.toDate && docOriginRow(workout)) await markMirrorOwed(db, req.userId, workout.id, now);
 

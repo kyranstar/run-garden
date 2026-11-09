@@ -29,6 +29,7 @@ import {
   hasWatchAddress,
   humanizeWorkoutTitle,
   isAdventureSport,
+  isLocalDate,
   looksLikeCodeTitle,
   newId,
   nowInstant,
@@ -95,6 +96,7 @@ import { todayConditions } from "../services/condition-views.js";
 import { watchReviewOffers } from "../services/session-watch-review.js";
 import { plannedRowColumns, type PlannedRow } from "../services/planned-columns.js";
 import { DESIGNED_RUN_SEED } from "../services/designed-runs.js";
+import { guardRefusal, readGuarded, stillOpen } from "../services/session-guard.js";
 import { reopenedDocColumns, resolveLibraryName } from "../services/workout-doc-store.js";
 
 export const planRoutes = new Hono<AppContext>();
@@ -1662,19 +1664,25 @@ planRoutes.post("/repair-fidelity", async (c) => {
   return c.json({ ok: true, ...report });
 });
 
-const moveSchema = z.object({ toDate: z.string(), toTime: z.string() });
+const moveSchema = z.object({ toDate: z.string().refine(isLocalDate), toTime: z.string() });
 
+/** A guarded write lost to a save or a Start that landed since the guard's read: why, as the row stands now. */
+async function refusalNow(db: Db, userId: string, id: string, today: string) {
+  const row = await readGuarded(db, userId, id);
+  return (row && guardRefusal(row, today)) ?? { error: "session_changed", why: "This session changed just now. Try again." };
+}
+
+/** A move of the athlete's own (`session-guard.ts`: a done session, or one under way, is refused 409 `{error, why}`). */
 planRoutes.post("/workouts/:id/move", async (c) => {
   const db = c.get("db");
   const userId = c.get("userId");
   const parsed = moveSchema.safeParse(await c.req.json());
   if (!parsed.success) return c.json({ error: "invalid_request" }, 400);
   const prefs = await loadPreferences(db, userId);
-  const [row] = await db
-    .select({ origin: plannedWorkouts.origin })
-    .from(plannedWorkouts)
-    .where(and(eq(plannedWorkouts.id, c.req.param("id")), eq(plannedWorkouts.userId, userId)))
-    .limit(1);
+  const today = todayInZone(prefs.timezone);
+  const row = await readGuarded(db, userId, c.req.param("id"));
+  const refused = row ? guardRefusal(row, today) : null;
+  if (refused) return c.json(refused, 409);
   try {
     const outcome = await applyMove(db, {
       userId,
@@ -1683,6 +1691,7 @@ planRoutes.post("/workouts/:id/move", async (c) => {
       toTime: parsed.data.toTime,
       source: "app",
       corosWritesEnabled: prefs.corosWritesEnabled,
+      ...(row ? { onlyIf: stillOpen(row) } : {}),
     });
     // Cloud-direct: the queued write executes now, not when a Mac wakes. A programme session's watch copy comes off
     // in its own request instead (ruling 3-R11, re-review 3-B NEW-1): the client drains it, so this invocation stays
@@ -1693,13 +1702,16 @@ planRoutes.post("/workouts/:id/move", async (c) => {
     return c.json({ ...outcome, ...(watchDrain ? { watchDrain: true } : {}) });
   } catch (e) {
     const msg = e instanceof Error ? e.message : "move_failed";
+    if (msg === "session_changed") return c.json(await refusalNow(db, userId, c.req.param("id"), today), 409);
     return c.json({ error: msg }, msg === "races_cannot_move" ? 422 : 500);
   }
 });
 
 /**
  * Skip a session (`skipWorkout`, the coach's skip's writer too): resolved on today — and a session the app built has its
- * copy taken off the watch, even ahead of its day (the watch mirrors the plan, owner §10.2).
+ * copy taken off the watch, even ahead of its day (the watch mirrors the plan, owner §10.2). A done session, or one under way, is
+ * refused 409 `{error, why}` (`session-guard.ts`): a skip of a done one was an `ok` that did nothing, and the sheet closed as if it
+ * had. A skip of one already skipped or missed still answers `ok`, doing nothing.
  */
 planRoutes.post("/workouts/:id/skip", async (c) => {
   const db = c.get("db");
@@ -1707,7 +1719,15 @@ planRoutes.post("/workouts/:id/skip", async (c) => {
   const prefs = await loadPreferences(db, userId);
   const today = todayInZone(prefs.timezone);
   const now = nowInstant();
-  await skipWorkout(db, userId, c.req.param("id"), { now, today, source: "app", prefs });
+  const id = c.req.param("id");
+  const row = await readGuarded(db, userId, id);
+  const refused = row ? guardRefusal(row, today) : null;
+  if (refused) return c.json(refused, 409);
+  const { skipped } = await skipWorkout(db, userId, id, { now, today, source: "app", prefs, ...(row ? { onlyIf: stillOpen(row) } : {}) });
+  if (!skipped && row) {
+    const lost = await refusalNow(db, userId, id, today);
+    if (lost.error !== "session_changed") return c.json(lost, 409);
+  }
   await resimulateFrom(db, userId, today, prefs, new Date(), REQUEST_GARDEN_STEP).catch(() => undefined);
   return c.json({ ok: true });
 });
@@ -1728,23 +1748,6 @@ planRoutes.post("/workouts/:id/unskip", async (c) => {
   if (res.reason === "not_found") return c.json({ error: "not_found" }, 404);
   if (res.reason === "not_skipped") return c.json({ error: "not_skipped" }, 422);
   await resimulateFrom(db, userId, res.resolvedOn!, prefs, new Date(), REQUEST_GARDEN_STEP).catch(() => undefined);
-  return c.json({ ok: true });
-});
-
-/** "Not yet" on the did-this-run-happen prompt: back to scheduled, and
- * snoozed until tomorrow — otherwise the hourly reconcile re-asked within
- * the hour and the button read as broken. */
-planRoutes.post("/workouts/:id/defer", async (c) => {
-  const prefs = await loadPreferences(c.get("db"), c.get("userId"));
-  const tomorrow = addDays(todayInZone(prefs.timezone), 1);
-  await c
-    .get("db")
-    .update(plannedWorkouts)
-    // A resolved row reopened: its workout document is derived again (`reopenedDocColumns`).
-    .set({ completionState: "scheduled", snoozedUntil: tomorrow, ...reopenedDocColumns(), updatedAt: nowInstant() })
-    .where(
-      and(eq(plannedWorkouts.id, c.req.param("id")), eq(plannedWorkouts.userId, c.get("userId"))),
-    );
   return c.json({ ok: true });
 });
 
@@ -1895,21 +1898,25 @@ planRoutes.post("/workouts/:id/mark-done", async (c) => {
  * the APP pushed to the watch comes back off it (Ruling A1); an imported COROS
  * session's watch copy is never touched, and its archived row keeps its
  * sourceWorkoutId so future imports update it in place without resurrecting it
- * into the visible plan. The DTO's `appPushed` is what the dialog discloses.
+ * into the visible plan. The DTO's `appPushed` is what the dialog discloses. A done session, or one under way, is refused 409
+ * `{error, why}` (`session-guard.ts`); a done one's way off the plan is `/unmatch` first, which keeps the activity.
  */
 planRoutes.post("/workouts/:id/remove", async (c) => {
   const db = c.get("db");
   const userId = c.get("userId");
   const id = c.req.param("id");
-  const [exists] = await db
-    .select({ id: plannedWorkouts.id, origin: plannedWorkouts.origin })
-    .from(plannedWorkouts)
-    .where(and(eq(plannedWorkouts.id, id), eq(plannedWorkouts.userId, userId)))
-    .limit(1);
+  const exists = await readGuarded(db, userId, id);
   if (!exists) return c.json({ error: "not_found" }, 404);
   const prefs = await loadPreferences(db, userId);
-  const removed = await removeFromPlan(db, userId, id, { now: nowInstant(), source: "remove_from_plan", prefs });
-  if (!removed.removed || !removed.effectiveDate) return c.json({ ok: true });
+  const refused = exists.archivedAt ? null : guardRefusal(exists, todayInZone(prefs.timezone));
+  if (refused) return c.json(refused, 409);
+  const removed = await removeFromPlan(db, userId, id, { now: nowInstant(), source: "remove_from_plan", prefs, onlyIf: stillOpen(exists) });
+  if (!removed.removed) {
+    const lost = exists.archivedAt ? null : await refusalNow(db, userId, id, todayInZone(prefs.timezone));
+    if (lost && lost.error !== "session_changed") return c.json(lost, 409);
+    return c.json({ ok: true });
+  }
+  if (!removed.effectiveDate) return c.json({ ok: true });
   // Cloud-direct: the unpush a pushed session needs executes now — for a programme session in its own request, which
   // the client drains (ruling 3-R11, re-review 3-B NEW-1).
   const watchDrain = appAuthoredRow(exists) && watchPushEnabled(c.env);

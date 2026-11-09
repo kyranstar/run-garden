@@ -558,28 +558,19 @@ describe("the COROS import: where stages are written, the document is too", () =
       expect([row.completionState, row.workoutDoc, row.workoutDocRev]).toEqual(["scheduled", null, 1]);
     });
 
-    it("a “not yet” and an unmatch reopen a resolved row the same way; a row that was not resolved keeps its document", async () => {
+    it("an unmatch reopens a resolved row: its document is derived again", async () => {
       await snapshot(base());
       const one = (await bySource(1)).id;
-      const two = (await bySource(2)).id;
-      const three = (await bySource(3)).id;
-      // Row 1 completed by an activity, then unmatched; row 2 missed, then deferred; row 3 unresolved, then deferred.
+      // Completed by an activity, then unmatched.
       await db.insert(schema.activities).values({
         id: "act-1", userId, source: "coros", corosActivityId: "a1", startTime: `${today}T14:00:00Z`, startTimeLocal: `${today}T07:00:00`,
         timezone: prefs.timezone, sport: "run", durationSeconds: 1800, sourceMergeConfidence: 1, createdAt: NOW_ISO, updatedAt: NOW_ISO,
       });
       await db.insert(schema.workoutCompletionMatches).values({ id: "m-1", workoutId: one, activityId: "act-1", confidence: 1, method: "manual", matchedAt: NOW_ISO });
       await db.update(plannedWorkouts).set({ completionState: "completed" }).where(eq(plannedWorkouts.id, one));
-      await db.update(plannedWorkouts).set({ completionState: "missed" }).where(eq(plannedWorkouts.id, two));
-      await db.update(plannedWorkouts).set({ completionState: "unresolved" }).where(eq(plannedWorkouts.id, three));
       expect((await post(`/workouts/${one}/unmatch`)).status).toBe(200);
-      expect((await post(`/workouts/${two}/defer`)).status).toBe(200);
-      expect((await post(`/workouts/${three}/defer`)).status).toBe(200);
-      const states = await Promise.all([1, 2, 3].map(async (n) => {
-        const r = await bySource(n);
-        return [r.completionState, r.workoutDoc === null, r.workoutDocRev];
-      }));
-      expect(states).toEqual([["unresolved", true, 1], ["scheduled", true, 1], ["scheduled", false, 1]]);
+      const r = await bySource(1);
+      expect([r.completionState, r.workoutDoc === null, r.workoutDocRev]).toEqual(["unresolved", true, 1]);
     });
 
     it("a document workout's document is its content: an unskip keeps it", async () => {

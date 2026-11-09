@@ -452,6 +452,19 @@ describe("marking a session done", () => {
     });
   });
 
+  it("the session guard takes Mark done as done, and its undo as open: a move is refused, then allowed; the mark and its undo aren't blocked", async () => {
+    const plan = await seedCourse();
+    const id = await outline(plan, MON);
+    const move = async () => {
+      const res = await mountRoutes(db, "/api/plan", planRoutes).request(`/api/plan/workouts/${id}/move`, { method: "POST", headers: { Cookie: await cookieFor(), "content-type": "application/json" }, body: JSON.stringify({ toDate: addDays(MON, 1), toTime: "18:15" }) }, ENV);
+      return { status: res.status, body: (await res.json()) as { error?: string } };
+    };
+    expect((await mark(id, true)).status).toBe(200);
+    expect(await move()).toMatchObject({ status: 409, body: { error: "session_completed" } });
+    expect((await mark(id, false)).status).toBe(200);
+    expect((await move()).status).toBe(200);
+  });
+
   it("only that session, though another shares its day and its plan", async () => {
     const p = await seedCourse();
     const id = await outline(p, MON);

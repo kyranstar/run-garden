@@ -345,7 +345,15 @@ export async function skipWorkout(
   db: Db,
   userId: string,
   workoutId: string,
-  opts: { now: string; today: string; source: "app" | "coach"; sanctionedBy?: "coach"; prefs: Pick<UserPreferences, "corosWritesEnabled"> },
+  opts: {
+    now: string;
+    today: string;
+    source: "app" | "coach";
+    sanctionedBy?: "coach";
+    prefs: Pick<UserPreferences, "corosWritesEnabled">;
+    /** A further condition the row must meet as it is skipped (`stillOpen`, the athlete's own route). */
+    onlyIf?: SQL;
+  },
 ): Promise<{ skipped: boolean }> {
   const [w] = await db
     .update(plannedWorkouts)
@@ -356,6 +364,7 @@ export async function skipWorkout(
         eq(plannedWorkouts.userId, userId),
         isNull(plannedWorkouts.archivedAt),
         notInArray(plannedWorkouts.completionState, [...FROZEN_STATES]),
+        opts.onlyIf,
       ),
     )
     .returning();
