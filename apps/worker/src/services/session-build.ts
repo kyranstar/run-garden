@@ -121,7 +121,7 @@ import { restoreInProgress } from "./account-state.js";
 import { loadPreferences } from "./calendar-sync.js";
 import { markDoneOffer } from "./course-number.js";
 import { courseHoldOf, courseOf, coursePreviewDoc, openCourseOutline, STILL_TO_DO } from "./course-sessions.js";
-import type { Db } from "./db.js";
+import { guardFailed, guardOrFail, runAtomically, type Db } from "./db.js";
 import { separateDayCollisions } from "./day-placement.js";
 import {
   loadBuildHistory,
@@ -1956,16 +1956,29 @@ async function lockProven(
   const adopted = opts.as === "start" && (row.contentState === null || row.contentState === "outline");
   const stored = storedOf(current);
   const content = adopted ? day.contentOf(stored) : null;
-  await db.update(sessionBuilds).set({ lockedAt: ctx.now }).where(eq(sessionBuilds.id, current.id));
-  if (opts.as === "start") {
-    await db
-      .update(plannedWorkouts)
-      .set({
-        ...(adopted ? { ...(content ?? {}), sessionParams: stored.build.params as unknown as Record<string, unknown> } : {}),
-        contentState: "started",
-        updatedAt: ctx.now,
-      })
-      .where(and(eq(plannedWorkouts.id, workoutId), eq(plannedWorkouts.userId, userId)));
+  // Start's row and its build's lock, one batch, held to the row still on the plan (the RC's boundary 2): a remove or a
+  // plan's archive landing after the reads above fails it — nothing locked, nothing started — and the Start is refused as
+  // a Start after the archive is (`SessionNotFoundError`).
+  try {
+    await runAtomically(db, [
+      ...(opts.as === "start"
+        ? [
+            db
+              .update(plannedWorkouts)
+              .set({
+                ...(adopted ? { ...(content ?? {}), sessionParams: stored.build.params as unknown as Record<string, unknown> } : {}),
+                contentState: "started",
+                effectiveDate: guardOrFail(isNull(plannedWorkouts.archivedAt), plannedWorkouts.effectiveDate),
+                updatedAt: ctx.now,
+              })
+              .where(and(eq(plannedWorkouts.id, workoutId), eq(plannedWorkouts.userId, userId))),
+          ]
+        : []),
+      db.update(sessionBuilds).set({ lockedAt: ctx.now }).where(eq(sessionBuilds.id, current.id)),
+    ]);
+  } catch (e) {
+    if (guardFailed(e)) throw new SessionNotFoundError();
+    throw e;
   }
   await pruneBuilds(db, workoutId, current.id);
   let calendarChanged = false;
@@ -2249,10 +2262,12 @@ export async function lockCurrentBuild(
             .set({ payload: sql`json_set(${sessionBuilds.payload}, '$.build.fromDoc.slots', json(${JSON.stringify(trimmed)}))` })
             .where(eq(sessionBuilds.id, locked.id));
         }
+        // Held to the row still on the plan (the RC's boundary 2): a remove or a plan's archive landing after the reads above
+        // leaves it unstarted, and the read below refuses it (`SessionNotFoundError`) — as if the Start came after the archive.
         await db
           .update(plannedWorkouts)
           .set({ contentState: "started", updatedAt: now })
-          .where(and(eq(plannedWorkouts.id, workoutId), eq(plannedWorkouts.userId, userId), eq(plannedWorkouts.contentState, "built")));
+          .where(and(eq(plannedWorkouts.id, workoutId), eq(plannedWorkouts.userId, userId), eq(plannedWorkouts.contentState, "built"), isNull(plannedWorkouts.archivedAt)));
         return unchanged(readResponse(db, userId, await loadSlot(db, userId, workoutId), today));
       }
     }

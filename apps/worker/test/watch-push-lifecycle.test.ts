@@ -35,10 +35,24 @@ const { auditEvents, coachProposals, coachRuns, corosWriteJobs, plannedWorkouts,
  * window between the route's guard and the move's own writes. A test sets it; it clears itself.
  */
 const gates = vi.hoisted(() => ({
+  restore: null as null | (() => Promise<void>),
   sent: null as null | (() => Promise<void>),
   /** The very last instant before a batch of statements runs (`runAtomically`): after every read a move makes. */
   batch: null as null | (() => Promise<void>),
 }));
+// Start's last read before its write (`restoreInProgress`, after the row, its builds and its sent build are read).
+vi.mock("../src/services/account-state.js", async (importOriginal) => {
+  const real = await importOriginal<typeof import("../src/services/account-state.js")>();
+  return {
+    ...real,
+    restoreInProgress: async (...args: Parameters<typeof real.restoreInProgress>) => {
+      const hold = gates.restore;
+      gates.restore = null;
+      if (hold) await hold();
+      return real.restoreInProgress(...args);
+    },
+  };
+});
 vi.mock("../src/services/db.js", async (importOriginal) => {
   const real = await importOriginal<typeof import("../src/services/db.js")>();
   return {
@@ -80,6 +94,7 @@ beforeEach(async () => {
   vi.setSystemTime(new Date(NOON));
   gates.sent = null;
   gates.batch = null;
+  gates.restore = null;
   db = makeTestDb({ boundVariableCap: 100 });
   ({ userId, prefs } = await makeTestUser(db, { corosWritesEnabled: true }));
   await connectTestCoros(db, userId);
@@ -480,6 +495,17 @@ describe("the save's day check for a sent build COROS moved", () => {
     expect(json.refused).toEqual([expect.objectContaining({ opId: planAdjustId(workoutId), error: "not_found" })]);
     expect(await trail(workoutId, buildId)).toEqual(before);
     expect((await db.select().from(auditEvents).where(eq(auditEvents.kind, "workout_moved"))).length).toBe(0);
+  });
+
+  it("a Start whose write lands after the session was archived (a plan's slice, a hand remove) is refused: never an archived session started", async () => {
+    const { workoutId, buildId } = await sentSlot({ verified: true });
+    // The Start's reads made (the row live, the sent build): the archive lands before its write.
+    gates.restore = async () => {
+      await db.update(plannedWorkouts).set({ archivedAt: NOON, archiveReason: "user_removed" }).where(eq(plannedWorkouts.id, workoutId));
+    };
+    await expect(startSession(db, userId, workoutId, buildId, NOON)).rejects.toThrow();
+    expect(await rowOf(db, workoutId)).toMatchObject({ contentState: "built" });
+    expect((await rowOf(db, workoutId)).archivedAt).not.toBeNull();
   });
 
   it("HAZARD, as it stands (JOINT §3.2; the guard neither causes nor stops it): Discard on a sent build, then a move: the move unsends it and the phone's save answers 422 for good", async () => {
