@@ -1573,7 +1573,7 @@ describe("the Calendar's drag of a done session, or one under way: refused where
       const shift = (iso: string) => new Date(Date.parse(iso) + days * 86_400_000).toISOString();
       event!.body = { ...event!.body, start: { ...event!.body.start, dateTime: shift(event!.body.start.dateTime) }, end: { ...event!.body.end, dateTime: shift(event!.body.end.dateTime) } };
       event!.seq = ++(google as unknown as { seq: number }).seq;
-      await syncCalendar(w.db, env, w.userId);
+      return syncCalendar(w.db, env, w.userId);
     };
     /** Where the event stands on the calendar now. */
     const onCalendar = () => ({ start: event!.body.start.dateTime, end: event!.body.end.dateTime });
@@ -1639,8 +1639,10 @@ describe("the Calendar's drag of a done session, or one under way: refused where
     expect((await saved(w, cal.workout, build, FRI)).json.status).toBe("saved");
     cal.google.fail("PATCH", 1, "500");
     const spy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
-    await cal.drag(4).catch(() => undefined);
+    const failed = await cal.drag(4);
     spy.mockRestore();
+    // Not counted as restored: the restore failed, and the op is on record as failed (rethrown), not swallowed.
+    expect(failed.userMovesRestored).toBe(0);
     expect(rowOf(w, cal.workout)).toMatchObject({ date: FRI, completion: "completed" });
     expect(cal.onCalendar()).not.toEqual(cal.planned);
     await syncCalendar(w.db, env, w.userId);

@@ -229,7 +229,6 @@ async function persistSnapshot(db: Db, userId: string, snapshot: GardenSnapshot)
   await chunkedInsert(wildlifeInserts, (batch) => db.insert(gardenWildlife).values(batch));
 }
 
-/** Build the resolved inputs for one calendar day from the database. */
 /**
  * THE DAY FROM WHICH A MISS DEBITS ONCE (`notDebitedBefore`), on `APP_SESSION_EPOCH`'s precedent: before it, every day is built
  * as it always was, so stored history — a double debit included — replays exactly as it did before the fix (final review
@@ -242,6 +241,7 @@ export const MISS_ONCE_FROM = "2026-11-10";
  * MISS_ONCE_FROM on, counting only debits recorded from that day on. Before it, the day's misses as they are.
  */
 async function notDebitedBefore(db: Db, userId: string, date: string, due: Array<{ workoutId: string }>): Promise<Array<{ workoutId: string }>> {
+  // The day before the gate: a short-cut only (it saves the read), since the read below counts no debit before the gate.
   if (due.length === 0 || date < MISS_ONCE_FROM) return due;
   const debited = new Set<string>();
   for (const ids of chunkIds([...new Set(due.map((m) => m.workoutId))], 80)) {
@@ -253,6 +253,7 @@ async function notDebitedBefore(db: Db, userId: string, date: string, due: Array
   return due.filter((m) => !debited.has(m.workoutId));
 }
 
+/** Build the resolved inputs for one calendar day from the database. */
 export async function buildDayInput(
   db: Db,
   userId: string,
