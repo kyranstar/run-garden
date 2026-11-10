@@ -2,6 +2,7 @@
 // what the phone does with its device token and what the laptop does with the owner's cookie, each answer and the
 // rows checked. Loopback only; synthetic data only. Usage: node native-harness-check.mjs <base> <cookie jar> <state dir>
 import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -147,10 +148,32 @@ check("a burst of 8 from one client: every answer 401 pair_failed", [...new Set(
 check("…exactly 3 evaluated: the code's tries are 3, and it is unused", sql("select tries, used_at as used from native_pairings"), [{ tries: 3, used: null }]);
 const sameClient = await call("POST", "/api/native/pair", { body: { code: burstCode, label: "Same client" }, client: "203.0.113.7" });
 check("…and that client is throttled even with the right code", [sameClient.status, sameClient.json], [401, { error: "pair_failed" }]);
-const otherClient = await call("POST", "/api/native/pair", { body: { code: burstCode, label: "Other client" }, client: "203.0.113.8" });
-// Cloudflare's edge sets CF-Connecting-IP; whether the local runtime keeps a client's own is reported, not assumed.
-console.log(`note local runtime ${otherClient.status === 200 ? "keeps" : "replaces"} the client's CF-Connecting-IP`);
 check("…while the code is untouched by the throttled attempt", sql("select tries from native_pairings")[0].tries, 3);
+// Another client pairs with it. The next checks need distinct clients, which the local runtime gives only when it keeps
+// a client's own CF-Connecting-IP (Cloudflare's edge sets it): checked, not assumed.
+const otherClient = await call("POST", "/api/native/pair", { body: { code: burstCode, label: "Other client" }, client: "203.0.113.8" });
+check("another client, the right code: 200, a pending phone (the local runtime keeps the client's CF-Connecting-IP)", [otherClient.status, otherClient.json.state], [200, "pending"]);
+
+// THE COUNTERS' ATOMICITY, UNDER REAL CONCURRENCY. In-process tests run on one SQLite connection and can't show a lost
+// update; workerd interleaves these requests across real awaits on the local D1, so a read-then-write counter would.
+// Twenty new clients at once, no code live: the global count stops at exactly its bound + 1 (the refused crossing) — every
+// increment landed, none lost — and the throttle is on.
+const globalBefore = sql("select count from native_pair_limits where key = 'redeem:global'")[0]?.count ?? 0;
+await Promise.all(Array.from({ length: 20 }, (_, i) => call("POST", "/api/native/pair", { body: { code: "ABCDEFGH", label: "Flood" }, client: `198.51.100.${i + 1}` })));
+const global = sql("select count, blocked_until as blocked from native_pair_limits where key = 'redeem:global'")[0];
+check(`twenty new clients at once (the global count was ${globalBefore}): it stops at exactly 11, throttled`, [global.count, global.blocked !== null], [11, true]);
+// While it throttles, a new client writes nothing at all (review F3): no row for it.
+const rowsBefore = sql("select count(*) as n from native_pair_limits")[0].n;
+await Promise.all(Array.from({ length: 10 }, (_, i) => call("POST", "/api/native/pair", { body: { code: "ABCDEFGH", label: "Late" }, client: `2001:db8:${i + 1}::1` })));
+check("…and ten more new clients during the throttle write no row", sql("select count(*) as n from native_pair_limits")[0].n, rowsBefore);
+// Confirm under real concurrency: twenty wrong check numbers at once for the pending phone — exactly 3 tried, then revoked.
+const pendingId = createHash("sha256").update(otherClient.json.token).digest("hex");
+const okCheck = Number(otherClient.json.check);
+const confirms = await Promise.all(
+  Array.from({ length: 20 }, (_, i) => call("POST", `/api/native/devices/${pendingId}/confirm`, { cookie: true, body: { check: String((okCheck + 1 + i) % 10_000).padStart(4, "0") } })),
+);
+check("twenty wrong check numbers at once: the phone is revoked after exactly 3", sql(`select state, check_tries as tries, revoked_reason as why from native_devices where id = '${pendingId}'`), [{ state: "revoked", tries: 3, why: "check_failed" }]);
+check("…and no more than 3 answers were a mismatch", confirms.filter((a) => a.json.error === "check_mismatch").length <= 3, true);
 // Mint bound: this was the fifth code in the window; the sixth is refused, and says when to try again.
 const sixth = await call("POST", "/api/native/pairings", { cookie: true, body: {} });
 check("a sixth code in the window: 429 too_many_codes, retryAfter 600", [sixth.status, sixth.json], [429, { error: "too_many_codes", retryAfter: 600 }]);

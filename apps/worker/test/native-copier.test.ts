@@ -29,7 +29,7 @@ import { ACCOUNT_TABLES } from "../src/services/account-tables.js";
 import type { Db } from "../src/services/db.js";
 import { makeTestDb, makeTestUser, untilDone } from "./helpers.js";
 
-const { nativeDevices, nativePairings } = schema;
+const { nativeDevices, nativePairings, nativePairLimits } = schema;
 
 /** What the copier copied at 81827cd1, before native sign-in, in its order: every registry table but the sign-ins. */
 const COPIED_BEFORE = [
@@ -69,6 +69,9 @@ async function seedDevice(db: Db, userId: string): Promise<string> {
   });
   return token;
 }
+/** A rate-control counter row, as pairing leaves one (review F5: the scrub and the copier see one). */
+const seedLimit = (db: Db, key: string) =>
+  db.insert(nativePairLimits).values({ key, windowStart: nowInstant(), count: 2, expiresAt: new Date(Date.now() + 600_000).toISOString() });
 const seedPairing = (db: Db, userId: string) =>
   db.insert(nativePairings).values({ userId, codeHmac: "a".repeat(64), createdAt: nowInstant(), expiresAt: new Date(Date.now() + 300_000).toISOString() });
 
@@ -101,15 +104,19 @@ describe("a production phone never reaches staging", () => {
     const { userId } = await makeTestUser(src);
     const token = await seedDevice(src, userId);
     await seedPairing(src, userId);
+    await seedLimit(src, "redeem:global");
+    await seedLimit(src, `mint:${userId}`);
     expect(await guardBindings(src, dst, { prepare: true })).toBeNull();
     await copyAll(src, dst);
     await scrubSecrets(dst);
     expect(await dst.select().from(nativeDevices)).toEqual([]);
     expect(await dst.select().from(nativePairings)).toEqual([]);
+    expect(await dst.select().from(nativePairLimits)).toEqual([]);
     expect(await findDevice(dst, token)).toBeNull();
     // Production keeps its own.
     expect(await findDevice(src, token)).toMatchObject({ userId, state: "active" });
     expect(await src.select().from(nativePairings)).toHaveLength(1);
+    expect(await src.select().from(nativePairLimits)).toHaveLength(2);
   });
 
   it("the scrub deletes any device or code staging holds of its own, and its audit counts them until it does", async () => {
@@ -121,8 +128,9 @@ describe("a production phone never reaches staging", () => {
     const [user] = await dst.select().from(schema.users);
     const token = await seedDevice(dst, user!.id);
     await seedPairing(dst, user!.id);
+    await seedLimit(dst, "redeem:global");
     await createSession(dst, user!.id, "test");
-    expect(await secretsRemaining(dst)).toEqual({ secrets: 0, sessions: 1, oauthStates: 0, nativeDevices: 1, nativePairings: 1, nativePairLimits: 0 });
+    expect(await secretsRemaining(dst)).toEqual({ secrets: 0, sessions: 1, oauthStates: 0, nativeDevices: 1, nativePairings: 1, nativePairLimits: 1 });
     await scrubSecrets(dst);
     expect(await secretsRemaining(dst)).toEqual({ secrets: 0, sessions: 0, oauthStates: 0, nativeDevices: 0, nativePairings: 0, nativePairLimits: 0 });
     expect(await findDevice(dst, token)).toBeNull();
