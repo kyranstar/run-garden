@@ -48,13 +48,18 @@ export async function withDb(c: Context<AppContext>, next: Next): Promise<void |
  * Requests that still go through while a restore is replacing the account:
  * the restore itself, deleting everything, signing in/out, and the app-open
  * COROS pull (which answers "restoring" and writes nothing). (And the import's
- * dry run: `openWhileRestoring`.)
+ * dry run: `openWhileRestoring`.) And stopping a paired phone — the laptop's
+ * Revoke and Revoke all, and the phone's own sign-out (native device sign-in,
+ * worker review L1): they write only `native_devices`, which no restore
+ * touches, and a restore abandoned days ago must not keep a lost phone live.
  */
 const OPEN_WHILE_RESTORING = [
   /^\/api\/settings\/restore\//,
   /^\/api\/settings\/delete-all$/,
   /^\/api\/auth\//,
   /^\/api\/(coros|sync)\/read-now$/,
+  /^\/api\/native\/devices\/(revoke-all|[^/]+\/revoke)$/,
+  /^\/api\/native\/sign-out$/,
 ];
 const MUTATING = new Set(["POST", "PUT", "PATCH", "DELETE"]);
 
