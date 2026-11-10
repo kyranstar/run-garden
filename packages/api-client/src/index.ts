@@ -328,6 +328,28 @@ export interface TodayResponse {
   } | null;
 }
 
+/** A paired phone (native device sign-in), as Settings → Devices lists it (`GET /api/native/devices`). */
+export interface NativeDeviceDto {
+  /** The SHA-256 of the device's token: what Confirm and Revoke name. Never the token itself. */
+  id: string;
+  label: string;
+  state: "pending" | "active";
+  /** The 4 digits the phone shows too, while pending. */
+  check: string | null;
+  createdAt: string;
+  confirmedAt: string | null;
+  lastUsedAt: string | null;
+  expiresAt: string;
+  /** Active and expiring within 7 days: re-pair soon. */
+  expiresSoon: boolean;
+}
+
+export interface NativeDevicesResponse {
+  /** The kill switch: off, Pair answers 404 (listing and revoking still answer). */
+  enabled: boolean;
+  devices: NativeDeviceDto[];
+}
+
 export interface MeResponse {
   userId: string;
   email: string;
@@ -2999,6 +3021,14 @@ export const api = {
   /** Bumps the template's uses; its document comes back stamped `basedOn: template`, to open or schedule. */
   useTemplate: (id: string) => post<{ template: TemplateDto; doc: WorkoutDoc | null }>(`/api/templates/${encodeURIComponent(id)}/use`, {}),
   deleteAll: () => post("/api/settings/delete-all", { confirm: "delete everything" }),
+  /** Settings → Devices (native device sign-in): the phones paired to this account, pending and active. */
+  nativeDevices: () => get<NativeDevicesResponse>("/api/native/devices"),
+  /** Pair: the account's one pairing code (a new one burns the old), shown once; it lives 5 minutes. */
+  nativePair: () => post<{ code: string; expiresAt: string }>("/api/native/pairings", {}),
+  /** Confirm a pending phone whose check number matches the one it shows. 409 `check_mismatch` / `confirm_expired`. */
+  nativeConfirm: (id: string, check: string) => post<{ ok: true; expiresAt: string }>(`/api/native/devices/${encodeURIComponent(id)}/confirm`, { check }),
+  nativeRevoke: (id: string) => post<{ ok: true; revoked: boolean }>(`/api/native/devices/${encodeURIComponent(id)}/revoke`, {}),
+  nativeRevokeAll: () => post<{ ok: true; revoked: number }>("/api/native/devices/revoke-all", {}),
   calendars: () => get<{ calendars: Array<{ id: string; summary: string; primary?: boolean }> }>("/api/calendar/calendars"),
   chooseCalendar: (opts: { calendarId?: string; createNew?: boolean }) => post<{ ok: true; calendarId: string }>("/api/calendar/choose", opts),
   calendarSync: () => post<Record<string, unknown>>("/api/calendar/sync"),

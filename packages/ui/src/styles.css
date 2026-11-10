@@ -3138,6 +3138,14 @@ a.place-row {
 .place-weights {
   font-variant-numeric: tabular-nums;
 }
+/* Settings → Devices: the pairing code, shown once, read off the laptop and typed on the phone. */
+.pair-code {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: var(--text-xl);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.12em;
+}
 .settings-link {
   min-height: var(--tap);
   padding: 0;

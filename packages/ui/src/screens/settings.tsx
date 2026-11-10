@@ -38,6 +38,7 @@ import { CoachAiSection, TrainingTimes } from "./settings/coach-settings.js";
 import { useLivePrefs, useSaveAsYouGo, useSettingSwitch } from "./settings/save.js";
 import { SoundsSection } from "./settings/sounds.js";
 import { SavesSection } from "./settings/saves.js";
+import { DevicesSection } from "./settings/devices.js";
 import { ageText } from "./settings/age.js";
 
 const TZ_OPTIONS: string[] = (() => {
@@ -1883,6 +1884,8 @@ export function SettingsScreen() {
         <DataSection />
         <ImportSection />
         <DiagnosticsSection />
+        {/* Paired phones (native device sign-in): nothing renders while the switch is off and none is paired. */}
+        <DevicesSection />
         <AccountSection email={me.data?.email ?? null} signingOut={logout.isPending} onSignOut={() => logout.mutate()} />
       </SettingsGroup>
     </div>
