@@ -1322,6 +1322,27 @@ describe("what sits below the routes, and the corrections, keep working", () => 
     expect(after.credits.flatMap((c) => c.completed.map((x) => [c.date, x.workoutId]))).toEqual([[D, id]]);
   });
 
+  it("the watch completes the slot first, then a Start and the phone's save (RC boundary 2): one credit, on its day, by its one activity — never a second, never re-opened", async () => {
+    const w = await world();
+    const id = await slotOn(w, D);
+    setClock(D, "18:35");
+    await corosReport(w, [corosSource({ label: "lbl-first", date: D, hhmm: "18:01", seconds: 1790, sport: "strength" })]);
+    expect(rowOf(w, id).completion).toBe("completed");
+    const built = await w.call("POST", `/api/sessions/${id}/build`, {});
+    const started = await w.call("POST", `/api/sessions/${id}/start`, { buildId: built.json.build?.buildId });
+    const build = started.json.build ?? built.json.build;
+    const answer = await saved(w, id, build, D);
+    // Start is taken on a slot the watch completed, and its save lands on the same activity: the order Start-then-completion
+    // gives (the test above, "the watch reports first while the phone still plays").
+    expect([started.status, answer.json.status]).toEqual([200, "saved"]);
+    await drive(w, addDays(D, 1), addDays(D, 3));
+    const after = record(w);
+    expect(rowOf(w, id)).toMatchObject({ date: D, completion: "completed" });
+    expect(after.activities).toHaveLength(1);
+    expect(after.credits.flatMap((c) => c.completed.map((x) => [c.date, x.workoutId]))).toEqual([[D, id]]);
+    expect(after.counters.strength + after.counters.yoga).toBe(1);
+  });
+
   it("Undo match is not blocked, and it reopens the way out of a wrong completion: unmatched, the row can be removed; the activity and its source id stay", async () => {
     const { w, id } = await savedOn(FRI);
     setClock(FRI, "19:00");
