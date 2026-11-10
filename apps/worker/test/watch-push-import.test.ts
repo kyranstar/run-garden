@@ -342,13 +342,13 @@ describe("the import and a sent session", () => {
     expect(await notesOf(workoutId)).toEqual([]);
   });
 
-  it("(d) moved on COROS while it is under way: the date still follows its copy (ruling 3-R16), the build stays locked", async () => {
+  it("(d) moved on COROS while it is under way: its day stays (the session guard; 3-R16's \"a started one follows\" withdrawn), the read on record, the build stays locked", async () => {
     const { workoutId, buildId, stamp } = await pushed();
     await startSession(db, userId, workoutId, buildId, NOON);
     const LATER = addDays(DAY, 2);
     entityOf(programOn(stamp)!).happenDay = Number(localDateToCorosDay(LATER));
     await readNow();
-    expect(await rowOf(db, workoutId)).toMatchObject({ effectiveDate: LATER, lastVerifiedCorosDate: LATER, contentState: "started" });
+    expect(await rowOf(db, workoutId)).toMatchObject({ effectiveDate: DAY, lastVerifiedCorosDate: LATER, contentState: "started" });
     expect((await db.select().from(sessionBuilds).where(eq(sessionBuilds.id, buildId)))[0]!.lockedAt).not.toBeNull();
   });
 
@@ -434,8 +434,8 @@ describe("the import and a sent session", () => {
     await db.update(plannedWorkouts).set({ contentState: "started" }).where(eq(plannedWorkouts.id, running.workoutId));
     entityOf(programOn(running.stamp)!).happenDay = Number(localDateToCorosDay(LATER));
     await importFromCoros();
-    expect(await rowOf(db, running.workoutId)).toMatchObject({ effectiveDate: LATER, lastVerifiedCorosDate: LATER, contentState: "started" });
-    expect((await notesOf(running.workoutId)).map((n) => n.kind)).toEqual(["watch_copy_moved"]);
+    expect(await rowOf(db, running.workoutId)).toMatchObject({ effectiveDate: DAY, lastVerifiedCorosDate: LATER, contentState: "started" });
+    expect(await notesOf(running.workoutId)).toEqual([]);
   });
 
   it("(f) its slot gone: no new row, and unpush:<buildId> takes the stamp from the push and the address from the wire", async () => {

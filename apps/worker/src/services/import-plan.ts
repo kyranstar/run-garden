@@ -1109,8 +1109,9 @@ export async function importPlanSnapshot(
         // have moved it in COROS while a read missed it — and a "Removed from
         // your watch" posted while it was missed was false. A DONE slot stays:
         // its credit is on its day, and re-dating it would credit it again as the
-        // garden walks on. A started one follows: its save takes the new day.
-        const moved = src.date !== slot.effectiveDate && slot.completionState !== "completed";
+        // garden walks on. Nor does a STARTED one (the session guard; 3-R16's "a started one follows" withdrawn): its day
+        // stays, the read on record (`lastVerifiedCorosDate`), no note.
+        const moved = src.date !== slot.effectiveDate && slot.completionState !== "completed" && slot.contentState !== "started";
         await db
           .update(plannedWorkouts)
           .set({
@@ -1447,7 +1448,9 @@ export async function importPlanSnapshot(
         // A FINISHED session's day doesn't follow COROS: its credit is on its day, and re-dating it would credit it again as the
         // garden walks on (or lose it, moved back). The read is still on record, so the next read finds nothing new; no note,
         // since the app kept its day and there's nothing to undo.
-        if (current.completionState === "completed") {
+        // Nor does one STARTED (the session guard): moving it moves a session from under the device playing it, and its
+        // save is filed on its own days. Its read is on record; no note, the app kept its day.
+        if (current.completionState === "completed" || current.contentState === "started") {
           updates.corosSyncState = syncedUnlessClaimed();
           touched = true;
           break;
