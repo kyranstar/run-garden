@@ -49,6 +49,7 @@ import { stillOpen, underWayNow, underWaySql } from "./session-guard.js";
 import { takesWatchCopy, unmarkedFingerprint, watchCopyBase } from "./watch-copy-marker.js";
 import {
   enqueueUnpushIfOurs,
+  unpushIfOursStatements,
   unpushInsertIfOurs,
   removeFromPlan,
   settleWatchJobsOnArchive,
@@ -2695,8 +2696,9 @@ async function archiveStep(
 
 /**
  * Archive the plan's still-scheduled sessions in scope, as many as the budget holds: re-read each slice. ONE batch —
- * each row's suppression (id the op's own), its queued watch writes settled, its watch unpush (id the row's), the
- * archive — so a slice that dies leaves nothing half-done, and a slice re-run finds the rows it finished gone.
+ * each row's suppression (id the op's own), its queued watch writes settled, its watch unpush (id the row's; a sent
+ * programme slot's way off, its build unlocked, too), the archive held to the row as read (`archivable`) — so a slice
+ * that dies, or finds a row changed, leaves nothing half-done, and a slice re-run finds the rows it finished gone.
  */
 async function archiveSlice(
   k: Chunk,
@@ -2747,15 +2749,16 @@ async function archiveSlice(
 
   // Each row's watch unpush is a statement IN the archive's batch (review-1): a request that dies before the batch
   // leaves no delete queued for a session still on the plan, and one that dies after leaves none owed. A sent
-  // programme slot's own way off (never a coach plan's row) runs its own writes, so it goes first, as before.
-  const unpushes = [];
-  const programmeWayOff: (typeof picked)[number][] = [];
+  // programme slot's way off is in it too, its reads made first (`unpushIfOursStatements`).
+  const unpushes: AtomicStatement[] = [];
+  const programmeWayOff: AtomicStatement[] = [];
   for (const w of picked) {
     if (unpushCost(w) === 0) continue;
     if (appAuthoredRow(w)) {
-      // Its own writes, AFTER the batch and only once it has archived the row (final review B): queued before it, a Start
-      // landing at the batch's door left an unpush queued and the build unlocked for a session now running.
-      programmeWayOff.push(w);
+      // A sent programme slot's way off, IN the batch after the archive (final reviews B and C): read first, written with it,
+      // so the archive and its way off land together or not at all. Before the batch, a Start at its door left an unpush
+      // queued for a running session; after it, a fault left the row archived with its copy on the watch for good.
+      programmeWayOff.push(...(await unpushIfOursStatements(k.db, k.userId, w, k.now, k.prefs)));
       continue;
     }
     const unpush = await unpushInsertIfOurs(k.db, k.userId, w, k.now, k.prefs);
@@ -2781,6 +2784,7 @@ async function archiveSlice(
         .set({ archivedAt: k.now, archiveReason: "user_removed", effectiveDate: guardOrFail(archivable(), plannedWorkouts.effectiveDate), updatedAt: k.now })
         .where(and(eq(plannedWorkouts.userId, k.userId), inArray(plannedWorkouts.id, chunk))),
     ),
+    ...programmeWayOff,
   ];
   try {
     await runAtomically(k.db, stmts);
@@ -2788,7 +2792,6 @@ async function archiveSlice(
     if (guardFailed(e)) return "stalled";
     throw e;
   }
-  for (const w of programmeWayOff) await enqueueUnpushIfOurs(k.db, k.userId, w, k.now, k.prefs);
   // The batch as run, and the unpushes' reads at their most (their inserts are in the batch).
   k.spent += stmts.length + unpushing - unpushes.length;
   return { archived: picked.length, more: rows.length > picked.length };

@@ -1,11 +1,11 @@
 import { and, eq, inArray, isNull, notInArray, type SQL } from "drizzle-orm";
 import { calendarEventSuppressions, corosWriteJobs, plannedWorkouts, scheduleOverrides } from "@rg/database";
 import { appAuthoredRow, docOriginRow, newId, watchAddressOf, type ArchiveReason, type UserPreferences } from "@rg/domain";
-import { chunkIds, type Db } from "./db.js";
+import { chunkIds, type AtomicStatement, type Db } from "./db.js";
 import { recordedStampFor } from "./coros-stamp.js";
 import { openIntentFor, recordIntent, resolveIntent, type IntentSource } from "./sync-intents.js";
-import { unpushBuild } from "./watch-push.js";
-import { sentBuildIdOf } from "./session-build.js";
+import { unpushBuild, unpushBuildStatements } from "./watch-push.js";
+import { pushJobId, sentBuildIdOf } from "./session-build.js";
 import { markMirrorOwed } from "./mirror-owed.js";
 import { ADOPTED_COPY_JOB_SUFFIX } from "./watch-jobs.js";
 import { FROZEN_STATES, reopenedDocColumns } from "./workout-doc-store.js";
@@ -216,6 +216,30 @@ export async function enqueueUnpushIfOurs(
 
 // The one delete of an adopted row's old copy (`adoptedCopyUnpush`): its id's suffix lives with the watch's jobs (a leaf).
 export { ADOPTED_COPY_JOB_SUFFIX };
+
+/**
+ * `enqueueUnpushIfOurs` as statements for a caller's batch, its reads made first (the sent build and its push): the adopted
+ * copy's delete, the sent build's way off (`unpushBuildStatements`: the delete, or what is owed, and the build unlocked), or
+ * the address's delete — so the caller's write and the copy's way off land together or not at all (final review C, I-1).
+ */
+export async function unpushIfOursStatements(
+  db: Db,
+  userId: string,
+  w: typeof plannedWorkouts.$inferSelect,
+  now: string,
+  prefs: Pick<UserPreferences, "corosWritesEnabled">,
+): Promise<AtomicStatement[]> {
+  const copy = adoptedCopyUnpush(db, userId, w, now, prefs);
+  const out: AtomicStatement[] = copy ? [copy.insert] : [];
+  const sent = appAuthoredRow(w) ? await sentBuildIdOf(db, w.id) : null;
+  if (sent) {
+    const [push] = await db.select().from(corosWriteJobs).where(eq(corosWriteJobs.id, pushJobId(sent))).limit(1);
+    return [...out, ...unpushBuildStatements(db, userId, w, sent, push ?? null, now, prefs)];
+  }
+  if (copy) return out;
+  const unpush = await unpushInsertIfOurs(db, userId, w, now, prefs);
+  return unpush ? [unpush.insert] : out;
+}
 export const adoptedCopyJobId = (workoutId: string): string => `${workoutId}${ADOPTED_COPY_JOB_SUFFIX}`;
 
 /**

@@ -109,7 +109,36 @@ describe("archiveSlice: what lands between the slice's read and its batch", () =
     expect(s).toMatchObject({ archived: false, completion: "completed", unpushes: 0 });
   });
 
-  it("nothing landing: the slice archives it and takes its copy off, after the batch, as before", async () => {
+  const raw = () => (db as unknown as { $client: { exec(sql: string): void } }).$client;
+  it.each([
+    ["the build's unlock, after the batch's row write", `CREATE TRIGGER way_off_fault BEFORE UPDATE ON session_builds BEGIN SELECT RAISE(ABORT, 'D1_ERROR: synthetic fault at the unlock'); END;`],
+    ["the unpush's insert", `CREATE TRIGGER way_off_fault BEFORE INSERT ON coros_write_jobs WHEN NEW.kind = 'coach_delete_workout' BEGIN SELECT RAISE(ABORT, 'D1_ERROR: synthetic fault at the unpush'); END;`],
+  ])("a fault at %s (final review C, I-1): nothing of the slice lands; the next tap archives it and takes its copy off", async (_where, trigger) => {
+    const { workoutId, buildId, planId } = await sentUnderPlan();
+    const before = await stateOf(workoutId, buildId);
+    raw().exec(trigger);
+    const first = await retire(planId).catch((e: Error) => `threw ${e.message}`);
+    expect(first).toMatch(/^threw /);
+    expect(await stateOf(workoutId, buildId)).toEqual(before);
+    raw().exec(`DROP TRIGGER way_off_fault;`);
+    expect(await retire(planId)).toBe("done");
+    expect(await stateOf(workoutId, buildId)).toMatchObject({ archived: true, locked: false, unpushes: 1 });
+  });
+
+  it("a hand remove at the slice's batch door: the slice writes nothing of its own — no suppression, no second archive", async () => {
+    const { workoutId, buildId, planId } = await sentUnderPlan();
+    gates.batch = async () => {
+      await db.update(plannedWorkouts).set({ archivedAt: "2026-10-09T10:00:00.000Z", archiveReason: "user_removed" }).where(eq(plannedWorkouts.id, workoutId));
+    };
+    await retire(planId);
+    const [row] = await db.select().from(plannedWorkouts).where(eq(plannedWorkouts.id, workoutId));
+    expect(row!.archivedAt).toBe("2026-10-09T10:00:00.000Z");
+    const sups = await db.select().from(schema.calendarEventSuppressions).where(eq(schema.calendarEventSuppressions.workoutId, workoutId));
+    expect(sups.map((x) => x.id)).toEqual([]);
+    expect((await stateOf(workoutId, buildId)).unpushes).toBe(0);
+  });
+
+  it("nothing landing: the slice archives it and takes its copy off, in its batch", async () => {
     const { workoutId, buildId, planId } = await sentUnderPlan();
     expect(await retire(planId)).toBe("done");
     expect(await stateOf(workoutId, buildId)).toMatchObject({ archived: true, unpushes: 1 });
