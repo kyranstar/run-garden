@@ -94,6 +94,11 @@ export interface Env {
   SAVES_RELAY_MAX_BYTES?: string;
   /** Only "1" creates new saves batches `held` (no release, no notice) for a bootstrap's curation; absent: `released` (services/saves-batches.ts). Unset in production since the saves-flow redesign; the switch remains for a future bootstrap. Var. */
   SAVES_HOLD_BATCHES?: string;
+  /** Native device sign-in's kill switch (SLICE-CONTRACT revision 2 §10.2): only "1" is on (`nativeDevicesEnabled`). A
+   * Worker SECRET, never a [vars] entry: a secret survives deploys, a declared var is reset by the next one. Anything else
+   * (absent in every environment until the owner turns it on): a device token is 401 `device_access_off` on every route,
+   * and pairing (minting, redeeming, confirming) is 404. Listing and revoking devices answer either way. Secret. */
+  NATIVE_DEVICES?: string;
 }
 
 export const stagingEnabled = (env: Env): boolean => env.STAGING === "1";
@@ -117,3 +122,6 @@ export function fixtureModeEnabled(env: Env): boolean {
 
 /** The saved-posts import (`/api/saves/*`): only "1" is on. A missing env (a test host with none) is off. */
 export const savesImportEnabled = (env: Env | undefined): boolean => env?.SAVES_IMPORT === "1";
+
+/** Native device sign-in (`NATIVE_DEVICES`, a secret): only "1" is on. A missing env (a test host with none) is off. */
+export const nativeDevicesEnabled = (env: Env | undefined): boolean => env?.NATIVE_DEVICES === "1";
