@@ -110,6 +110,11 @@ export async function requireUser(c: Context<AppContext>, next: Next): Promise<v
  *  7. last use written, at most hourly.
  *
  * 401 rather than 404 on purpose: the outbox keeps a 401 entry pending, shown as "Not signed in" (§4).
+ *
+ * THIS IS WHERE A REVOKE TAKES EFFECT, and only here: step 4 reads the device's row once per request, before the handler
+ * runs, and nothing after re-checks it. A request read before a revoke committed is authorized and runs to its end — the
+ * build, start or save it writes lands and stays; one read after it is refused 401 `device_revoked`. Nothing in flight
+ * is cancelled, and nothing already written is undone (native-killswitch.test.ts, "in flight").
  */
 async function requireDevice(c: Context<AppContext>, next: Next): Promise<void | Response> {
   if (getCookie(c, SESSION_COOKIE) !== undefined) return c.json({ error: "two_credentials" }, 400);

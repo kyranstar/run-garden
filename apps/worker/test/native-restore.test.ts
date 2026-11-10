@@ -57,6 +57,41 @@ async function abandonedRestore(db: ReturnType<typeof makeTestDb>, userId: strin
   await db.insert(accountState).values({ userId, restoreId: "r-abandoned", restoreStartedAt: stale, restoreHeartbeatAt: stale, updatedAt: stale } as never);
 }
 
+describe("under the restore lock, active or stale, Revoke all works and the phone is refused right after", () => {
+  let w: NativeWorld;
+  let slot: string;
+  beforeEach(async () => {
+    const today = pinMiddayToday();
+    w = await nativeWorld([
+      ["/api/native", nativeRoutes],
+      ["/api/sessions", sessionRoutes],
+    ]);
+    slot = await seedSlot(w.db, w.userId, today);
+  });
+  afterEach(() => vi.useRealTimers());
+
+  it.each([
+    ["active (a page arrived a minute ago)", 60_000],
+    ["stale (abandoned 3 days ago)", 3 * DAY],
+  ])("%s", async (_name, age) => {
+    const at = new Date(Date.now() - age).toISOString();
+    await w.db.insert(accountState).values({ userId: w.userId, restoreId: "r-lock", restoreStartedAt: at, restoreHeartbeatAt: at, updatedAt: at } as never);
+    const { token } = await seedDevice(w.db, w.userId);
+    const phone = await seedDevice(w.db, w.userId);
+    // Under the lock the device's writes wait, its reads answer; the cookie's writes wait too.
+    expect((await w.call("POST", `/api/sessions/${slot}/build`, { bearer: token, body: {} })).status).toBe(423);
+    expect((await w.call("POST", `/api/sessions/${slot}/build`, { body: {} })).status).toBe(423);
+    expect((await w.call("GET", `/api/sessions/${slot}`, { bearer: token })).status).toBe(200);
+    const all = await w.call("POST", "/api/native/devices/revoke-all", { body: {} });
+    expect([all.status, all.json]).toEqual([200, { ok: true, revoked: 2 }]);
+    for (const t of [token, phone.token]) {
+      for (const [method, path] of [["GET", `/api/sessions/${slot}`], ["GET", "/api/native/today"], ["POST", "/api/native/sign-out"]] as const) {
+        expect((await w.call(method, path, { bearer: t, body: method === "POST" ? {} : undefined })).json).toEqual({ error: "device_revoked" });
+      }
+    }
+  });
+});
+
 describe("during an abandoned restore, the phone can still be stopped", () => {
   let w: NativeWorld;
   let slot: string;
