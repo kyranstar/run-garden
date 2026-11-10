@@ -161,19 +161,29 @@ check("another client, the right code: 200, a pending phone (the local runtime k
 const globalBefore = sql("select count from native_pair_limits where key = 'redeem:global'")[0]?.count ?? 0;
 await Promise.all(Array.from({ length: 20 }, (_, i) => call("POST", "/api/native/pair", { body: { code: "ABCDEFGH", label: "Flood" }, client: `198.51.100.${i + 1}` })));
 const global = sql("select count, blocked_until as blocked from native_pair_limits where key = 'redeem:global'")[0];
-check(`twenty new clients at once (the global count was ${globalBefore}): it stops at exactly 11, throttled`, [global.count, global.blocked !== null], [11, true]);
+check(`twenty new clients at once (the global count was ${globalBefore}): it stops at exactly 11, throttled`, [global?.count ?? null, (global?.blocked ?? null) !== null], [11, true]);
 // While it throttles, a new client writes nothing at all (review F3): no row for it.
 const rowsBefore = sql("select count(*) as n from native_pair_limits")[0].n;
 await Promise.all(Array.from({ length: 10 }, (_, i) => call("POST", "/api/native/pair", { body: { code: "ABCDEFGH", label: "Late" }, client: `2001:db8:${i + 1}::1` })));
 check("…and ten more new clients during the throttle write no row", sql("select count(*) as n from native_pair_limits")[0].n, rowsBefore);
 // Confirm under real concurrency: twenty wrong check numbers at once for the pending phone — exactly 3 tried, then revoked.
-const pendingId = createHash("sha256").update(otherClient.json.token).digest("hex");
-const okCheck = Number(otherClient.json.check);
-const confirms = await Promise.all(
-  Array.from({ length: 20 }, (_, i) => call("POST", `/api/native/devices/${pendingId}/confirm`, { cookie: true, body: { check: String((okCheck + 1 + i) % 10_000).padStart(4, "0") } })),
-);
-check("twenty wrong check numbers at once: the phone is revoked after exactly 3", sql(`select state, check_tries as tries, revoked_reason as why from native_devices where id = '${pendingId}'`), [{ state: "revoked", tries: 3, why: "check_failed" }]);
-check("…and no more than 3 answers were a mismatch", confirms.filter((a) => a.json.error === "check_mismatch").length <= 3, true);
+// If the other client didn't pair (a check above failed), there is no pending phone to confirm: both checks are recorded
+// as failed, and the rest still run to the summary.
+const revokedLabel = "twenty wrong check numbers at once: the phone is revoked after exactly 3";
+const mismatchLabel = "…and no more than 3 answers were a mismatch";
+if (typeof otherClient.json?.token === "string") {
+  const pendingId = createHash("sha256").update(otherClient.json.token).digest("hex");
+  const okCheck = Number(otherClient.json.check);
+  const confirms = await Promise.all(
+    Array.from({ length: 20 }, (_, i) => call("POST", `/api/native/devices/${pendingId}/confirm`, { cookie: true, body: { check: String((okCheck + 1 + i) % 10_000).padStart(4, "0") } })),
+  );
+  check(revokedLabel, sql(`select state, check_tries as tries, revoked_reason as why from native_devices where id = '${pendingId}'`), [{ state: "revoked", tries: 3, why: "check_failed" }]);
+  check(mismatchLabel, confirms.filter((a) => a.json?.error === "check_mismatch").length <= 3, true);
+} else {
+  const none = `no pending phone to confirm (the other client got ${otherClient.status})`;
+  check(revokedLabel, none, "a pending phone");
+  check(mismatchLabel, none, "a pending phone");
+}
 // Mint bound: this was the fifth code in the window; the sixth is refused, and says when to try again.
 const sixth = await call("POST", "/api/native/pairings", { cookie: true, body: {} });
 check("a sixth code in the window: 429 too_many_codes, retryAfter 600", [sixth.status, sixth.json], [429, { error: "too_many_codes", retryAfter: 600 }]);
