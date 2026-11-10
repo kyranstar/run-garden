@@ -5,14 +5,16 @@
  * by per-table hashes computed on both sides. Nothing is ever written to
  * disk, and nothing this module returns carries a row.
  *
- * WHAT IS COPIED. Every table in the registry (account-tables.ts) except
- * `sessions` and `oauth_states` — whole tables, every account's rows (the
- * database holds one), the global catalogs and the restore bookkeeping
- * included, so staging is production as it stands. Credential columns
- * (`secretColumns`: provider tokens) are written as null: staging never holds
- * a production credential, even between the copy and the scrub. Staging also
- * runs with its own TOKEN_ENCRYPTION_KEY, so a token that somehow arrived
- * would still be unreadable there.
+ * WHAT IS COPIED. Every table in the registry (account-tables.ts) except the
+ * sign-ins it marks (`signIn`: `sessions`, `oauth_states`, `native_devices`,
+ * `native_pairings`) — whole tables, every account's rows (the database holds
+ * one), the global catalogs and the restore bookkeeping included, so staging
+ * is production as it stands. Credential columns (`secretColumns`: provider
+ * tokens) are written as null: staging never holds a production credential,
+ * even between the copy and the scrub. A paired phone's row is one: its
+ * token would sign in to staging, where a production revoke never reaches.
+ * Staging also runs with its own TOKEN_ENCRYPTION_KEY, so a token that
+ * somehow arrived would still be unreadable there.
  *
  * ORDER AND PAGING. Rows go in primary-key order (Ruling R2) with the keyset
  * cursor the export uses (`orderedRows(..., { after })`), so a page boundary
@@ -31,7 +33,6 @@
  */
 import { count, isNotNull, or, sql } from "drizzle-orm";
 import { getTableConfig } from "drizzle-orm/sqlite-core";
-import { oauthStates, sessions } from "@rg/database";
 import {
   ACCOUNT_TABLES,
   accountTable,
@@ -51,8 +52,11 @@ export const STAGING_DB_NAME = "run-garden-db-staging";
 /** Present in staging once the copier has prepared it; never in production. */
 export const SENTINEL_TABLE = "staging_sentinel";
 
-/** Not copied: a sign-in on one device, and short-lived OAuth handshakes. */
-export const COPY_EXCLUDED: readonly string[] = ["sessions", "oauth_states"];
+/** The registry's sign-ins (`signIn`): sessions, OAuth handshakes, paired phones, pairing codes. Never in staging. */
+const SIGN_IN_TABLES: readonly AccountTable[] = ACCOUNT_TABLES.filter((t) => t.scope.kind === "excluded" && t.scope.signIn === true);
+
+/** Not copied: the sign-ins, as the registry marks them, so a sign-in table added later can't slip through. */
+export const COPY_EXCLUDED: readonly string[] = SIGN_IN_TABLES.map((t) => t.name);
 
 /** Every other registry table, in registry (dependency) order. */
 export const COPY_TABLES: readonly AccountTable[] = ACCOUNT_TABLES.filter((t) => !COPY_EXCLUDED.includes(t.name));
@@ -199,7 +203,8 @@ const withSecrets = (): AccountTable[] => ACCOUNT_TABLES.filter((t) => secretCol
 /**
  * Staging's restore-safety posture: no provider connection usable (every
  * credential column null — the connection rows themselves stay, so parity
- * can compare them), no sign-in session and no OAuth handshake left.
+ * can compare them), and no sign-in left: no session, OAuth handshake, paired
+ * phone or pairing code (every table the registry marks `signIn`).
  */
 export async function scrubSecrets(dst: Db): Promise<void> {
   for (const t of withSecrets()) {
@@ -207,21 +212,31 @@ export async function scrubSecrets(dst: Db): Promise<void> {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     await dst.update(t.table as any).set(nulls).where(anySecret(t));
   }
-  await dst.delete(sessions);
-  await dst.delete(oauthStates);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  for (const t of SIGN_IN_TABLES) await dst.delete(t.table as any);
 }
 
-/** What a scrub must leave at zero. */
-export async function secretsRemaining(dst: Db): Promise<{ secrets: number; sessions: number; oauthStates: number }> {
+/** A sign-in table's key in `secretsRemaining`: its SQL name in camel case (`oauth_states` → `oauthStates`). */
+const remainingKey = (name: string) => name.replace(/_(\w)/g, (_, c: string) => c.toUpperCase());
+
+/**
+ * What a scrub must leave at zero, every value of it: credential columns still set (`secrets`), and each sign-in table's
+ * rows (`sessions`, `oauthStates`, `nativeDevices`, `nativePairings`).
+ */
+export async function secretsRemaining(dst: Db): Promise<{ secrets: number } & Record<string, number>> {
   let secrets = 0;
   for (const t of withSecrets()) {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const [row] = await dst.select({ n: count() }).from(t.table as any).where(anySecret(t));
     secrets += Number(row?.n ?? 0);
   }
-  const [s] = await dst.select({ n: count() }).from(sessions);
-  const [o] = await dst.select({ n: count() }).from(oauthStates);
-  return { secrets, sessions: Number(s?.n ?? 0), oauthStates: Number(o?.n ?? 0) };
+  const remaining: { secrets: number } & Record<string, number> = { secrets };
+  for (const t of SIGN_IN_TABLES) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const [row] = await dst.select({ n: count() }).from(t.table as any);
+    remaining[remainingKey(t.name)] = Number(row?.n ?? 0);
+  }
+  return remaining;
 }
 
 // ── the sentinel ─────────────────────────────────────────────────────────────

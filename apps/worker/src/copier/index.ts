@@ -140,10 +140,8 @@ export function copierApp(open: (env: CopierEnv) => { src: Db; dst: Db }): Hono<
     if (refusal) return c.json({ error: refusal }, 409);
     await scrubSecrets(dst);
     const remaining = await secretsRemaining(dst);
-    return c.json({
-      ok: remaining.secrets === 0 && remaining.sessions === 0 && remaining.oauthStates === 0,
-      remaining,
-    });
+    // Every count at zero: the credential columns and each sign-in table (sessions, handshakes, paired phones, codes).
+    return c.json({ ok: Object.values(remaining).every((n) => n === 0), remaining });
   });
 
   app.notFound((c) => c.json({ error: "not_found" }, 404));

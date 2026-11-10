@@ -16,7 +16,11 @@
  *                 is itself a `user` table).
  *  - `identity` — the `users` row itself: exported, never restored over.
  *  - `excluded` — not account data at all (auth sessions, OAuth handshakes,
- *                 global catalogs, app versioning).
+ *                 global catalogs, app versioning). Never exported or restored.
+ *                 The sign-ins among them (`signIn`: sessions, OAuth handshakes,
+ *                 paired phones and their pairing code) are credentials: the
+ *                 staging copier leaves them out and its scrub deletes any
+ *                 staging holds. The other excluded tables are copied.
  *
  * Column names in scopes and `secretColumns` are SQL names (`activity_id`),
  * not drizzle property keys — they are the database-level identity and what a
@@ -129,7 +133,12 @@ export type TableScope =
   | { kind: "user" }
   | { kind: "child"; parent: string; column: string; parentKey?: string }
   | { kind: "identity" }
-  | { kind: "excluded"; reason: string };
+  | {
+      kind: "excluded";
+      reason: string;
+      /** A sign-in credential (a session, a handshake, a paired phone, a pairing code): never copied to staging. */
+      signIn?: true;
+    };
 
 export interface AccountTable {
   name: string;
@@ -143,7 +152,9 @@ export interface AccountTable {
 
 const USER = { kind: "user" } as const;
 const child = (parent: string, column: string): TableScope => ({ kind: "child", parent, column });
-const excluded = (reason: string): TableScope => ({ kind: "excluded", reason });
+const excluded = (reason: string, opts: { signIn?: true } = {}): TableScope => ({ kind: "excluded", reason, ...opts });
+/** Excluded, and a sign-in credential: kept out of staging by the copier and its scrub too. */
+const signIn = (reason: string): TableScope => excluded(reason, { signIn: true });
 
 /**
  * Listed in dependency order — the position IS `order`. Identity first, then
@@ -252,10 +263,10 @@ const ENTRIES: ReadonlyArray<readonly [SQLiteTable, TableScope]> = [
   [performedSets, child("performed_sessions", "performed_session_id")],
 
   // no account owns these
-  [sessions, excluded("auth: a session is a sign-in on one device, never data to carry")],
-  [oauthStates, excluded("auth: short-lived OAuth handshakes with no owner")],
-  [nativeDevices, excluded("auth: a paired phone's sign-in (its token's hash), never data to carry; delete-all removes it")],
-  [nativePairings, excluded("auth: a short-lived pairing code's HMAC, never data to carry; delete-all removes it")],
+  [sessions, signIn("auth: a session is a sign-in on one device, never data to carry")],
+  [oauthStates, signIn("auth: short-lived OAuth handshakes with no owner")],
+  [nativeDevices, signIn("auth: a paired phone's sign-in (its token's hash), never data to carry or copy to staging; delete-all removes it")],
+  [nativePairings, signIn("auth: a short-lived pairing code's HMAC, never data to carry or copy to staging; delete-all removes it")],
   [gardenSpecies, excluded("global catalog shared by every account")],
   [corosExercises, excluded("global COROS exercise catalog shared by every account")],
   [schemaVersions, excluded("app component versions, not account data")],
