@@ -150,7 +150,7 @@ describe("ACCOUNT_TABLES — classification", () => {
     expect(accountTable("users").scope.kind).toBe("identity");
     const excluded = ACCOUNT_TABLES.filter((t) => t.scope.kind === "excluded").map((t) => t.name);
     expect(excluded.sort()).toEqual(
-      ["account_state", "coros_exercises", "garden_species", "oauth_states", "prompt_versions", "schema_versions", "sessions"].sort(),
+      ["account_state", "coros_exercises", "garden_species", "native_devices", "native_pairings", "oauth_states", "prompt_versions", "schema_versions", "sessions"].sort(),
     );
     for (const entry of ACCOUNT_TABLES) {
       if (entry.scope.kind === "excluded") expect(entry.scope.reason.length).toBeGreaterThan(0);

@@ -89,6 +89,8 @@ import {
   llmUsage,
   locations,
   motivationEvidence,
+  nativeDevices,
+  nativePairings,
   oauthStates,
   objectives,
   performedSessions,
@@ -252,6 +254,8 @@ const ENTRIES: ReadonlyArray<readonly [SQLiteTable, TableScope]> = [
   // no account owns these
   [sessions, excluded("auth: a session is a sign-in on one device, never data to carry")],
   [oauthStates, excluded("auth: short-lived OAuth handshakes with no owner")],
+  [nativeDevices, excluded("auth: a paired phone's sign-in (its token's hash), never data to carry; delete-all removes it")],
+  [nativePairings, excluded("auth: a short-lived pairing code's HMAC, never data to carry; delete-all removes it")],
   [gardenSpecies, excluded("global catalog shared by every account")],
   [corosExercises, excluded("global COROS exercise catalog shared by every account")],
   [schemaVersions, excluded("app component versions, not account data")],

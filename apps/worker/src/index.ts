@@ -65,6 +65,7 @@ import { executeCloudJobs } from "./services/coros-write-cloud.js";
 import { mirrorTakesTurn } from "./services/mirror.js";
 import { healOutdatedPaceEncoding } from "./services/content-converge.js";
 import { purgeExpiredSessions, createSession, sessionCookie } from "./auth/sessions.js";
+import { purgeExpiredNativeRows } from "./auth/native-devices.js";
 import { purgeExpiredStates } from "./auth/google.js";
 import { ensureFixtureUser, fixtureAccountEmail, seedFixtures } from "./services/fixtures.js";
 import { seedWatchSession } from "./services/fixture-watch-session.js";
@@ -335,6 +336,7 @@ export async function halfHourly(db: Db, env: Env): Promise<void> {
     console.error(`backfill sweep failed: ${e instanceof Error ? e.message : "unknown"}`),
   );
   await purgeExpiredSessions(db);
+  await purgeExpiredNativeRows(db);
   await purgeExpiredStates(db);
 }
 

@@ -9,6 +9,8 @@ import {
   dailyHealth,
   dismissedInsights,
   gardenState,
+  nativeDevices,
+  nativePairings,
   oauthStates,
   plannedWorkouts,
   providerConnections,
@@ -84,7 +86,7 @@ import { NORMALIZER_VERSION } from "@rg/providers";
 import { ESTIMATOR_VERSION } from "@rg/scheduling";
 import { EQUIPMENT_IDS } from "@rg/exercise-library";
 import type { AppContext } from "../auth/middleware.js";
-import { chunkIds, type Db } from "../services/db.js";
+import { chunkIds, runAtomically, type Db } from "../services/db.js";
 import { buildTerrainReport } from "../services/terrain.js";
 import { waitUntilSafe } from "../services/wait-until.js";
 import { requireUser } from "../auth/middleware.js";
@@ -1700,8 +1702,8 @@ settingsRoutes.post("/restore/start-fresh", async (c) => {
  * and `child` table, children scoped through this account's parent ids —
  * never a WHERE-less delete that would reach another account's rows. Then
  * what the registry deliberately leaves to delete-all: the sessions, the
- * OAuth handshakes (no owner column — single-user, cleared entirely, as
- * before) and the user row itself.
+ * paired phones and their pairing code, the OAuth handshakes (no owner
+ * column — single-user, cleared entirely, as before) and the user row itself.
  */
 /**
  * Everything of the account, gone. With `env` (the route passes it), every condition's cue is taken off the athlete's
@@ -1715,7 +1717,13 @@ export async function deleteAllUserData(db: Db, userId: string, env?: Env): Prom
   // scoped wipe cannot reach them — and "delete everything" must (finding 10).
   await deleteOrphanedChildren(db);
   await db.delete(accountState).where(eq(accountState.userId, userId));
-  await db.delete(sessions).where(eq(sessions.userId, userId));
+  // The account's sign-ins: its sessions, and its paired phones and pairing code (native device sign-in, migration
+  // 0038), excluded from the registry like the sessions, so deleted here by name — one round trip for the three.
+  await runAtomically(db, [
+    db.delete(sessions).where(eq(sessions.userId, userId)),
+    db.delete(nativeDevices).where(eq(nativeDevices.userId, userId)),
+    db.delete(nativePairings).where(eq(nativePairings.userId, userId)),
+  ]);
   await db.delete(oauthStates);
   await db.delete(users).where(eq(users.id, userId));
 }
