@@ -39,11 +39,13 @@ export const PENDING_CONFIRM_MS = 10 * 60_000;
  * PAIRING'S RATE CONTROLS (kit v0.5). The code's own PAIRING_MAX_TRIES bounds guesses at one live code; these bound the
  * rest — guesses with no code live or of codes that don't exist, minting again and again, and wrong check numbers:
  *
- *  - REDEEM (unauthenticated): failed attempts per PAIR_WINDOW_MS, PAIR_FAILS_PER_IP from one client (`CF-Connecting-IP`,
- *    which Cloudflare's edge sets; kept only as its hash) and PAIR_FAILS_GLOBAL in all — one owner, one deployment. Past
- *    either, every redeem gets the same 401 `pair_failed` for PAIR_COOL_OFF_MS, the right code included, and is not
- *    evaluated: the live code's tries are untouched. The cool-off is shorter than a code's life, so the owner can wait it
- *    out and use the same code; a new code from the laptop lifts every redeem throttle at once.
+ *  - REDEEM (unauthenticated): at most PAIR_FAILS_PER_IP failed attempts from one client and PAIR_FAILS_GLOBAL in all —
+ *    one owner, one deployment — per fixed PAIR_WINDOW_MS window (so up to twice that across a window's edge). A client is
+ *    its `CF-Connecting-IP` (which Cloudflare's edge sets), an IPv6 one its /64, kept only as an HMAC under SESSION_SECRET.
+ *    Past either bound, every redeem gets the same 401 `pair_failed`, the right code included, and is not evaluated — the
+ *    live code's tries are untouched — until the window ends, and for at least PAIR_COOL_OFF_MS: tripping a bound on
+ *    purpose never buys a new allowance early (review F1). A new code from the laptop lifts every redeem throttle at
+ *    once: the owner's recovery is Pair again.
  *  - MINT (cookie): MINTS_PER_WINDOW codes per account per MINT_WINDOW_MS, then 429 `too_many_codes` for MINT_COOL_OFF_MS.
  *  - CONFIRM (cookie): the CONFIRM_MAX_WRONG-th wrong check number revokes the pending phone (`check_failed`).
  */
@@ -59,8 +61,8 @@ export const CONFIRM_MAX_WRONG = 3;
 const DAY_MS = 86_400_000;
 const at = (now: string, ms: number) => new Date(Date.parse(now) + ms).toISOString();
 
-/** The client-address hash's label: a key, never the address. */
-const CLIENT_LABEL = "run-garden native pairing client v1";
+/** The client key's HMAC label (under SESSION_SECRET): a key, never the address, and not recoverable without the secret. */
+const CLIENT_LABEL = "run-garden native pairing client v2";
 const GLOBAL_REDEEM_KEY = "redeem:global";
 const REDEEM_KEYS = "redeem:%";
 
@@ -75,10 +77,11 @@ const MINTS: Bound = { limit: MINTS_PER_WINDOW, windowMs: MINT_WINDOW_MS, coolOf
 
 /**
  * Count one attempt against `key`, BEFORE it is evaluated, in ONE statement (an upsert … RETURNING): however many
- * requests arrive at once, at most `limit` are allowed per window. In cool-off: unchanged, refused (attempts during it
- * don't extend it). Cool-off over, or the window past: a fresh window, this attempt its first. Otherwise one more; the
- * one past `limit` starts the cool-off and is refused. Answers whether this attempt may go on, and until when it may
- * not.
+ * requests arrive at once, at most `limit` are allowed per window. Throttled: unchanged, refused (attempts during it
+ * don't extend it). Throttle over, or the window past: a fresh window, this attempt its first. Otherwise one more; the
+ * one past `limit` is refused and throttles the key until the WINDOW's end — the row's `expires_at`, which is its window
+ * start plus the window while it counts — and for at least the cool-off (review F1: ending at the cool-off gave a new
+ * allowance every cool-off). Answers whether this attempt may go on, and until when it may not.
  */
 async function countAttempt(db: Db, key: string, now: string, b: Bound): Promise<{ allowed: boolean; blockedUntil: string | null }> {
   const t = nativePairLimits;
@@ -88,6 +91,8 @@ async function countAttempt(db: Db, key: string, now: string, b: Bound): Promise
   const blocked = sql`(${t.blockedUntil} is not null and ${t.blockedUntil} > ${now})`;
   const fresh = sql`(${t.blockedUntil} is not null or ${t.windowStart} <= ${windowFrom})`;
   const crosses = sql`(${t.count} + 1 > ${b.limit})`;
+  /** The throttle's end: the window's (`expires_at` while it counts), and not before the cool-off's. */
+  const throttleEnd = sql`max(${t.expiresAt}, ${coolUntil})`;
   const [row] = await db
     .insert(t)
     .values({ key, windowStart: now, count: 1, blockedUntil: null, expiresAt: windowEnd })
@@ -96,13 +101,20 @@ async function countAttempt(db: Db, key: string, now: string, b: Bound): Promise
       set: {
         windowStart: sql`case when ${blocked} then ${t.windowStart} when ${fresh} then ${now} else ${t.windowStart} end`,
         count: sql`case when ${blocked} then ${t.count} when ${fresh} then 1 else ${t.count} + 1 end`,
-        blockedUntil: sql`case when ${blocked} then ${t.blockedUntil} when ${fresh} then null when ${crosses} then ${coolUntil} else null end`,
-        expiresAt: sql`case when ${blocked} then ${t.expiresAt} when ${fresh} then ${windowEnd} when ${crosses} then max(${t.expiresAt}, ${coolUntil}) else ${t.expiresAt} end`,
+        blockedUntil: sql`case when ${blocked} then ${t.blockedUntil} when ${fresh} then null when ${crosses} then ${throttleEnd} else null end`,
+        expiresAt: sql`case when ${blocked} then ${t.expiresAt} when ${fresh} then ${windowEnd} when ${crosses} then ${throttleEnd} else ${t.expiresAt} end`,
       },
     })
     .returning({ blockedUntil: t.blockedUntil });
   const blockedUntil = row?.blockedUntil ?? null;
   return { allowed: !(blockedUntil !== null && blockedUntil > now), blockedUntil };
+}
+
+/** Whether `key` is throttled now: a read, writing nothing (the global bound's first look, review F3). */
+async function throttledNow(db: Db, key: string, now: string): Promise<boolean> {
+  const t = nativePairLimits;
+  const [row] = await db.select({ blockedUntil: t.blockedUntil }).from(t).where(eq(t.key, key)).limit(1);
+  return row?.blockedUntil != null && row.blockedUntil > now;
 }
 
 /** A success gives its attempt back (only outside a cool-off): the bounds count failures. */
@@ -114,10 +126,47 @@ async function refundAttempt(db: Db, key: string): Promise<void> {
     .where(and(eq(t.key, key), isNull(t.blockedUntil), gt(t.count, 0)));
 }
 
-/** The client's key: its address's hash, labelled. Null when the worker can't see one. */
-async function clientKey(clientIp: string | null | undefined): Promise<string | null> {
+/**
+ * The network a client address counts as (review F3): an IPv4 address as it is; an IPv6 one by its /64 — one subscriber's
+ * allocation, so a client can't step around its bound by changing the address's low bits — however it is written
+ * (compressed or not, any case, bracketed, with a zone); an IPv4-mapped IPv6 address as its IPv4. Anything that doesn't
+ * parse counts as itself.
+ */
+export function clientNetwork(address: string): string {
+  let a = address.trim().toLowerCase();
+  if (a.startsWith("[")) a = a.slice(1, a.includes("]") ? a.indexOf("]") : undefined);
+  if (a.includes("%")) a = a.slice(0, a.indexOf("%"));
+  if (!a.includes(":")) return a;
+  const halves = a.split("::");
+  if (halves.length > 2) return a;
+  const head = halves[0] ? halves[0].split(":") : [];
+  const tail = halves.length === 2 && halves[1] ? halves[1].split(":") : [];
+  const last = halves.length === 2 ? tail : head;
+  if (last.length > 0 && last[last.length - 1]!.includes(".")) {
+    const octets = last.pop()!.split(".").map((o) => (/^\d{1,3}$/.test(o) ? Number(o) : NaN));
+    if (octets.length !== 4 || octets.some((o) => !(o >= 0 && o <= 255))) return a;
+    last.push(((octets[0]! << 8) | octets[1]!).toString(16), ((octets[2]! << 8) | octets[3]!).toString(16));
+  }
+  const missing = 8 - head.length - tail.length;
+  if (halves.length === 2 ? missing < 1 : missing !== 0) return a;
+  const groups = [...head, ...Array.from({ length: halves.length === 2 ? missing : 0 }, () => "0"), ...tail];
+  if (groups.some((g) => !/^[0-9a-f]{1,4}$/.test(g))) return a;
+  const full = groups.map((g) => g.padStart(4, "0"));
+  if (full.slice(0, 5).every((g) => g === "0000") && full[5] === "ffff") {
+    const hi = parseInt(full[6]!, 16);
+    const lo = parseInt(full[7]!, 16);
+    return `${hi >> 8}.${hi & 255}.${lo >> 8}.${lo & 255}`;
+  }
+  return `${full.slice(0, 4).join(":")}::/64`;
+}
+
+/**
+ * The client's key: an HMAC of its network under SESSION_SECRET, labelled (review F4: an unkeyed hash of an IPv4
+ * address can be reversed by trying all 2^32). Null when the worker can't see an address.
+ */
+async function clientKey(secret: string, clientIp: string | null | undefined): Promise<string | null> {
   const address = (clientIp ?? "").trim();
-  return address ? `redeem:ip:${await sha256Hex(`${CLIENT_LABEL}\n${address}`)}` : null;
+  return address ? `redeem:ip:${await hmacSha256Hex(secret, `${CLIENT_LABEL}\n${clientNetwork(address)}`)}` : null;
 }
 
 /** Crockford's base32: no I, L, O or U. 8 characters carry 40 bits. */
@@ -192,9 +241,17 @@ export async function mintPairing(
  * UPDATE hands its row back marked used. Null for every failure alike: no owner, no live code, a wrong one — or a
  * throttled client.
  *
- * Before any of that, the attempt is counted against the client (`clientIp`, when the worker can see one) and against
- * the deployment (countAttempt): past either bound the attempt is not evaluated at all — the code's tries are untouched —
- * and answers null like any miss. A success gives both counts back.
+ * Before any of that, the attempt is counted, and past a bound it is not evaluated at all — the code's tries are
+ * untouched — and answers null like any miss:
+ *  1. the global bound, read only: while it throttles, nothing is written, not even for a new client (review F3);
+ *  2. the client's count (`clientIp`, when the worker can see one), one atomic upsert;
+ *  3. the global count, one atomic upsert; when it refuses, the client's count is given back — an attempt the deployment
+ *     refused is not the client's (review F2).
+ * A success gives both counts back.
+ *
+ * THE ANSWER'S TIME IS NOT THE MISS'S (review F6, a known limit): a throttled attempt skips the HMAC and the UPDATE, so
+ * it answers measurably sooner than an evaluated miss, with the same bytes. That tells a caller only that it is being
+ * throttled — never anything about the code.
  */
 export async function redeemPairing(
   db: Db,
@@ -203,9 +260,13 @@ export async function redeemPairing(
   now: string,
   clientIp?: string | null,
 ): Promise<{ token: string; check: string; confirmBy: string } | null> {
-  const client = await clientKey(clientIp);
+  if (await throttledNow(db, GLOBAL_REDEEM_KEY, now)) return null;
+  const client = await clientKey(env.SESSION_SECRET, clientIp);
   if (client && !(await countAttempt(db, client, now, PER_IP)).allowed) return null;
-  if (!(await countAttempt(db, GLOBAL_REDEEM_KEY, now, GLOBAL)).allowed) return null;
+  if (!(await countAttempt(db, GLOBAL_REDEEM_KEY, now, GLOBAL)).allowed) {
+    if (client) await refundAttempt(db, client);
+    return null;
+  }
   const paired = await redeemCounted(db, env, input, now);
   if (paired) {
     if (client) await refundAttempt(db, client);
@@ -268,6 +329,10 @@ export type ConfirmOutcome =
  * try, and the CONFIRM_MAX_WRONG-th revokes the phone (`check_failed`) in that same statement. Once it is not pending no
  * further number is evaluated, so however many arrive at once, at most CONFIRM_MAX_WRONG are tried: a laptop can't be
  * walked through the 10,000 numbers.
+ *
+ * WHO CAN SEND A WRONG NUMBER (review F7): Confirm is cookie only and names the device by its 64-hex id, and the laptop's
+ * own Settings sends the number it lists. So a wrong number comes only from a client holding the owner's cookie and that
+ * id; nobody else can revoke the owner's pending phone this way. The bound is defense in depth.
  */
 export async function confirmDevice(db: Db, userId: string, id: string, check: string, now: string): Promise<ConfirmOutcome> {
   const expiresAt = at(now, NATIVE_DEVICE_LIFETIME_DAYS * DAY_MS);

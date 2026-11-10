@@ -24,6 +24,7 @@ import {
   PAIR_COOL_OFF_MS,
   PAIR_FAILS_GLOBAL,
   PAIR_FAILS_PER_IP,
+  PAIR_WINDOW_MS,
   PAIRING_CODE_TTL_MS,
 } from "../src/auth/native-devices.js";
 import { nativeRoutes } from "../src/routes/native.js";
@@ -151,16 +152,74 @@ describe("concurrent attempts across a bound", () => {
 });
 
 describe("the cool-off and the owner's recovery", () => {
-  it("after the cool-off the same client pairs with the same code; attempts during it don't extend it", async () => {
+  it("a tripped bound holds to its window's end (review F1): the cool-off doesn't hand out a new allowance; attempts in it change nothing", async () => {
+    const t0 = Date.now();
+    for (let i = 0; i < PAIR_FAILS_PER_IP; i++) expect(evaluated(await redeem("ABCDEFGH", ip(1)))).toBe(1);
+    expect(evaluated(await redeem("ABCDEFGH", ip(1)))).toBe(0); // the bound crossed at t0
+    later(PAIR_COOL_OFF_MS);
+    expect(evaluated(await redeem("ABCDEFGH", ip(1)))).toBe(0); // the old behavior gave a fresh window here
+    vi.setSystemTime(new Date(t0 + PAIR_WINDOW_MS - 1000));
+    expect(evaluated(await redeem("ABCDEFGH", ip(1)))).toBe(0);
+    vi.setSystemTime(new Date(t0 + PAIR_WINDOW_MS));
+    expect(evaluated(await redeem("ABCDEFGH", ip(1)))).toBe(1);
+  });
+
+  it("crossed near its window's end, the throttle lasts at least the cool-off", async () => {
+    const t0 = Date.now();
+    await redeem("ABCDEFGH", ip(1)); // opens the window
+    vi.setSystemTime(new Date(t0 + PAIR_WINDOW_MS - 30_000));
+    for (let i = 1; i < PAIR_FAILS_PER_IP; i++) await redeem("ABCDEFGH", ip(1));
+    const crossedAt = Date.now();
+    expect(evaluated(await redeem("ABCDEFGH", ip(1)))).toBe(0);
+    vi.setSystemTime(new Date(crossedAt + PAIR_COOL_OFF_MS - 1000));
+    expect(evaluated(await redeem("ABCDEFGH", ip(1)))).toBe(0);
+    vi.setSystemTime(new Date(crossedAt + PAIR_COOL_OFF_MS));
+    expect(evaluated(await redeem("ABCDEFGH", ip(1)))).toBe(1);
+  });
+
+  it("a sustained flood, tripping the bounds on purpose: at most 3 per client and 10 in all are evaluated per window (review F1)", async () => {
+    const t0 = Date.now();
+    const from = w.statements.length;
+    let n = 0;
+    const evaluatedFor: Record<string, number> = {};
+    // Every 15 seconds for the whole window: a burst from one steady client, and a burst from fresh addresses.
+    while (Date.now() < t0 + PAIR_WINDOW_MS) {
+      for (let i = 0; i <= PAIR_FAILS_PER_IP; i++) evaluatedFor.steady = (evaluatedFor.steady ?? 0) + evaluated(await redeem("ABCDEFGH", ip(250)));
+      for (let i = 0; i <= PAIR_FAILS_GLOBAL; i++) await redeem("ABCDEFGH", ip(++n % 240));
+      later(15_000);
+    }
+    expect(w.statements.slice(from).filter((s) => /^update "native_pairings"/.test(s)).length).toBeLessThanOrEqual(PAIR_FAILS_GLOBAL);
+    expect(evaluatedFor.steady).toBeLessThanOrEqual(PAIR_FAILS_PER_IP);
+  });
+
+  it("one client can't burn a live code in its life by waiting out cool-offs: the phone still pairs (review F1, P2)", async () => {
     const { code } = (await mint()).json;
-    for (let i = 0; i < PAIR_FAILS_PER_IP; i++) await redeem(wrongOf(code), ip(1));
-    expect(asSeen(await redeem(code, ip(1)))).toBe(MISS); // the bound crossed: the cool-off starts now
-    later(PAIR_COOL_OFF_MS / 2);
-    expect(asSeen(await redeem(code, ip(1)))).toBe(MISS);
-    later(PAIR_COOL_OFF_MS / 2);
-    const back = await redeem(code, ip(1));
-    expect(back.status, back.text).toBe(200);
-    expect(PAIR_COOL_OFF_MS).toBeLessThan(PAIRING_CODE_TTL_MS);
+    // Two rounds, a cool-off apart, inside the code's 5 minutes: the old behavior burned it (5/5 tries) in the second.
+    for (let round = 0; round < 2; round++) {
+      for (let i = 0; i <= PAIR_FAILS_PER_IP; i++) await redeem(wrongOf(code), ip(7));
+      later(PAIR_COOL_OFF_MS);
+    }
+    expect(await pairing()).toMatchObject({ tries: PAIR_FAILS_PER_IP, usedAt: null });
+    expect(Date.now()).toBeLessThan(Date.parse((await pairing())!.expiresAt));
+    expect((await redeem(code, ip(8))).status).toBe(200);
+  });
+
+  it("an attempt the global bound refuses doesn't count against its client (review F2, P3): the owner is evaluated the moment the global throttle ends", async () => {
+    for (let i = 0; i <= PAIR_FAILS_GLOBAL; i++) await redeem("ABCDEFGH", ip(100 + i));
+    later(PAIR_COOL_OFF_MS - 5_000);
+    for (let i = 0; i <= PAIR_FAILS_PER_IP; i++) expect(evaluated(await redeem("ABCDEFGH", ip(1)))).toBe(0);
+    const [global] = await w.db.select().from(nativePairLimits).where(eq(nativePairLimits.key, "redeem:global"));
+    vi.setSystemTime(new Date(global!.blockedUntil!));
+    expect(evaluated(await redeem("ABCDEFGH", ip(1)))).toBe(1);
+  });
+
+  it("while the global bound refuses, a new address writes nothing (review F3, P4)", async () => {
+    for (let i = 0; i <= PAIR_FAILS_GLOBAL; i++) await redeem("ABCDEFGH", ip(i + 1));
+    const before = (await w.db.select().from(nativePairLimits)).length;
+    let writes = 0;
+    for (let i = 0; i < 200; i++) writes += (await redeem("ABCDEFGH", `2001:db8:${(i + 1).toString(16)}::1`)).writes.length;
+    expect(writes).toBe(0);
+    expect((await w.db.select().from(nativePairLimits)).length).toBe(before);
   });
 
   it("a new code lifts every redeem throttle at once: Pair again on the laptop, and the phone pairs", async () => {
@@ -171,6 +230,34 @@ describe("the cool-off and the owner's recovery", () => {
     const fresh = (await mint()).json.code;
     const phone = await redeem(fresh, ip(1));
     expect(phone.status, phone.text).toBe(200);
+  });
+});
+
+describe("the client's key (review F3, F4)", () => {
+  const clientKeys = async () => (await w.db.select().from(nativePairLimits).where(like(nativePairLimits.key, "redeem:ip:%"))).map((r) => r.key);
+
+  it("an IPv6 client is its /64: every address in it shares one count, however it is written; the next /64 is another client", async () => {
+    for (const a of ["2001:db8:1:2::a", "2001:0db8:0001:0002:0000:0000:0000:000b", "2001:DB8:1:2:ffff::c"]) expect(evaluated(await redeem("ABCDEFGH", a))).toBe(1);
+    expect(evaluated(await redeem("ABCDEFGH", "2001:db8:1:2:1:2:3:4"))).toBe(0);
+    expect(evaluated(await redeem("ABCDEFGH", "[2001:db8:1:2::9%en0]"))).toBe(0);
+    expect(evaluated(await redeem("ABCDEFGH", "2001:db8:1:3::a"))).toBe(1);
+    expect(await clientKeys()).toHaveLength(2);
+  });
+
+  it("an IPv4 address written as IPv4-mapped IPv6 is the same client", async () => {
+    for (let i = 0; i < PAIR_FAILS_PER_IP; i++) await redeem("ABCDEFGH", ip(5));
+    expect(evaluated(await redeem("ABCDEFGH", `::ffff:${ip(5)}`))).toBe(0);
+  });
+
+  it("is an HMAC under SESSION_SECRET: no unkeyed digest of the address is stored, and another secret makes another key", async () => {
+    await redeem("ABCDEFGH", ip(1));
+    const [key] = await clientKeys();
+    for (const guess of [ip(1), `run-garden native pairing client v1\n${ip(1)}`]) expect(key).not.toContain(await sha256Hex(guess));
+    await mint(); // lifts the throttles: the next attempt writes a fresh row
+    await w.call("POST", "/api/native/pair", { cookie: false, body: { code: "ABCDEFGH", label: "x" }, headers: { "CF-Connecting-IP": ip(1) }, env: { SESSION_SECRET: "another-synthetic-secret" } });
+    const [other] = await clientKeys();
+    expect(other).toMatch(/^redeem:ip:[0-9a-f]{64}$/);
+    expect(other).not.toBe(key);
   });
 });
 
