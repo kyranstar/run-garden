@@ -1074,6 +1074,43 @@ describe("a plan's sessions archived in bulk by the coach leave one under way, a
 });
 
 describe("the day's placement (every writer's: a plan's sessions, an import, an approve) never re-times a session under way", () => {
+  /** Sessions on D at one hour, none of them the athlete's own pick (no `time_change`). */
+  async function crowded(w: World, n: number) {
+    const ids: string[] = [];
+    for (let i = 0; i < n; i++) ids.push(await slotOn(w, D));
+    for (const id of ids) raw(w).prepare(`delete from schedule_overrides where workout_id = ?`).run(id);
+    return ids;
+  }
+
+  it("a move to another day landing between the placement's read and its write (forced): the session keeps the day and time it was moved to; nothing of that day is re-timed, and the answer says so", async () => {
+    const w = await world();
+    const [a, b] = await crowded(w, 2);
+    setClock(addDays(D, -1), "12:00");
+    gates.batch = async () => {
+      expect((await w.call("POST", `/api/plan/workouts/${a}/move`, { toDate: addDays(D, 2), toTime: "09:00" })).status).toBe(200);
+    };
+    const moved = await separateDayCollisions(w.db, w.userId, [D], await loadPreferences(w.db, w.userId), { from: D, now: nowInstant() });
+    expect(rowOf(w, a!)).toMatchObject({ date: addDays(D, 2), time: "09:00" });
+    expect(rowOf(w, b!).time).toBe("18:00");
+    expect(moved).toEqual([]);
+  });
+
+  it("a hand-picked time landing between the read and the write (forced): kept; the day isn't half laid — the next pass lays out what still collides", async () => {
+    const w = await world();
+    const [a, b, c] = await crowded(w, 3);
+    setClock(addDays(D, -1), "12:00");
+    gates.batch = async () => {
+      expect((await w.call("POST", `/api/plan/workouts/${a}/move`, { toDate: D, toTime: "06:30" })).status).toBe(200);
+    };
+    const prefs = await loadPreferences(w.db, w.userId);
+    expect(await separateDayCollisions(w.db, w.userId, [D], prefs, { from: D, now: nowInstant() })).toEqual([]);
+    expect([rowOf(w, a!).time, rowOf(w, b!).time, rowOf(w, c!).time]).toEqual(["06:30", "18:00", "18:00"]);
+    const again = await separateDayCollisions(w.db, w.userId, [D], prefs, { from: D, now: nowInstant() });
+    expect(again.map((m) => m.workoutId)).not.toContain(a);
+    expect(rowOf(w, a!).time).toBe("06:30");
+    expect(new Set([rowOf(w, a!).time, rowOf(w, b!).time, rowOf(w, c!).time]).size).toBe(3);
+  });
+
   it("a Start landing between the placement's read and its write (forced): that session keeps its time", async () => {
     const w = await world();
     const ids = [await slotOn(w, D), await slotOn(w, D)];

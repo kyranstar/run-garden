@@ -38,7 +38,7 @@
 import { and, eq, inArray, isNull, ne, or } from "drizzle-orm";
 import { plannedWorkouts, scheduleOverrides } from "@rg/database";
 import { isWeekend, type SchedulingPreferences } from "@rg/domain";
-import { chunkIds, runAtomically, type AtomicStatement, type Db } from "./db.js";
+import { chunkIds, guardFailed, guardOrFail, runAtomically, type AtomicStatement, type Db } from "./db.js";
 import { plannedRowColumns, type PlannedRow } from "./planned-columns.js";
 
 /**
@@ -304,7 +304,6 @@ export async function separateDayCollisions(
   }
 
   const retimed: RetimedRow[] = [];
-  const writes: AtomicStatement[] = [];
   for (const date of [...byDate.keys()].sort()) {
     const dayRows = byDate.get(date)!;
     const sessions: PlaceableSession[] = dayRows.map((r) => ({
@@ -316,11 +315,23 @@ export async function separateDayCollisions(
     }));
     const placement = relaidDay(date, sessions, prefs);
     if (!placement) continue;
+    const dayRetimed: RetimedRow[] = [];
+    const writes: AtomicStatement[] = [];
     for (const r of dayRows) {
       const to = placement.get(r.id);
       if (to === undefined || to === r.effectiveTime) continue;
-      retimed.push({ workoutId: r.id, date, title: r.title, from: r.effectiveTime, to });
+      dayRetimed.push({ workoutId: r.id, date, title: r.title, from: r.effectiveTime, to });
       if (opts.dryRun) continue;
+      // Held as read (final reviews A m3 and C): its day and time, still scheduled, on the plan and not started. A Start, a
+      // save, a remove, a move or a hand-picked time landing between the read and this write fails the DAY's batch
+      // (`guardOrFail`): no half-laid day, nothing of it written, and the next pass lays out what still collides.
+      const asRead = and(
+        eq(plannedWorkouts.effectiveDate, r.effectiveDate),
+        eq(plannedWorkouts.effectiveTime, r.effectiveTime),
+        eq(plannedWorkouts.completionState, "scheduled"),
+        isNull(plannedWorkouts.archivedAt),
+        or(isNull(plannedWorkouts.contentState), ne(plannedWorkouts.contentState, "started")),
+      )!;
       writes.push(
         db
           .update(plannedWorkouts)
@@ -329,23 +340,21 @@ export async function separateDayCollisions(
             // The mirror re-derives the event from the row; flipping a synced row
             // to pending is how every other in-place edit here asks for that.
             ...(r.calendarSyncState === "synced" ? { calendarSyncState: "pending" } : {}),
+            effectiveDate: guardOrFail(asRead, plannedWorkouts.effectiveDate),
             updatedAt: opts.now,
           })
-          // Held as read (final review A, m3): a Start, a save or a remove landing between the read and this write leaves the
-          // session's time as it is — never a session under way re-timed.
-          .where(
-            and(
-              eq(plannedWorkouts.id, r.id),
-              eq(plannedWorkouts.userId, userId),
-              eq(plannedWorkouts.completionState, "scheduled"),
-              isNull(plannedWorkouts.archivedAt),
-              or(isNull(plannedWorkouts.contentState), ne(plannedWorkouts.contentState, "started")),
-            ),
-          ),
+          .where(and(eq(plannedWorkouts.id, r.id), eq(plannedWorkouts.userId, userId))),
       );
     }
+    try {
+      // One batch a day, the same statements as before, one a re-timed row.
+      await runAtomically(db, writes);
+    } catch (e) {
+      if (guardFailed(e)) continue;
+      throw e;
+    }
+    // What was written (or, a dry run, what would be): never a day whose batch failed.
+    retimed.push(...dayRetimed);
   }
-  // One batch, the same statements as before, one a re-timed row.
-  await runAtomically(db, writes);
   return retimed;
 }
