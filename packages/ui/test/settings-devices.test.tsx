@@ -34,7 +34,7 @@ let calls: Array<{ method: string; path: string; body: unknown }>;
 
 /** A worker in memory: the devices list and what Pair, Confirm and Revoke do to it. */
 function worker(
-  init: { enabled?: boolean; devices?: NativeDeviceDto[]; listStatus?: number; listBody?: unknown; pairRefusal?: unknown; confirmRefusal?: unknown } = {},
+  init: { enabled?: boolean; devices?: NativeDeviceDto[]; listStatus?: number; listBody?: unknown; pairRefusal?: unknown; confirmRefusal?: unknown; timezone?: string } = {},
 ) {
   const state = { enabled: init.enabled ?? true, devices: [...(init.devices ?? [])] };
   calls = [];
@@ -69,7 +69,7 @@ function worker(
         state.devices = [];
         return json({ ok: true, revoked: n });
       }
-      if (path === "/api/settings") return json({ prefs: DEFAULT_USER_PREFERENCES, llm: null });
+      if (path === "/api/settings") return json({ prefs: { ...DEFAULT_USER_PREFERENCES, ...(init.timezone ? { timezone: init.timezone } : {}) }, llm: null });
       if (path === "/api/auth/me") return json({ userId: "u", email: "owner@example.test", connections: [], fixtureMode: false, restore: null });
       if (path === "/api/my-saves/status") return json({ error: "not_found" }, 404);
       // The other cards' reads, as shape-settings.test.tsx answers them.
@@ -87,13 +87,13 @@ function worker(
   return state;
 }
 
-async function mount(el: typeof DevicesSection | typeof SettingsScreen = DevicesSection) {
+async function mount(el: typeof DevicesSection | typeof SettingsScreen = DevicesSection, props: { timezone?: string } = {}) {
   host = document.createElement("div");
   document.body.appendChild(host);
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   root = createRoot(host);
   await act(async () => {
-    root!.render(createElement(QueryClientProvider, { client: qc }, createElement(MemoryRouter, null, createElement(el))));
+    root!.render(createElement(QueryClientProvider, { client: qc }, createElement(MemoryRouter, null, createElement(el as typeof DevicesSection, props))));
   });
   await flush();
 }
@@ -181,11 +181,55 @@ describe("Settings → Devices", () => {
     expect(rowOf("Old phone")).toBeTruthy();
   });
 
-  it("the expiry counts down in days: within a day it says today, and one day is a day", async () => {
-    worker({ devices: [active({ label: "Today phone", expiresAt: iso(3_600_000), expiresSoon: true }), active({ id: "d".repeat(64), label: "Tomorrow phone", expiresAt: iso(DAY), expiresSoon: true })] });
-    await mount();
-    expect(words(rowOf("Today phone"))).toContain("Expires today");
-    expect(words(rowOf("Tomorrow phone"))).toContain("Expires in 1 day");
+  it("the expiry counts calendar days on the owner's clock (review F8): today is today's date, tomorrow is 1 day, however few hours", async () => {
+    // Now is 11:00 in Los Angeles on Nov 10 (19:00Z).
+    worker({
+      devices: [
+        active({ label: "Tonight phone", expiresAt: "2026-11-11T07:30:00.000Z", expiresSoon: true }), // 23:30 Nov 10 in LA
+        active({ id: "d".repeat(64), label: "Small hours phone", expiresAt: "2026-11-11T09:00:00.000Z", expiresSoon: true }), // 01:00 Nov 11 in LA
+        active({ id: "e".repeat(64), label: "Next week phone", expiresAt: "2026-11-24T20:00:00.000Z", expiresSoon: false }), // Nov 24
+      ],
+    });
+    await mount(DevicesSection, { timezone: "America/Los_Angeles" });
+    expect(words(rowOf("Tonight phone"))).toContain("Expires today");
+    expect(words(rowOf("Small hours phone"))).toContain("Expires in 1 day");
+    expect(words(rowOf("Next week phone"))).toContain("Expires in 14 days");
+    // In Tokyo it is already Nov 11 (04:00): the same tonight is Nov 11 16:30 there, so it expires today too, and the small
+    // hours one (Nov 11 18:00 there) as well.
+    act(() => root?.unmount());
+    host?.remove();
+    await mount(DevicesSection, { timezone: "Asia/Tokyo" });
+    expect(words(rowOf("Small hours phone"))).toContain("Expires today");
+  });
+
+  it("the Pair-again hint shows at 7 calendar days or fewer, and not at 8", async () => {
+    worker({
+      devices: [
+        active({ label: "Seven phone", expiresAt: "2026-11-18T03:00:00.000Z", expiresSoon: false }), // Nov 17 19:00 in LA: 7 days
+        active({ id: "d".repeat(64), label: "Eight phone", expiresAt: "2026-11-18T09:00:00.000Z", expiresSoon: false }), // Nov 18 01:00 in LA: 8 days
+      ],
+    });
+    await mount(DevicesSection, { timezone: "America/Los_Angeles" });
+    expect(words(rowOf("Seven phone"))).toContain("Expires in 7 days");
+    expect(words(rowOf("Seven phone"))).toContain("Pair it again before then");
+    expect(words(rowOf("Eight phone"))).toContain("Expires in 8 days");
+    expect(words(rowOf("Eight phone"))).not.toContain("Pair it again");
+  });
+
+  it("Settings counts on the account's own time zone, not the laptop's", async () => {
+    // The account is in Tokyo, where it is already 04:00 on Nov 11: 01:00 Nov 11 in LA is 18:00 Nov 11 there — today.
+    // And 16:00Z on Nov 11 is 01:00 Nov 12 there: 21 hours away, but tomorrow on the account's calendar.
+    worker({
+      devices: [
+        active({ label: "Small hours phone", expiresAt: "2026-11-11T09:00:00.000Z" }),
+        active({ id: "d".repeat(64), label: "After midnight phone", expiresAt: "2026-11-11T16:00:00.000Z" }),
+      ],
+      timezone: "Asia/Tokyo",
+    });
+    await mount(SettingsScreen);
+    for (let i = 0; i < 100 && !rowOf("Small hours phone"); i++) await flush();
+    expect(words(rowOf("Small hours phone"))).toContain("Expires today");
+    expect(words(rowOf("After midnight phone"))).toContain("Expires in 1 day");
   });
 
   it("too many codes: says when to try again, and shows no code", async () => {

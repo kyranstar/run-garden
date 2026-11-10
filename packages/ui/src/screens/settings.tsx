@@ -1884,8 +1884,9 @@ export function SettingsScreen() {
         <DataSection />
         <ImportSection />
         <DiagnosticsSection />
-        {/* Paired phones (native device sign-in): nothing renders while the switch is off and none is paired. */}
-        <DevicesSection />
+        {/* Paired phones (native device sign-in): nothing renders while the switch is off and none is paired. Their days
+            left are counted on the account's own clock. */}
+        <DevicesSection timezone={prefs.timezone} />
         <AccountSection email={me.data?.email ?? null} signingOut={logout.isPending} onSignOut={() => logout.mutate()} />
       </SettingsGroup>
     </div>

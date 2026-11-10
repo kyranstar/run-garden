@@ -14,21 +14,31 @@
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, ApiError, type NativeDeviceDto } from "@rg/api-client";
-import { Banner, Card, relativeTime } from "../../components.js";
+import { daysBetween } from "@rg/domain";
+import { Banner, Card, dateInZone, relativeTime } from "../../components.js";
 
 export const NATIVE_DEVICES_QUERY = ["native-devices"] as const;
 
 /** Looked at this often while a code is out: the phone that redeems it shows up as pending. */
 const LOOK_AGAIN_MS = 3_000;
 
-const DAY_MS = 86_400_000;
+/** The phone warns this many days ahead (the worker's NATIVE_DEVICE_WARN_DAYS); the laptop's hint shows from the same day. */
+const WARN_DAYS = 7;
+
 const clockOf = (iso: string) => new Date(iso).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
 /** "7K2QXM9D" → "7K2Q-XM9D": two groups of four, as the phone's field takes it (hyphens are ignored). */
 const grouped = (code: string) => `${code.slice(0, 4)}-${code.slice(4)}`;
 
-/** How long an active phone has: "Expires in 27 days", "Expires in 1 day", or "Expires today" within the last day. */
-export function expiresIn(iso: string, now = Date.now()): string {
-  const days = Math.floor((Date.parse(iso) - now) / DAY_MS);
+/**
+ * Calendar days until an active phone's expiry, on the owner's clock (`timeZone`, the account's; the laptop's own when
+ * unknown): 0 on its last day, however few hours are left; 1 the day before, however few (review F8).
+ */
+export function daysLeft(iso: string, timeZone: string | null | undefined, now = Date.now()): number {
+  return daysBetween(dateInZone(new Date(now), timeZone), dateInZone(new Date(iso), timeZone));
+}
+
+/** "Expires today", "Expires in 1 day", "Expires in 27 days". */
+export function expiresIn(days: number): string {
   if (days < 1) return "Expires today";
   return days === 1 ? "Expires in 1 day" : `Expires in ${days} days`;
 }
@@ -50,7 +60,8 @@ function pairRefusal(e: unknown): string {
   return "Couldn't make a pairing code. Try again.";
 }
 
-export function DevicesSection() {
+/** `timeZone`: the account's (Settings passes its prefs'), so the days are counted on the owner's calendar. */
+export function DevicesSection({ timezone }: { timezone?: string | null } = {}) {
   const qc = useQueryClient();
   const [minted, setMinted] = useState<{ code: string; expiresAt: string } | null>(null);
   const list = useQuery({
@@ -101,10 +112,10 @@ export function DevicesSection() {
             <span className="place-row-main">
               <b>{d.label}</b>
               <small>
-                {d.lastUsedAt ? `Last used ${relativeTime(d.lastUsedAt)}` : "Never used"} · {expiresIn(d.expiresAt)}
+                {d.lastUsedAt ? `Last used ${relativeTime(d.lastUsedAt)}` : "Never used"} · {expiresIn(daysLeft(d.expiresAt, timezone))}
               </small>
-              {/* Within the last 7 days (the server's expiresSoon): the phone warns too. */}
-              {d.expiresSoon ? <small>Pair it again before then: Pair a phone, here.</small> : null}
+              {/* 7 calendar days or fewer: the phone warns too. */}
+              {daysLeft(d.expiresAt, timezone) <= WARN_DAYS ? <small>Pair it again before then: Pair a phone, here.</small> : null}
             </span>
             <span className="setting-row-end">
               <button type="button" className="btn btn-small" disabled={busy} onClick={() => revoke.mutate(d.id)}>
