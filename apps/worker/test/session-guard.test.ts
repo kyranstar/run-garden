@@ -107,6 +107,7 @@ import { syncCalendar } from "../src/services/calendar-sync.js";
 import { encryptSecret } from "../src/auth/crypto.js";
 import { postSyncNote } from "../src/services/sync-notes.js";
 import { readGuarded } from "../src/services/session-guard.js";
+import { MISS_ONCE_FROM } from "../src/services/garden-sync.js";
 import { applyOps, applyStructuralChunk } from "../src/services/coach-apply.js";
 import { separateDayCollisions } from "../src/services/day-placement.js";
 import { calmDoc } from "./doc-workout-fixture.js";
@@ -1394,24 +1395,47 @@ describe("a missed session moved after its miss is debited once", () => {
     expect(debits(w, id)).toEqual([addDays(D, 7)]);
   });
 
-  it("a double recorded before MISS_ONCE_FROM (2026-11-10) stays as it was stored, and a partial replay rebuilds exactly those inputs — history replays as before the fix", async () => {
+  /**
+   * A session on GENESIS (11-02), never started: auto-missed, its debit landing on 11-09. On 11-10 it is moved to `to`, where
+   * its miss lands again (the later of its day and its resolution's); the walk runs on to `through`.
+   */
+  async function missedThenMoved(to: string, through: string) {
     const w = await world();
-    // A session on GENESIS (11-02): auto-missed and debited on 11-09, before the gate; moved on 11-10 to 11-12.
     const id = await slotOn(w, GENESIS);
     await drive(w, addDays(GENESIS, 1), addDays(GENESIS, 8));
-    expect(debits(w, id)).toEqual([addDays(GENESIS, 7)]);
-    setClock(addDays(GENESIS, 8), "12:00");
-    expect((await w.call("POST", `/api/plan/workouts/${id}/move`, { toDate: addDays(GENESIS, 10), toTime: "18:00" })).status).toBe(200);
-    await drive(w, addDays(GENESIS, 9), addDays(GENESIS, 12));
-    // As the walk did before the fix: the double, its first debit before the gate.
-    expect(debits(w, id)).toEqual([addDays(GENESIS, 7), addDays(GENESIS, 10)]);
-    const inputs = (x: World) => q(x, `select date, input from garden_day_inputs where user_id = ? order by date`, x.userId);
+    expect(debits(w, id)).toEqual(["2026-11-09"]);
+    setClock("2026-11-10", "12:00");
+    expect((await w.call("POST", `/api/plan/workouts/${id}/move`, { toDate: to, toTime: "18:00" })).status).toBe(200);
+    await drive(w, "2026-11-11", through);
+    return { w, id };
+  }
+  const inputs = (x: World) => q(x, `select date, input from garden_day_inputs where user_id = ? order by date`, x.userId);
+
+  it("the gate (MISS_ONCE_FROM 2026-11-11): a miss landing on the gate minus one is built as before the fix — the double stays", async () => {
+    expect(MISS_ONCE_FROM).toBe("2026-11-11");
+    const { w, id } = await missedThenMoved("2026-11-10", "2026-11-11");
+    expect(debits(w, id)).toEqual(["2026-11-09", "2026-11-10"]);
+  });
+
+  it("the gate: a miss moved across it — debited before it, landing on it — is debited once", async () => {
+    const { w, id } = await missedThenMoved("2026-11-11", "2026-11-13");
+    expect(debits(w, id)).toEqual(["2026-11-09"]);
+  });
+
+  it("stored history (every day before the gate, as at deploy) replays as before the fix: a partial replay rebuilds it row for row; one from genesis lands the miss by the landing rule alone", async () => {
+    const { w, id } = await missedThenMoved("2026-11-10", "2026-11-11");
     const stored = inputs(w);
-    // A partial replay from the gate's day: the same inputs, row for row.
-    const t = fork(w);
-    await resimulateFrom(t.db, t.userId, "2026-11-10", await loadPreferences(t.db, t.userId));
-    await advance(t);
-    expect(inputs(t)).toEqual(stored);
+    expect(stored.every((r) => r.date < MISS_ONCE_FROM)).toBe(true);
+    const partial = fork(w);
+    await resimulateFrom(partial.db, partial.userId, "2026-11-10", await loadPreferences(partial.db, partial.userId));
+    await advance(partial);
+    expect(inputs(partial)).toEqual(stored);
+    const genesis = fork(w);
+    await resimulateFrom(genesis.db, genesis.userId, GENESIS, await loadPreferences(genesis.db, genesis.userId));
+    await advance(genesis);
+    // As before the fix: rebuilt, the miss lands on max(its day, its resolution's) = 11-10, once; nothing is dropped.
+    expect(debits(genesis, id)).toEqual(["2026-11-10"]);
+    expect(inputs(genesis).map((r) => r.date)).toEqual(stored.map((r) => r.date));
   });
 
   it("the same, and a replay from before the miss: one debit still — where the walk now lands it, never two", async () => {

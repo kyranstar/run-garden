@@ -230,23 +230,39 @@ async function persistSnapshot(db: Db, userId: string, snapshot: GardenSnapshot)
 }
 
 /**
- * THE DAY FROM WHICH A MISS DEBITS ONCE (`notDebitedBefore`), on `APP_SESSION_EPOCH`'s precedent: before it, every day is built
- * as it always was, so stored history — a double debit included — replays exactly as it did before the fix (final review
- * A). It must be on or after the day this lands in production, and is set at landing: 2026-11-10 is this candidate's.
+ * THE DAY FROM WHICH A MISS DEBITS ONCE (`notDebitedBefore`), on `APP_SESSION_EPOCH`'s precedent.
+ *
+ * WHAT IT IS COMPARED WITH: the garden day whose input is being built — `buildDayInput`'s `date`, a day in the account's
+ * own timezone. For a miss that is its landing day, max(effective_date, resolution_date); never the activity's day, nor the
+ * time a move was made. The walk builds only days before its `today` (`walkForward`: `while (date < today)`), and `today`
+ * is `todayInZone(prefs.timezone, now)` — the account's local date.
+ *
+ * THE RULE FOR ITS VALUE: it must be after every day any account could have built when this lands — no earlier than every
+ * account's local `today` at deploy. The deploy's America/New_York date plus one day is that in any timezone (no zone is a
+ * day and more ahead of New York). 2026-11-11 is valid for a deploy before 2026-11-11 00:00 New York time; a later deploy
+ * must re-set it and run the gate's tests again (session-guard.test.ts, "a missed session moved after its miss").
+ *
+ * WHAT IT HOLDS: a day before it is built exactly as before this change, so every input stored at deploy — all of them
+ * before it — replays as it did, a double debit included. A day on or after it counts a miss already recorded on ANY
+ * earlier day (before the gate too), so a miss debited before the gate and moved after it is debited once, not twice.
+ *
+ * ROLLBACK IS NOT BEHAVIOUR-NEUTRAL, though there is no migration: back on the old code, a replay double-debits a moved
+ * miss again, and can rebuild a day differently from what this code stored.
  */
-export const MISS_ONCE_FROM = "2026-11-10";
+export const MISS_ONCE_FROM = "2026-11-11";
 
 /**
- * Of a day's misses, those no earlier day's recorded input has debited already (`buildDayInput`: a miss debits once) — from
- * MISS_ONCE_FROM on, counting only debits recorded from that day on. Before it, the day's misses as they are.
+ * Of a day's misses, those no earlier day's recorded input has debited already (`buildDayInput`: a miss debits once) — for a
+ * day on or after MISS_ONCE_FROM, counting a debit on any recorded day before it. A day before the gate: its misses as they
+ * are, as before this change.
  */
 async function notDebitedBefore(db: Db, userId: string, date: string, due: Array<{ workoutId: string }>): Promise<Array<{ workoutId: string }>> {
-  // The day before the gate: a short-cut only (it saves the read), since the read below counts no debit before the gate.
+  // The gate itself: a day before it is built as it always was (stored history replays as it did).
   if (due.length === 0 || date < MISS_ONCE_FROM) return due;
   const debited = new Set<string>();
   for (const ids of chunkIds([...new Set(due.map((m) => m.workoutId))], 80)) {
     const rows = await db.all<{ w: string }>(
-      sql`select distinct json_extract(m.value, '$.workoutId') as w from ${gardenDayInputs}, json_each(${gardenDayInputs.input}, '$.missedRuns') m where ${gardenDayInputs.userId} = ${userId} and ${gardenDayInputs.date} >= ${MISS_ONCE_FROM} and ${gardenDayInputs.date} < ${date} and json_extract(m.value, '$.workoutId') in (${sql.join(ids.map((id) => sql`${id}`), sql`, `)})`,
+      sql`select distinct json_extract(m.value, '$.workoutId') as w from ${gardenDayInputs}, json_each(${gardenDayInputs.input}, '$.missedRuns') m where ${gardenDayInputs.userId} = ${userId} and ${gardenDayInputs.date} < ${date} and json_extract(m.value, '$.workoutId') in (${sql.join(ids.map((id) => sql`${id}`), sql`, `)})`,
     );
     for (const r of rows) debited.add(r.w);
   }
@@ -447,7 +463,7 @@ export async function buildDayInput(
   ];
   // A MISS DEBITS ONCE, WHATEVER ITS DATE (from MISS_ONCE_FROM on). A missed or skipped session moved after its debit landed
   // lands again on its new day by the rule above (max of its day and its resolution's), and was debited twice. One already
-  // in an earlier day's recorded input (from the gate on) is not debited again: the walk writes each day's input in order,
+  // in an earlier day's recorded input (any day before this one) is not debited again: the walk writes each day's input in order,
   // and a replay deletes the inputs from its first day before it rebuilds them, so the days before this one are the record
   // this walk stands on. Forward only: a day before the gate is built as it always was, so stored history replays as it did.
   // One statement a chunk, only on a day with a debit.
