@@ -1082,15 +1082,15 @@ describe("the day's placement (every writer's: a plan's sessions, an import, an 
     return ids;
   }
 
-  it("a move to another day landing between the placement's read and its write (forced): the session keeps the day and time it was moved to; nothing of that day is re-timed, and the answer says so", async () => {
+  it.each(["09:00", "18:00"])("a move to another day (at %s) landing between the placement's read and its write (forced): the session keeps the day and time it was moved to; nothing of that day is re-timed, and the answer says so", async (toTime) => {
     const w = await world();
     const [a, b] = await crowded(w, 2);
     setClock(addDays(D, -1), "12:00");
     gates.batch = async () => {
-      expect((await w.call("POST", `/api/plan/workouts/${a}/move`, { toDate: addDays(D, 2), toTime: "09:00" })).status).toBe(200);
+      expect((await w.call("POST", `/api/plan/workouts/${a}/move`, { toDate: addDays(D, 2), toTime })).status).toBe(200);
     };
     const moved = await separateDayCollisions(w.db, w.userId, [D], await loadPreferences(w.db, w.userId), { from: D, now: nowInstant() });
-    expect(rowOf(w, a!)).toMatchObject({ date: addDays(D, 2), time: "09:00" });
+    expect(rowOf(w, a!)).toMatchObject({ date: addDays(D, 2), time: toTime });
     expect(rowOf(w, b!).time).toBe("18:00");
     expect(moved).toEqual([]);
   });
