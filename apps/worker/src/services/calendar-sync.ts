@@ -385,22 +385,6 @@ export async function syncCalendar(
     });
   }
 
-  // AN OWED RESTORE IS RE-CHECKED BEFORE IT IS PAID (the RC's boundary 4): it puts the plan's event back only while the
-  // session is as the refused drag found it — still protected, on the day and at the time it held. Otherwise (an Unstart
-  // since, a move) the old debt must not overwrite a newer change: it is dropped, the link taking the plan's own
-  // fingerprint, so a drag made since reads as the athlete's and is adopted by the guarded path, as any drag is.
-  for (const link of links) {
-    const owed = owedRestoreOf(link.lastWrittenFingerprint);
-    if (!owed) continue;
-    const w = workouts.find((x) => x.id === link.workoutId);
-    const d = desired.find((x) => x.workoutId === link.workoutId);
-    const row = w ? await readGuarded(db, userId, link.workoutId) : undefined;
-    const still = row !== undefined && w !== undefined && guardRefusal(row, today) !== null && w.effectiveDate === owed.date && w.effectiveTime === owed.time;
-    if (still || !d) continue;
-    link.lastWrittenFingerprint = eventContentFingerprint(d.resource);
-    await db.update(calendarEventLinks).set({ lastWrittenFingerprint: link.lastWrittenFingerprint, updatedAt: nowInstant() }).where(eq(calendarEventLinks.workoutId, link.workoutId));
-  }
-
   // During the post-restore reconcile the ordinary pass below sees only the
   // events adoption would claim (B10, M7): this app's, or unstamped ones the
   // file itself linked. Otherwise it would take the rest over anyway — edit
@@ -415,6 +399,22 @@ export async function syncCalendar(
     return origin === undefined ? linkedEventIds.has(e.id) : thisOrigin !== undefined && origin === thisOrigin;
   });
   let actual = rawEvents.map(toActualEvent);
+
+  // AN OWED RESTORE (a refused drag whose put-back failed) is paid against GOOGLE's side (the RC's review, item 1): the plan
+  // is the authority, and the debt exists to make Google hold the plan's CURRENT event — the reconcile below writes it (an
+  // `update`: the owed mark never equals the plan's fingerprint), whatever the plan has become since. It is dropped only
+  // when Google's event changed after the refused drag (this read sees it at another start): a newer change of the
+  // athlete's in Google. Then the link takes the plan's fingerprint, so the reconcile reads that newer state as a fresh drag
+  // and adopts it under the guard, as any drag is. A refused drag never comes back to life.
+  for (const link of links) {
+    const dragged = owedRestoreOf(link.lastWrittenFingerprint);
+    if (dragged === null) continue;
+    const now = actual.find((a) => a.eventId === link.eventId);
+    const d = desired.find((x) => x.workoutId === link.workoutId);
+    if (!now || !d || sameStart(now.startDateTime, dragged)) continue;
+    link.lastWrittenFingerprint = eventContentFingerprint(d.resource);
+    await db.update(calendarEventLinks).set({ lastWrittenFingerprint: link.lastWrittenFingerprint, updatedAt: nowInstant() }).where(eq(calendarEventLinks.workoutId, link.workoutId));
+  }
 
   // With an incremental token we only see CHANGED events; merge with links so
   // unchanged events aren't misread as deleted.
@@ -661,9 +661,8 @@ async function executeOneOp(
             // THE RESTORE STAYS OWED (final review A, m1): the sync token moves on, so the dragged event never comes back
             // in the feed. The link's fingerprint no longer says ours is what Google holds, so the next reconcile writes the
             // plan's event over it (an `update`) — the token's handling of every other op unchanged.
-            // What the owed restore expects to find when it is paid: the session's day and time as the refused drag found them.
-            const [held] = await db.select({ date: plannedWorkouts.effectiveDate, time: plannedWorkouts.effectiveTime }).from(plannedWorkouts).where(eq(plannedWorkouts.id, op.workoutId)).limit(1);
-            await db.update(calendarEventLinks).set({ lastWrittenFingerprint: owedRestoreMark(held?.date ?? "", held?.time ?? ""), updatedAt: now }).where(eq(calendarEventLinks.workoutId, op.workoutId));
+            // What Google held when the drag was refused (its start): a later read finding another start is a newer change.
+            await db.update(calendarEventLinks).set({ lastWrittenFingerprint: owedRestoreMark(op.newStart), updatedAt: now }).where(eq(calendarEventLinks.workoutId, op.workoutId));
             throw e;
           }
           stats.userMovesRestored += 1;
@@ -718,17 +717,17 @@ async function executeOneOp(
 }
 
 /**
- * A link's fingerprint for a restore of the plan's event that failed: never a real one, so the next reconcile re-writes it —
- * carrying what the restore expects to find then (the session's day and time; `owedRestoreOf`).
+ * A link's fingerprint for a restore of the plan's event that failed: never a real one, so the next reconcile writes the
+ * plan's current event — carrying Google's start at the refused drag (`owedRestoreOf`), to tell a newer change from it.
  */
 const RESTORE_OWED = "restore-owed";
-const owedRestoreMark = (date: string, time: string): string => `${RESTORE_OWED}:${date}|${time}`;
-/** An owed restore's expectation, or null for a link that owes none. */
-function owedRestoreOf(fp: string | null | undefined): { date: string; time: string } | null {
-  if (!fp || !fp.startsWith(`${RESTORE_OWED}:`)) return null;
-  const [date = "", time = ""] = fp.slice(RESTORE_OWED.length + 1).split("|");
-  return { date, time };
+const owedRestoreMark = (dragStart: string): string => `${RESTORE_OWED}:${dragStart}`;
+/** The refused drag's start an owed restore was recorded with, or null for a link that owes none. */
+function owedRestoreOf(fp: string | null | undefined): string | null {
+  return fp && fp.startsWith(`${RESTORE_OWED}:`) ? fp.slice(RESTORE_OWED.length + 1) : null;
 }
+/** Two event starts the same instant (Google may answer one in another offset). */
+const sameStart = (a: string | undefined, b: string): boolean => a !== undefined && new Date(a).getTime() === new Date(b).getTime();
 
 /**
  * Write the plan's event over Google's, and its link (the plan's fingerprint, so the next reconcile finds them equal).

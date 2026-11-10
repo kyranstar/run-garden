@@ -1732,6 +1732,46 @@ describe("the Calendar's drag of a done session, or one under way: refused where
     expect(credits(w)).toEqual(credits(control));
   });
 
+  /** A session under way, its drag refused, the restore answered 500: owed. Then Unstart. */
+  async function owedThenUnstarted(w: World) {
+    const cal = await calendarWorld(async () => {
+      const id = await slotOn(w, D);
+      setClock(D, "18:00");
+      await buildAndStart(w, id);
+      return id;
+    }, w);
+    cal.google.fail("PATCH", 1, "500");
+    const spy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    await cal.drag(2);
+    spy.mockRestore();
+    expect((await w.call("POST", `/api/sessions/${cal.workout}/unstart`)).status).toBe(200);
+    return cal;
+  }
+  const dayOn = (cal: { onCalendar: () => { start: string } }) => DateTime.fromISO(cal.onCalendar().start).setZone(LA).toISODate();
+
+  it.each([false, true])("an owed restore pays the plan's CURRENT event (RCR4a): Unstart, then an in-app move to D+5 — the calendar follows the app, and a later full read (%s) never brings the refused drag back", async (full) => {
+    const w = await world();
+    const cal = await owedThenUnstarted(w);
+    expect((await w.call("POST", `/api/plan/workouts/${cal.workout}/move`, { toDate: addDays(D, 5), toTime: "18:00" })).status).toBe(200);
+    const spy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    await syncCalendar(w.db, env, w.userId, full ? { fullResync: true } : {});
+    await syncCalendar(w.db, env, w.userId, { fullResync: true });
+    spy.mockRestore();
+    expect(rowOf(w, cal.workout).date).toBe(addDays(D, 5));
+    expect(dayOn(cal)).toBe(addDays(D, 5));
+  });
+
+  it.each([false, true])("an owed restore, nothing else changing (RCR4b): the calendar goes back to the plan's day, and a later full read (%s) never adopts the refused drag", async (full) => {
+    const w = await world();
+    const cal = await owedThenUnstarted(w);
+    const spy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    await syncCalendar(w.db, env, w.userId, full ? { fullResync: true } : {});
+    await syncCalendar(w.db, env, w.userId, { fullResync: true });
+    spy.mockRestore();
+    expect(rowOf(w, cal.workout).date).toBe(D);
+    expect(cal.onCalendar()).toEqual(cal.planned);
+  });
+
   it("an owed restore is re-checked before it is paid (RC boundary 4): after Unstart, a drag the athlete makes is theirs — the old debt dropped, the drag taken, never overwritten", async () => {
     const w = await world();
     const cal = await calendarWorld(async () => {
