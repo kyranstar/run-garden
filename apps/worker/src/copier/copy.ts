@@ -7,7 +7,7 @@
  *
  * WHAT IS COPIED. Every table in the registry (account-tables.ts) except the
  * sign-ins it marks (`signIn`: `sessions`, `oauth_states`, `native_devices`,
- * `native_pairings`) — whole tables, every account's rows (the database holds
+ * `native_pairings`, `native_pair_limits`) — whole tables, every account's rows (the database holds
  * one), the global catalogs and the restore bookkeeping included, so staging
  * is production as it stands. Credential columns (`secretColumns`: provider
  * tokens) are written as null: staging never holds a production credential,
@@ -204,7 +204,7 @@ const withSecrets = (): AccountTable[] => ACCOUNT_TABLES.filter((t) => secretCol
  * Staging's restore-safety posture: no provider connection usable (every
  * credential column null — the connection rows themselves stay, so parity
  * can compare them), and no sign-in left: no session, OAuth handshake, paired
- * phone or pairing code (every table the registry marks `signIn`).
+ * phone, pairing code or pairing counter (every table the registry marks `signIn`).
  */
 export async function scrubSecrets(dst: Db): Promise<void> {
   for (const t of withSecrets()) {
@@ -221,7 +221,7 @@ const remainingKey = (name: string) => name.replace(/_(\w)/g, (_, c: string) => 
 
 /**
  * What a scrub must leave at zero, every value of it: credential columns still set (`secrets`), and each sign-in table's
- * rows (`sessions`, `oauthStates`, `nativeDevices`, `nativePairings`).
+ * rows (`sessions`, `oauthStates`, `nativeDevices`, `nativePairings`, `nativePairLimits`).
  */
 export async function secretsRemaining(dst: Db): Promise<{ secrets: number } & Record<string, number>> {
   let secrets = 0;

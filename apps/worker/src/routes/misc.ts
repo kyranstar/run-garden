@@ -11,6 +11,7 @@ import {
   gardenState,
   nativeDevices,
   nativePairings,
+  nativePairLimits,
   oauthStates,
   plannedWorkouts,
   providerConnections,
@@ -1717,12 +1718,14 @@ export async function deleteAllUserData(db: Db, userId: string, env?: Env): Prom
   // scoped wipe cannot reach them — and "delete everything" must (finding 10).
   await deleteOrphanedChildren(db);
   await db.delete(accountState).where(eq(accountState.userId, userId));
-  // The account's sign-ins: its sessions, and its paired phones and pairing code (native device sign-in, migration
-  // 0038), excluded from the registry like the sessions, so deleted here by name — one round trip for the three.
+  // The account's sign-ins: its sessions, and its paired phones, pairing code and mint counter (native device sign-in,
+  // migrations 0038–0039), excluded from the registry like the sessions, so deleted here by name — one round trip. The
+  // redeem counters are no account's (global, and per hashed client address); they expire.
   await runAtomically(db, [
     db.delete(sessions).where(eq(sessions.userId, userId)),
     db.delete(nativeDevices).where(eq(nativeDevices.userId, userId)),
     db.delete(nativePairings).where(eq(nativePairings.userId, userId)),
+    db.delete(nativePairLimits).where(eq(nativePairLimits.key, `mint:${userId}`)),
   ]);
   await db.delete(oauthStates);
   await db.delete(users).where(eq(users.id, userId));

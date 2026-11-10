@@ -24,9 +24,10 @@ import { makeTestDb, makeTestUser } from "./helpers.js";
 import { checkFile, exportAll, restoreAll, TEST_SECRET } from "./restore-driver.js";
 import { seedFullAccount } from "./account-fixture.js";
 
-const { nativeDevices, nativePairings } = schema;
+const { nativeDevices, nativePairings, nativePairLimits } = schema;
 
 const MIGRATION = join(__dirname, "../../../packages/database/migrations/0038_native_devices.sql");
+const MIGRATION_0039 = join(__dirname, "../../../packages/database/migrations/0039_native_pair_limits.sql");
 const HOUR = 3_600_000;
 const at = (offsetMs: number) => new Date(Date.now() + offsetMs).toISOString();
 
@@ -73,7 +74,7 @@ describe("migration 0038", () => {
     expect(statements.filter((s) => s.startsWith("CREATE TABLE"))).toHaveLength(2);
   });
 
-  it("gives native_devices the columns of §10.6, and native_pairings one row per account", () => {
+  it("gives native_devices the columns of §10.6 (and 0039's check_tries), and native_pairings one row per account", () => {
     const db = makeTestDb();
     const cols = (t: string) => raw(db).prepare(`pragma table_info(${t})`).all().map((c) => [c.name, c.type, c.notnull, c.pk]);
     expect(cols("native_devices")).toEqual([
@@ -89,6 +90,14 @@ describe("migration 0038", () => {
       ["last_used_at", "TEXT", 0, 0],
       ["revoked_at", "TEXT", 0, 0],
       ["revoked_reason", "TEXT", 0, 0],
+      ["check_tries", "INTEGER", 1, 0],
+    ]);
+    expect(cols("native_pair_limits")).toEqual([
+      ["key", "TEXT", 1, 1],
+      ["window_start", "TEXT", 1, 0],
+      ["count", "INTEGER", 1, 0],
+      ["blocked_until", "TEXT", 0, 0],
+      ["expires_at", "TEXT", 1, 0],
     ]);
     expect(cols("native_pairings")).toEqual([
       ["user_id", "TEXT", 1, 1],
@@ -103,13 +112,41 @@ describe("migration 0038", () => {
   });
 });
 
+describe("migration 0039 (pairing rate controls)", () => {
+  const statements = readFileSync(MIGRATION_0039, "utf8")
+    .split("--> statement-breakpoint")
+    .map((s) => s.split("\n").filter((l) => !l.trim().startsWith("--")).join("\n").trim())
+    .filter(Boolean);
+
+  it("creates the counters' table and adds one defaulted column to native_devices; nothing else changes", () => {
+    expect(statements).toHaveLength(2);
+    expect(statements[0]).toMatch(/^CREATE TABLE `native_pair_limits`/);
+    expect(statements[1]).toBe("ALTER TABLE `native_devices` ADD `check_tries` integer DEFAULT 0 NOT NULL;");
+    for (const s of statements) expect(s).not.toMatch(/\b(DROP|RENAME|DELETE|UPDATE|INSERT)\b/i);
+  });
+});
+
 describe("the registry, delete-all and the purge", () => {
-  it("holds both tables as excluded, with a reason, as it holds sessions", () => {
-    for (const name of ["native_devices", "native_pairings"]) {
+  it("holds the three tables as excluded sign-ins, with a reason, as it holds sessions", () => {
+    for (const name of ["native_devices", "native_pairings", "native_pair_limits"]) {
       const entry = accountTable(name);
       expect(entry.scope.kind, name).toBe("excluded");
-      if (entry.scope.kind === "excluded") expect(entry.scope.reason).toMatch(/auth/);
+      if (entry.scope.kind === "excluded") {
+        expect(entry.scope.reason).toMatch(/auth/);
+        expect(entry.scope.signIn, name).toBe(true);
+      }
     }
+  });
+
+  it("delete-all removes this account's mint counter, and keeps another's", async () => {
+    const db = makeTestDb();
+    const { userId: me } = await makeTestUser(db);
+    const { userId: other } = await makeTestUser(db);
+    for (const key of [`mint:${me}`, `mint:${other}`, "redeem:global"]) {
+      await db.insert(nativePairLimits).values({ key, windowStart: nowInstant(), count: 1, expiresAt: at(HOUR) });
+    }
+    await deleteAllUserData(db, me);
+    expect((await db.select().from(nativePairLimits)).map((r) => r.key).sort()).toEqual([`mint:${other}`, "redeem:global"].sort());
   });
 
   it("delete-all removes this account's devices and pairing code, and nobody else's", async () => {
@@ -141,6 +178,8 @@ describe("the registry, delete-all and the purge", () => {
     await seedDevice(db, userId, "d-revoked-live", { state: "revoked", revokedAt: at(-HOUR), revokedReason: "owner" });
     await seedPairing(db, userId, { expiresAt: at(-60_000) });
     await seedPairing(db, other);
+    await db.insert(nativePairLimits).values({ key: "redeem:global", windowStart: at(-HOUR), count: 3, expiresAt: at(-60_000) });
+    await db.insert(nativePairLimits).values({ key: "redeem:ip:live", windowStart: nowInstant(), count: 1, blockedUntil: at(60_000), expiresAt: at(60_000) });
 
     vi.stubGlobal("fetch", (async () => new Response("{}", { status: 404 })) as typeof fetch);
     try {
@@ -151,6 +190,7 @@ describe("the registry, delete-all and the purge", () => {
 
     expect((await db.select().from(nativeDevices)).map((d) => d.id).sort()).toEqual(["d-live", "d-revoked-live"]);
     expect((await db.select().from(nativePairings)).map((p) => p.userId)).toEqual([other]);
+    expect((await db.select().from(nativePairLimits)).map((r) => r.key)).toEqual(["redeem:ip:live"]);
   });
 });
 

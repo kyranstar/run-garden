@@ -19,6 +19,10 @@
  *
  * The kill switch (`NATIVE_DEVICES`, a secret): unless it is "1", minting, redeeming and confirming are 404 — the
  * device list and revocation answer either way, so the owner can always see and stop a device.
+ *
+ * Rate controls (auth/native-devices.ts, kit v0.5): redeeming is bounded per client and in all (past a bound, the same
+ * 401 `pair_failed`, never evaluated); minting is bounded per account (429 `too_many_codes` with `retryAfter` seconds);
+ * Confirm's wrong check numbers revoke the pending phone at CONFIRM_MAX_WRONG (409 `check_mismatch`, `revoked: true`).
  */
 import { Hono, type MiddlewareHandler } from "hono";
 import { and, eq, isNull, ne } from "drizzle-orm";
@@ -60,6 +64,8 @@ nativeRoutes.post("/pairings", pairingOn, requireUser, cookieOnly, async (c) => 
   if (!isOwnerEmail(c.get("userEmail"), c.env)) return c.json({ error: "not_owner" }, 403);
   const minted = await mintPairing(c.get("db"), c.env, c.get("userId"), nowInstant());
   c.header("Cache-Control", "no-store");
+  // The owner's own laptop, signed in: told plainly when to try again (MINTS_PER_WINDOW).
+  if ("refused" in minted) return c.json({ error: "too_many_codes", retryAfter: minted.retryAfterSeconds }, 429);
   return c.json(minted);
 });
 
@@ -67,7 +73,8 @@ nativeRoutes.post("/pair", pairingOn, async (c) => {
   const body = (await c.req.json().catch(() => null)) as { code?: unknown; label?: unknown } | null;
   const label = labelOf(body?.label);
   if (!body || typeof body.code !== "string" || body.code.length > 64 || !label) return c.json({ error: "invalid_pair" }, 400);
-  const paired = await redeemPairing(c.get("db"), c.env, { code: body.code, label }, nowInstant());
+  // The client's address as Cloudflare's edge sets it (a client can't): the per-client bound's key, kept only hashed.
+  const paired = await redeemPairing(c.get("db"), c.env, { code: body.code, label }, nowInstant(), c.req.header("cf-connecting-ip"));
   c.header("Cache-Control", "no-store");
   if (!paired) return c.json({ error: "pair_failed" }, 401);
   return c.json({ token: paired.token, check: paired.check, state: "pending", confirmBy: paired.confirmBy });
@@ -87,7 +94,8 @@ nativeRoutes.post("/devices/:id/confirm", pairingOn, requireUser, cookieOnly, as
   if (typeof body?.check !== "string" || !/^\d{4}$/.test(body.check)) return c.json({ error: "invalid_confirm" }, 400);
   const outcome = await confirmDevice(c.get("db"), c.get("userId"), c.req.param("id"), body.check, nowInstant());
   if (outcome.ok) return c.json({ ok: true, expiresAt: outcome.expiresAt });
-  return c.json({ error: outcome.error }, outcome.error === "not_found" ? 404 : 409);
+  // The CONFIRM_MAX_WRONG-th wrong number revoked the phone: the laptop says so, and to pair again.
+  return c.json({ error: outcome.error, ...(outcome.revoked ? { revoked: true } : {}) }, outcome.error === "not_found" ? 404 : 409);
 });
 
 nativeRoutes.post("/devices/:id/revoke", requireUser, cookieOnly, async (c) => {

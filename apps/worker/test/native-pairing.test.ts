@@ -142,6 +142,7 @@ describe("redeeming, from the phone (unauthenticated)", () => {
         lastUsedAt: null,
         revokedAt: null,
         revokedReason: null,
+        checkTries: 0,
       },
     ]);
     expect(await pairing()).toMatchObject({ usedAt: nowInstant(), tries: 0 });

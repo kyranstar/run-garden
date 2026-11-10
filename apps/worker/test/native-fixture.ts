@@ -41,6 +41,8 @@ export interface Answer {
   status: number;
   json: Record<string, any>;
   text: string;
+  /** The response's headers, lower-cased names. */
+  headers: Record<string, string>;
   /** Every statement the request ran, and the writes among them. */
   statements: string[];
   writes: string[];
@@ -118,7 +120,9 @@ export async function nativeWorld(
       json = { text };
     }
     const ran = statements.slice(from);
-    return { status: res.status, json, text, statements: ran, writes: ran.filter(isWrite) };
+    const headersOut: Record<string, string> = {};
+    res.headers.forEach((value, name) => void (headersOut[name.toLowerCase()] = value));
+    return { status: res.status, json, text, headers: headersOut, statements: ran, writes: ran.filter(isWrite) };
   };
   return { db, userId, email, cookie, env, statements, binds, app, call };
 }

@@ -52,7 +52,7 @@ const COPIED_BEFORE = [
   "schema_versions", "prompt_versions", "account_state",
 ];
 
-const SIGN_INS = ["sessions", "oauth_states", "native_devices", "native_pairings"];
+const SIGN_INS = ["sessions", "oauth_states", "native_devices", "native_pairings", "native_pair_limits"];
 
 async function seedDevice(db: Db, userId: string): Promise<string> {
   const token = `rgd_${randomToken(32)}`;
@@ -122,9 +122,9 @@ describe("a production phone never reaches staging", () => {
     const token = await seedDevice(dst, user!.id);
     await seedPairing(dst, user!.id);
     await createSession(dst, user!.id, "test");
-    expect(await secretsRemaining(dst)).toEqual({ secrets: 0, sessions: 1, oauthStates: 0, nativeDevices: 1, nativePairings: 1 });
+    expect(await secretsRemaining(dst)).toEqual({ secrets: 0, sessions: 1, oauthStates: 0, nativeDevices: 1, nativePairings: 1, nativePairLimits: 0 });
     await scrubSecrets(dst);
-    expect(await secretsRemaining(dst)).toEqual({ secrets: 0, sessions: 0, oauthStates: 0, nativeDevices: 0, nativePairings: 0 });
+    expect(await secretsRemaining(dst)).toEqual({ secrets: 0, sessions: 0, oauthStates: 0, nativeDevices: 0, nativePairings: 0, nativePairLimits: 0 });
     expect(await findDevice(dst, token)).toBeNull();
   });
 });

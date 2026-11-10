@@ -45,10 +45,25 @@ export const nativeDevices = sqliteTable(
     /** Written at most hourly. */
     lastUsedAt: text("last_used_at"),
     revokedAt: text("revoked_at"),
-    revokedReason: text("revoked_reason"), // owner | owner_all | sign_out
+    revokedReason: text("revoked_reason"), // owner | owner_all | sign_out | check_failed
+    /** Wrong check numbers sent to Confirm (migration 0039); the bound revokes the pending phone. */
+    checkTries: integer("check_tries").notNull().default(0),
   },
   (t) => [index("native_devices_user_idx").on(t.userId)],
 );
+
+/**
+ * Pairing's rate controls (migration 0039): a fixed-window attempt counter per key — `redeem:global`,
+ * `redeem:ip:<sha-256 of the client address>`, `mint:<user id>`. `blocked_until` is the cool-off's end, null when none.
+ */
+export const nativePairLimits = sqliteTable("native_pair_limits", {
+  key: text("key").primaryKey(),
+  windowStart: text("window_start").notNull(),
+  count: integer("count").notNull().default(0),
+  blockedUntil: text("blocked_until"),
+  /** When the row may be purged: its window's end, or its cool-off's. */
+  expiresAt: text("expires_at").notNull(),
+});
 
 /** The account's one live pairing code (migration 0038), as an HMAC under SESSION_SECRET; a new code replaces it. */
 export const nativePairings = sqliteTable("native_pairings", {

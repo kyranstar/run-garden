@@ -124,9 +124,9 @@ describe("copyStep — whole tables, small pages, D1's bind limit", () => {
     const { state, steps } = await copyAll(src, dst, 7);
 
     expect([...state.done].sort()).toEqual(COPY_TABLES.map((t) => t.name).sort());
-    // The registry's four sign-ins stay out (native-copier.test.ts pins the copied list table by table).
-    for (const signIn of ["sessions", "oauth_states", "native_devices", "native_pairings"]) expect(COPY_TABLES.map((t) => t.name)).not.toContain(signIn);
-    expect(COPY_TABLES).toHaveLength(ACCOUNT_TABLES.length - 4);
+    // The registry's five sign-ins stay out (native-copier.test.ts pins the copied list table by table).
+    for (const signIn of ["sessions", "oauth_states", "native_devices", "native_pairings", "native_pair_limits"]) expect(COPY_TABLES.map((t) => t.name)).not.toContain(signIn);
+    expect(COPY_TABLES).toHaveLength(ACCOUNT_TABLES.length - 5);
     expect(steps).toBeGreaterThan(500 / 7); // 2 × 250 planned workouts alone
 
     const checks = await verifyCopy(src, dst);
@@ -223,7 +223,7 @@ describe("scrubSecrets", () => {
 
     await scrubSecrets(dst);
 
-    expect(await secretsRemaining(dst)).toEqual({ secrets: 0, sessions: 0, oauthStates: 0, nativeDevices: 0, nativePairings: 0 });
+    expect(await secretsRemaining(dst)).toEqual({ secrets: 0, sessions: 0, oauthStates: 0, nativeDevices: 0, nativePairings: 0, nativePairLimits: 0 });
     expect(await dst.select().from(schema.providerConnections).where(tokenColumns)).toEqual([]);
     // Connections themselves stay (parity compares them); only the secrets go.
     expect(await rowCount(dst, ACCOUNT_TABLES.find((t) => t.name === "provider_connections")!)).toBeGreaterThan(0);
@@ -400,7 +400,7 @@ describe("the copier Worker", () => {
     expect(scrub.status).toBe(200);
     const scrubbed = await scrub.json();
     responses.push(scrubbed);
-    expect(scrubbed).toEqual({ ok: true, remaining: { secrets: 0, sessions: 0, oauthStates: 0, nativeDevices: 0, nativePairings: 0 } });
+    expect(scrubbed).toEqual({ ok: true, remaining: { secrets: 0, sessions: 0, oauthStates: 0, nativeDevices: 0, nativePairings: 0, nativePairLimits: 0 } });
 
     // SRC was only ever read.
     expect(srcStatements.length).toBeGreaterThan(0);

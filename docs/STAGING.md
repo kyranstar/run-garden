@@ -105,7 +105,7 @@ disk. If any step fails, stop and ask; never fall back to a local export.
 What the copier does:
 
 - Copies every table except the sign-ins the registry marks (`sessions`,
-  `oauth_states`, and native sign-in's `native_devices` and `native_pairings`), whole, in
+  `oauth_states`, and native sign-in's `native_devices`, `native_pairings` and `native_pair_limits`), whole, in
   primary-key order, in pages (`maxRows`, default 200, at most 500 per call).
   Provider token columns are written as null.
 - Keeps its progress in staging, so a dropped call or a crash just resumes.
@@ -154,7 +154,7 @@ for i in $(seq 2000); do
 done
 
 copier verify; echo   # {"ok":true,...} — every table's src/dst hash and row count
-copier scrub; echo    # {"ok":true,"remaining":{"secrets":0,"sessions":0,"oauthStates":0,"nativeDevices":0,"nativePairings":0}}
+copier scrub; echo    # {"ok":true,"remaining":{"secrets":0,"sessions":0,"oauthStates":0,"nativeDevices":0,"nativePairings":0,"nativePairLimits":0}}
 pnpm copier:delete
 unset COPIER_KEY URL Q
 ```

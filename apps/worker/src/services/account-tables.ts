@@ -18,7 +18,8 @@
  *  - `excluded` — not account data at all (auth sessions, OAuth handshakes,
  *                 global catalogs, app versioning). Never exported or restored.
  *                 The sign-ins among them (`signIn`: sessions, OAuth handshakes,
- *                 paired phones and their pairing code) are credentials: the
+ *                 paired phones, their pairing code and its rate counters) are
+ *                 credentials or their bookkeeping: the
  *                 staging copier leaves them out and its scrub deletes any
  *                 staging holds. The other excluded tables are copied.
  *
@@ -94,6 +95,7 @@ import {
   locations,
   motivationEvidence,
   nativeDevices,
+  nativePairLimits,
   nativePairings,
   oauthStates,
   objectives,
@@ -267,6 +269,10 @@ const ENTRIES: ReadonlyArray<readonly [SQLiteTable, TableScope]> = [
   [oauthStates, signIn("auth: short-lived OAuth handshakes with no owner")],
   [nativeDevices, signIn("auth: a paired phone's sign-in (its token's hash), never data to carry or copy to staging; delete-all removes it")],
   [nativePairings, signIn("auth: a short-lived pairing code's HMAC, never data to carry or copy to staging; delete-all removes it")],
+  [
+    nativePairLimits,
+    signIn("auth: pairing's rate-control counters (client addresses hashed), never data to carry or copy to staging; delete-all removes the account's"),
+  ],
   [gardenSpecies, excluded("global catalog shared by every account")],
   [corosExercises, excluded("global COROS exercise catalog shared by every account")],
   [schemaVersions, excluded("app component versions, not account data")],

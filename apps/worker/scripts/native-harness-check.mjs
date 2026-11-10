@@ -19,12 +19,13 @@ const sessionCookie = readFileSync(jarPath, "utf8")
 if (!sessionCookie) throw new Error("no rg_session in the cookie jar: run `native-harness.sh up` first");
 const COOKIE = `rg_session=${sessionCookie}`;
 
-async function call(method, path, { cookie = false, bearer, body, raw } = {}) {
+async function call(method, path, { cookie = false, bearer, body, raw, client } = {}) {
   const headers = {};
   if (cookie) headers.Cookie = COOKIE;
   if (bearer) headers.Authorization = `Bearer ${bearer}`;
   const payload = raw ?? (body === undefined ? undefined : JSON.stringify(body));
   if (payload !== undefined) headers["Content-Type"] = "application/json";
+  if (client) headers["CF-Connecting-IP"] = client;
   const res = await fetch(`${base}${path}`, { method, headers, body: payload });
   const text = await res.text();
   let json = null;
@@ -126,17 +127,35 @@ check("the web sees it done", (await call("GET", `/api/sessions/${id}`, { cookie
 check("one performed session, by the phone's id", sql(`select id, workout_id as w, activity_id as a from performed_sessions where workout_id = '${id}'`), [{ id: performedId, w: id, a: performedId }]);
 check("one live match, the app session's", sql(`select activity_id as a, method from workout_completion_matches where workout_id = '${id}' and undone_at is null`), [{ a: performedId, method: "app_session" }]);
 
-// 5. More races on local D1: ten codes, each redeemed by four requests at once — one device each, never two.
+// 5. More races on local D1: three codes (the mint bound is 5 a window, and this check mints 5 in all), each redeemed by
+// four requests at once — one device each, never two. Each new code lifts the redeem throttles, so each race starts clean.
 const trials = [];
-for (let t = 0; t < 10; t++) {
+for (let t = 0; t < 3; t++) {
   const code = (await call("POST", "/api/native/pairings", { cookie: true, body: {} })).json.code;
   const n0 = sql("select count(*) as n from native_devices")[0].n;
   const answers = await Promise.all([0, 1, 2, 3].map((i) => call("POST", "/api/native/pair", { body: { code, label: `Race ${t}.${i}` } })));
   trials.push([answers.filter((a) => a.status === 200).length, sql("select count(*) as n from native_devices")[0].n - n0]);
 }
-check("ten races of four redemptions: one 200 and one device each", trials, Array.from({ length: 10 }, () => [1, 1]));
+check("three races of four redemptions: one 200 and one device each", trials, Array.from({ length: 3 }, () => [1, 1]));
 
-// 6. Revoke all: the phone is stopped at once.
+// 6. The rate controls on local D1. One client's burst of eight wrong guesses at a live code: exactly the per-client
+// bound (3) is evaluated, every answer the same miss, and the code survives unburned for the phone.
+const burstCode = (await call("POST", "/api/native/pairings", { cookie: true, body: {} })).json.code;
+const wrong = `${burstCode[0] === "Z" ? "Y" : "Z"}${burstCode.slice(1)}`;
+const burst = await Promise.all(Array.from({ length: 8 }, () => call("POST", "/api/native/pair", { body: { code: wrong, label: "Burst" }, client: "203.0.113.7" })));
+check("a burst of 8 from one client: every answer 401 pair_failed", [...new Set(burst.map((a) => `${a.status} ${JSON.stringify(a.json)}`))], ['401 {"error":"pair_failed"}']);
+check("…exactly 3 evaluated: the code's tries are 3, and it is unused", sql("select tries, used_at as used from native_pairings"), [{ tries: 3, used: null }]);
+const sameClient = await call("POST", "/api/native/pair", { body: { code: burstCode, label: "Same client" }, client: "203.0.113.7" });
+check("…and that client is throttled even with the right code", [sameClient.status, sameClient.json], [401, { error: "pair_failed" }]);
+const otherClient = await call("POST", "/api/native/pair", { body: { code: burstCode, label: "Other client" }, client: "203.0.113.8" });
+// Cloudflare's edge sets CF-Connecting-IP; whether the local runtime keeps a client's own is reported, not assumed.
+console.log(`note local runtime ${otherClient.status === 200 ? "keeps" : "replaces"} the client's CF-Connecting-IP`);
+check("…while the code is untouched by the throttled attempt", sql("select tries from native_pairings")[0].tries, 3);
+// Mint bound: this was the fifth code in the window; the sixth is refused, and says when to try again.
+const sixth = await call("POST", "/api/native/pairings", { cookie: true, body: {} });
+check("a sixth code in the window: 429 too_many_codes, retryAfter 600", [sixth.status, sixth.json], [429, { error: "too_many_codes", retryAfter: 600 }]);
+
+// 7. Revoke all: the phone is stopped at once.
 check("Revoke all", (await call("POST", "/api/native/devices/revoke-all", { cookie: true, body: {} })).json.ok, true);
 check("revoked: 401 device_revoked", (await call("GET", "/api/native/me", { bearer: token })).json, { error: "device_revoked" });
 

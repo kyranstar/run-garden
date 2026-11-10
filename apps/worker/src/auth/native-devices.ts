@@ -3,8 +3,8 @@
  * web holds a device token, `rgd_` and 32 random bytes, in its Keychain. The Worker keeps only the token's SHA-256
  * (`native_devices.id`), and the pairing code only as an HMAC (`native_pairings`).
  */
-import { and, asc, eq, gt, isNull, lt, ne, or, sql } from "drizzle-orm";
-import { nativeDevices, nativePairings, users } from "@rg/database";
+import { and, asc, eq, gt, isNull, like, lt, ne, or, sql } from "drizzle-orm";
+import { nativeDevices, nativePairings, nativePairLimits, users } from "@rg/database";
 import { nowInstant } from "@rg/domain";
 import type { Env } from "../env.js";
 import type { Db } from "../services/db.js";
@@ -35,8 +35,90 @@ export const PAIRING_MAX_TRIES = 5;
 /** A redeemed phone waits this long for the owner's Confirm on the laptop; unconfirmed, it is expired, then purged. */
 export const PENDING_CONFIRM_MS = 10 * 60_000;
 
+/**
+ * PAIRING'S RATE CONTROLS (kit v0.5). The code's own PAIRING_MAX_TRIES bounds guesses at one live code; these bound the
+ * rest — guesses with no code live or of codes that don't exist, minting again and again, and wrong check numbers:
+ *
+ *  - REDEEM (unauthenticated): failed attempts per PAIR_WINDOW_MS, PAIR_FAILS_PER_IP from one client (`CF-Connecting-IP`,
+ *    which Cloudflare's edge sets; kept only as its hash) and PAIR_FAILS_GLOBAL in all — one owner, one deployment. Past
+ *    either, every redeem gets the same 401 `pair_failed` for PAIR_COOL_OFF_MS, the right code included, and is not
+ *    evaluated: the live code's tries are untouched. The cool-off is shorter than a code's life, so the owner can wait it
+ *    out and use the same code; a new code from the laptop lifts every redeem throttle at once.
+ *  - MINT (cookie): MINTS_PER_WINDOW codes per account per MINT_WINDOW_MS, then 429 `too_many_codes` for MINT_COOL_OFF_MS.
+ *  - CONFIRM (cookie): the CONFIRM_MAX_WRONG-th wrong check number revokes the pending phone (`check_failed`).
+ */
+export const PAIR_WINDOW_MS = 10 * 60_000;
+export const PAIR_FAILS_PER_IP = 3;
+export const PAIR_FAILS_GLOBAL = 10;
+export const PAIR_COOL_OFF_MS = 2 * 60_000;
+export const MINT_WINDOW_MS = 10 * 60_000;
+export const MINTS_PER_WINDOW = 5;
+export const MINT_COOL_OFF_MS = 10 * 60_000;
+export const CONFIRM_MAX_WRONG = 3;
+
 const DAY_MS = 86_400_000;
 const at = (now: string, ms: number) => new Date(Date.parse(now) + ms).toISOString();
+
+/** The client-address hash's label: a key, never the address. */
+const CLIENT_LABEL = "run-garden native pairing client v1";
+const GLOBAL_REDEEM_KEY = "redeem:global";
+const REDEEM_KEYS = "redeem:%";
+
+interface Bound {
+  limit: number;
+  windowMs: number;
+  coolOffMs: number;
+}
+const PER_IP: Bound = { limit: PAIR_FAILS_PER_IP, windowMs: PAIR_WINDOW_MS, coolOffMs: PAIR_COOL_OFF_MS };
+const GLOBAL: Bound = { limit: PAIR_FAILS_GLOBAL, windowMs: PAIR_WINDOW_MS, coolOffMs: PAIR_COOL_OFF_MS };
+const MINTS: Bound = { limit: MINTS_PER_WINDOW, windowMs: MINT_WINDOW_MS, coolOffMs: MINT_COOL_OFF_MS };
+
+/**
+ * Count one attempt against `key`, BEFORE it is evaluated, in ONE statement (an upsert … RETURNING): however many
+ * requests arrive at once, at most `limit` are allowed per window. In cool-off: unchanged, refused (attempts during it
+ * don't extend it). Cool-off over, or the window past: a fresh window, this attempt its first. Otherwise one more; the
+ * one past `limit` starts the cool-off and is refused. Answers whether this attempt may go on, and until when it may
+ * not.
+ */
+async function countAttempt(db: Db, key: string, now: string, b: Bound): Promise<{ allowed: boolean; blockedUntil: string | null }> {
+  const t = nativePairLimits;
+  const windowFrom = at(now, -b.windowMs);
+  const coolUntil = at(now, b.coolOffMs);
+  const windowEnd = at(now, b.windowMs);
+  const blocked = sql`(${t.blockedUntil} is not null and ${t.blockedUntil} > ${now})`;
+  const fresh = sql`(${t.blockedUntil} is not null or ${t.windowStart} <= ${windowFrom})`;
+  const crosses = sql`(${t.count} + 1 > ${b.limit})`;
+  const [row] = await db
+    .insert(t)
+    .values({ key, windowStart: now, count: 1, blockedUntil: null, expiresAt: windowEnd })
+    .onConflictDoUpdate({
+      target: t.key,
+      set: {
+        windowStart: sql`case when ${blocked} then ${t.windowStart} when ${fresh} then ${now} else ${t.windowStart} end`,
+        count: sql`case when ${blocked} then ${t.count} when ${fresh} then 1 else ${t.count} + 1 end`,
+        blockedUntil: sql`case when ${blocked} then ${t.blockedUntil} when ${fresh} then null when ${crosses} then ${coolUntil} else null end`,
+        expiresAt: sql`case when ${blocked} then ${t.expiresAt} when ${fresh} then ${windowEnd} when ${crosses} then max(${t.expiresAt}, ${coolUntil}) else ${t.expiresAt} end`,
+      },
+    })
+    .returning({ blockedUntil: t.blockedUntil });
+  const blockedUntil = row?.blockedUntil ?? null;
+  return { allowed: !(blockedUntil !== null && blockedUntil > now), blockedUntil };
+}
+
+/** A success gives its attempt back (only outside a cool-off): the bounds count failures. */
+async function refundAttempt(db: Db, key: string): Promise<void> {
+  const t = nativePairLimits;
+  await db
+    .update(t)
+    .set({ count: sql`${t.count} - 1` })
+    .where(and(eq(t.key, key), isNull(t.blockedUntil), gt(t.count, 0)));
+}
+
+/** The client's key: its address's hash, labelled. Null when the worker can't see one. */
+async function clientKey(clientIp: string | null | undefined): Promise<string | null> {
+  const address = (clientIp ?? "").trim();
+  return address ? `redeem:ip:${await sha256Hex(`${CLIENT_LABEL}\n${address}`)}` : null;
+}
 
 /** Crockford's base32: no I, L, O or U. 8 characters carry 40 bits. */
 const CROCKFORD = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
@@ -77,13 +159,29 @@ async function ownerIdOf(db: Db, env: Env): Promise<string | null> {
   return row?.id ?? null;
 }
 
-/** Minting (laptop web): a new code for the account, replacing (burning) any code it had, in one statement. */
-export async function mintPairing(db: Db, env: Env, userId: string, now: string): Promise<{ code: string; expiresAt: string }> {
+/**
+ * Minting (laptop web): a new code for the account, replacing (burning) any code it had, in one statement — at most
+ * MINTS_PER_WINDOW per MINT_WINDOW_MS, counted before anything is written; past it, nothing changes and the answer says
+ * when to try again. A new code also lifts every redeem throttle: the owner's recovery is one action, Pair again. That
+ * gives a guesser nothing — it can't mint (cookie only, and bounded here), and each code still takes at most
+ * PAIRING_MAX_TRIES wrong guesses in its PAIRING_CODE_TTL_MS.
+ */
+export async function mintPairing(
+  db: Db,
+  env: Env,
+  userId: string,
+  now: string,
+): Promise<{ code: string; expiresAt: string } | { refused: true; retryAfterSeconds: number }> {
+  const mints = await countAttempt(db, `mint:${userId}`, now, MINTS);
+  if (!mints.allowed) {
+    return { refused: true, retryAfterSeconds: Math.ceil((Date.parse(mints.blockedUntil!) - Date.parse(now)) / 1000) };
+  }
   const code = newPairingCode();
   const codeHmac = await pairingCodeHmac(env.SESSION_SECRET, userId, code);
   const expiresAt = at(now, PAIRING_CODE_TTL_MS);
   const fresh = { codeHmac, createdAt: now, expiresAt, tries: 0, usedAt: null };
   await db.insert(nativePairings).values({ userId, ...fresh }).onConflictDoUpdate({ target: nativePairings.userId, set: fresh });
+  await db.delete(nativePairLimits).where(like(nativePairLimits.key, REDEEM_KEYS));
   return { code, expiresAt };
 }
 
@@ -91,9 +189,33 @@ export async function mintPairing(db: Db, env: Env, userId: string, now: string)
  * Redeeming (the phone, unauthenticated): ONE conditional UPDATE … RETURNING on the owner's live code — unused, unexpired,
  * under its tries. In the same statement a match marks it used and a miss counts one try, so however many requests arrive
  * at once, a code is used once and takes at most PAIRING_MAX_TRIES wrong guesses. A pending device is made only when the
- * UPDATE hands its row back marked used. Null for every failure alike: no owner, no live code, a wrong one.
+ * UPDATE hands its row back marked used. Null for every failure alike: no owner, no live code, a wrong one — or a
+ * throttled client.
+ *
+ * Before any of that, the attempt is counted against the client (`clientIp`, when the worker can see one) and against
+ * the deployment (countAttempt): past either bound the attempt is not evaluated at all — the code's tries are untouched —
+ * and answers null like any miss. A success gives both counts back.
  */
 export async function redeemPairing(
+  db: Db,
+  env: Env,
+  input: { code: string; label: string },
+  now: string,
+  clientIp?: string | null,
+): Promise<{ token: string; check: string; confirmBy: string } | null> {
+  const client = await clientKey(clientIp);
+  if (client && !(await countAttempt(db, client, now, PER_IP)).allowed) return null;
+  if (!(await countAttempt(db, GLOBAL_REDEEM_KEY, now, GLOBAL)).allowed) return null;
+  const paired = await redeemCounted(db, env, input, now);
+  if (paired) {
+    if (client) await refundAttempt(db, client);
+    await refundAttempt(db, GLOBAL_REDEEM_KEY);
+  }
+  return paired;
+}
+
+/** The redemption itself, once the attempt is counted and allowed. */
+async function redeemCounted(
   db: Db,
   env: Env,
   input: { code: string; label: string },
@@ -136,25 +258,37 @@ export async function redeemPairing(
   return { token, check, confirmBy };
 }
 
-export type ConfirmOutcome = { ok: true; expiresAt: string } | { ok: false; error: "not_found" | "not_pending" | "confirm_expired" | "check_mismatch" };
+export type ConfirmOutcome =
+  | { ok: true; expiresAt: string }
+  | { ok: false; error: "not_found" | "not_pending" | "confirm_expired" | "check_mismatch"; revoked?: true };
 
-/** The owner's Confirm (laptop web): a pending device of theirs, within its window, with its check number → active. */
+/**
+ * The owner's Confirm (laptop web): a pending device of theirs, within its window, with its check number → active. ONE
+ * conditional UPDATE … RETURNING decides it and counts it: the right number activates the phone; a wrong one counts a
+ * try, and the CONFIRM_MAX_WRONG-th revokes the phone (`check_failed`) in that same statement. Once it is not pending no
+ * further number is evaluated, so however many arrive at once, at most CONFIRM_MAX_WRONG are tried: a laptop can't be
+ * walked through the 10,000 numbers.
+ */
 export async function confirmDevice(db: Db, userId: string, id: string, check: string, now: string): Promise<ConfirmOutcome> {
   const expiresAt = at(now, NATIVE_DEVICE_LIFETIME_DAYS * DAY_MS);
-  const [done] = await db
-    .update(nativeDevices)
-    .set({ state: "active", confirmedAt: now, expiresAt })
-    .where(
-      and(
-        eq(nativeDevices.id, id),
-        eq(nativeDevices.userId, userId),
-        eq(nativeDevices.state, "pending"),
-        gt(nativeDevices.expiresAt, now),
-        eq(nativeDevices.checkNumber, check),
-      ),
-    )
-    .returning({ id: nativeDevices.id });
-  if (done) return { ok: true, expiresAt };
+  const d = nativeDevices;
+  const right = sql`(${d.checkNumber} = ${check})`;
+  const lastWrong = sql`(${d.checkTries} + 1 >= ${CONFIRM_MAX_WRONG})`;
+  const [decided] = await db
+    .update(d)
+    .set({
+      state: sql`case when ${right} then 'active' when ${lastWrong} then 'revoked' else ${d.state} end`,
+      confirmedAt: sql`case when ${right} then ${now} else ${d.confirmedAt} end`,
+      expiresAt: sql`case when ${right} then ${expiresAt} else ${d.expiresAt} end`,
+      checkTries: sql`case when ${right} then ${d.checkTries} else ${d.checkTries} + 1 end`,
+      revokedAt: sql`case when ${right} then ${d.revokedAt} when ${lastWrong} then ${now} else ${d.revokedAt} end`,
+      revokedReason: sql`case when ${right} then ${d.revokedReason} when ${lastWrong} then 'check_failed' else ${d.revokedReason} end`,
+    })
+    .where(and(eq(d.id, id), eq(d.userId, userId), eq(d.state, "pending"), gt(d.expiresAt, now)))
+    .returning({ state: d.state });
+  if (decided?.state === "active") return { ok: true, expiresAt };
+  if (decided?.state === "revoked") return { ok: false, error: "check_mismatch", revoked: true };
+  if (decided) return { ok: false, error: "check_mismatch" };
   const [row] = await db
     .select({ state: nativeDevices.state, expiresAt: nativeDevices.expiresAt })
     .from(nativeDevices)
@@ -200,9 +334,19 @@ export async function listDevices(db: Db, userId: string, now: string): Promise<
   }));
 }
 
+/** Why a device was revoked. `check_failed` is set by `confirmDevice` itself, in the statement that counts the try. */
 export type RevokeReason = "owner" | "owner_all" | "sign_out";
 
-/** Revoke one device of the account: true when this revoked it, false when it already was, null when it isn't theirs. */
+/**
+ * Revoke one device of the account: true when this revoked it, false when it already was, null when it isn't theirs.
+ *
+ * WHAT A REVOKE STOPS, AND WHAT IT DOESN'T (here and in `revokeAllDevices`). Revocation applies at the authorization
+ * boundary: `requireUser`'s device branch (auth/middleware.ts `requireDevice`), which reads the device's row ONCE, before
+ * the route's handler runs. Every request whose read comes after this UPDATE committed is refused 401 `device_revoked`
+ * (D1 has no read replicas here, so that read sees the commit). A request whose read came before it is already
+ * authorized: its handler runs to its end, and whatever it writes — a build, a start, a performed session — lands and
+ * stays. Nothing is cancelled or undone after the fact; a save that landed is undone only as any save is (by hand).
+ */
 export async function revokeDevice(db: Db, userId: string, id: string, now: string, reason: RevokeReason): Promise<boolean | null> {
   const [done] = await db
     .update(nativeDevices)
@@ -289,9 +433,10 @@ export async function touchDevice(db: Db, device: Pick<ResolvedDevice, "id" | "l
     .where(and(eq(nativeDevices.id, device.id), or(isNull(nativeDevices.lastUsedAt), sql`${nativeDevices.lastUsedAt} <= ${cutoff}`)));
 }
 
-/** Devices and codes past their expiry, in any state: gone (the half-hourly cron, beside `purgeExpiredSessions`). */
+/** Devices, codes and rate-control counters past their expiry, in any state: gone (the half-hourly cron, beside `purgeExpiredSessions`). */
 export async function purgeExpiredNativeRows(db: Db): Promise<void> {
   const now = nowInstant();
   await db.delete(nativeDevices).where(lt(nativeDevices.expiresAt, now));
   await db.delete(nativePairings).where(lt(nativePairings.expiresAt, now));
+  await db.delete(nativePairLimits).where(lt(nativePairLimits.expiresAt, now));
 }
