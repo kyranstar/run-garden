@@ -21,16 +21,33 @@ export const NATIVE_DEVICES_QUERY = ["native-devices"] as const;
 /** Looked at this often while a code is out: the phone that redeems it shows up as pending. */
 const LOOK_AGAIN_MS = 3_000;
 
+const DAY_MS = 86_400_000;
 const clockOf = (iso: string) => new Date(iso).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
-const dayOf = (iso: string) => new Date(iso).toLocaleDateString([], { month: "short", day: "numeric" });
 /** "7K2QXM9D" → "7K2Q-XM9D": two groups of four, as the phone's field takes it (hyphens are ignored). */
 const grouped = (code: string) => `${code.slice(0, 4)}-${code.slice(4)}`;
 
+/** How long an active phone has: "Expires in 27 days", "Expires in 1 day", or "Expires today" within the last day. */
+export function expiresIn(iso: string, now = Date.now()): string {
+  const days = Math.floor((Date.parse(iso) - now) / DAY_MS);
+  if (days < 1) return "Expires today";
+  return days === 1 ? "Expires in 1 day" : `Expires in ${days} days`;
+}
+
 function confirmRefusal(e: unknown): string {
-  const error = e instanceof ApiError ? (e.body as { error?: string } | null)?.error : null;
-  if (error === "check_mismatch") return "The numbers didn't match, so nothing was confirmed. Revoke it if it isn't your phone.";
-  if (error === "confirm_expired") return "Too late to confirm that one: pair the phone again.";
+  const body = e instanceof ApiError ? (e.body as { error?: string; revoked?: boolean } | null) : null;
+  if (body?.error === "check_mismatch" && body.revoked) return "The numbers didn't match too many times, so that phone was turned away. Pair it again.";
+  if (body?.error === "check_mismatch") return "The numbers didn't match, so nothing was confirmed. Revoke it if it isn't your phone.";
+  if (body?.error === "confirm_expired") return "Too late to confirm that one: pair the phone again.";
   return "Couldn't confirm the phone. Try again.";
+}
+
+function pairRefusal(e: unknown): string {
+  const body = e instanceof ApiError ? (e.body as { error?: string; retryAfter?: number } | null) : null;
+  if (e instanceof ApiError && e.status === 429 && body?.error === "too_many_codes") {
+    const minutes = Math.max(1, Math.ceil((body.retryAfter ?? 60) / 60));
+    return `Too many codes just now. Try again in ${minutes} minute${minutes === 1 ? "" : "s"}.`;
+  }
+  return "Couldn't make a pairing code. Try again.";
 }
 
 export function DevicesSection() {
@@ -84,9 +101,10 @@ export function DevicesSection() {
             <span className="place-row-main">
               <b>{d.label}</b>
               <small>
-                {d.lastUsedAt ? `Last used ${relativeTime(d.lastUsedAt)}` : "Never used"} · Expires {dayOf(d.expiresAt)}
+                {d.lastUsedAt ? `Last used ${relativeTime(d.lastUsedAt)}` : "Never used"} · {expiresIn(d.expiresAt)}
               </small>
-              {d.expiresSoon ? <small>It stops working then: pair it again soon.</small> : null}
+              {/* Within the last 7 days (the server's expiresSoon): the phone warns too. */}
+              {d.expiresSoon ? <small>Pair it again before then: Pair a phone, here.</small> : null}
             </span>
             <span className="setting-row-end">
               <button type="button" className="btn btn-small" disabled={busy} onClick={() => revoke.mutate(d.id)}>
@@ -117,7 +135,7 @@ export function DevicesSection() {
           </div>
         </div>
       ) : null}
-      {pair.isError ? <Banner kind="warn">Couldn't make a pairing code. Try again.</Banner> : null}
+      {pair.isError ? <Banner kind="warn">{pairRefusal(pair.error)}</Banner> : null}
       <div className="btn-row">
         {data.enabled ? (
           <button type="button" className="btn" disabled={pair.isPending} onClick={() => pair.mutate()}>

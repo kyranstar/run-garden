@@ -33,7 +33,9 @@ let host: HTMLDivElement | null = null;
 let calls: Array<{ method: string; path: string; body: unknown }>;
 
 /** A worker in memory: the devices list and what Pair, Confirm and Revoke do to it. */
-function worker(init: { enabled?: boolean; devices?: NativeDeviceDto[]; listStatus?: number; listBody?: unknown } = {}) {
+function worker(
+  init: { enabled?: boolean; devices?: NativeDeviceDto[]; listStatus?: number; listBody?: unknown; pairRefusal?: unknown; confirmRefusal?: unknown } = {},
+) {
   const state = { enabled: init.enabled ?? true, devices: [...(init.devices ?? [])] };
   calls = [];
   const json = (b: unknown, status = 200) => new Response(JSON.stringify(b), { status, headers: { "Content-Type": "application/json" } });
@@ -47,8 +49,12 @@ function worker(init: { enabled?: boolean; devices?: NativeDeviceDto[]; listStat
         if (init.listStatus) return json(init.listBody ?? { error: "x" }, init.listStatus);
         return json(init.listBody ?? state);
       }
-      if (path === "/api/native/pairings") return json({ code: "7K2QXM9D", expiresAt: iso(5 * 60_000) });
+      if (path === "/api/native/pairings") return init.pairRefusal ? json(init.pairRefusal, 429) : json({ code: "7K2QXM9D", expiresAt: iso(5 * 60_000) });
       const confirm = path.match(/^\/api\/native\/devices\/(\w+)\/confirm$/);
+      if (confirm && init.confirmRefusal) {
+        state.devices = state.devices.filter((d) => d.id !== confirm[1]);
+        return json(init.confirmRefusal, 409);
+      }
       if (confirm) {
         state.devices = state.devices.map((d) => (d.id === confirm[1] ? { ...d, state: "active", check: null, confirmedAt: iso(0), expiresAt: iso(30 * DAY) } : d));
         return json({ ok: true, expiresAt: iso(30 * DAY) });
@@ -164,13 +170,38 @@ describe("Settings → Devices", () => {
     await mount();
     const phone = rowOf("Running phone");
     expect(words(phone)).toContain("Last used 2h ago");
-    expect(words(phone)).toContain(`Expires ${new Date(NOW + 27 * DAY).toLocaleDateString([], { month: "short", day: "numeric" })}`);
+    expect(words(phone)).toContain("Expires in 27 days");
+    expect(words(phone)).not.toContain("pair it again");
     expect(words(rowOf("Old phone"))).toContain("Never used");
-    expect(words(rowOf("Old phone"))).toContain("pair it again soon");
+    expect(words(rowOf("Old phone"))).toContain("Expires in 5 days");
+    expect(words(rowOf("Old phone"))).toContain("Pair it again before then");
     await click(button("Revoke", phone));
     expect(calls.filter((c) => c.method === "POST").map((c) => c.path)).toEqual([`/api/native/devices/${"b".repeat(64)}/revoke`]);
     expect(rowOf("Running phone")).toBeUndefined();
     expect(rowOf("Old phone")).toBeTruthy();
+  });
+
+  it("the expiry counts down in days: within a day it says today, and one day is a day", async () => {
+    worker({ devices: [active({ label: "Today phone", expiresAt: iso(3_600_000), expiresSoon: true }), active({ id: "d".repeat(64), label: "Tomorrow phone", expiresAt: iso(DAY), expiresSoon: true })] });
+    await mount();
+    expect(words(rowOf("Today phone"))).toContain("Expires today");
+    expect(words(rowOf("Tomorrow phone"))).toContain("Expires in 1 day");
+  });
+
+  it("too many codes: says when to try again, and shows no code", async () => {
+    worker({ pairRefusal: { error: "too_many_codes", retryAfter: 600 } });
+    await mount();
+    await click(button("Pair a phone"));
+    expect(words(host)).toContain("Too many codes just now. Try again in 10 minutes.");
+    expect(host!.querySelector(".pair-code")).toBeNull();
+  });
+
+  it("a confirm the server answered by turning the phone away says so, and to pair it again", async () => {
+    worker({ devices: [pending()], confirmRefusal: { error: "check_mismatch", revoked: true } });
+    await mount();
+    await click(button("Confirm", rowOf("Kitchen iPhone")));
+    expect(words(host)).toContain("The numbers didn't match too many times, so that phone was turned away. Pair it again.");
+    expect(rowOf("Kitchen iPhone")).toBeUndefined();
   });
 
   it("Revoke all stops every phone at once", async () => {

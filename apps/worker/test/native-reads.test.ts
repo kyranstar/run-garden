@@ -94,6 +94,16 @@ describe("GET /api/native/me", () => {
   it("answers a cookie with no device", async () => {
     expect((await w.call("GET", "/api/native/me")).json).toEqual({ userId: w.userId, device: null });
   });
+
+  it("expiresAt is all the phone needs for its 7-day warning: the exact instant its token stops working", async () => {
+    const expiresAt = new Date(Date.now() + 6 * 86_400_000).toISOString();
+    const { token } = await seedDevice(w.db, w.userId, { expiresAt });
+    expect((await w.call("GET", "/api/native/me", { bearer: token })).json.device.expiresAt).toBe(expiresAt);
+    vi.setSystemTime(new Date(Date.parse(expiresAt) - 1000));
+    expect((await w.call("GET", "/api/native/me", { bearer: token })).status).toBe(200);
+    vi.setSystemTime(new Date(expiresAt));
+    expect((await w.call("GET", "/api/native/me", { bearer: token })).json).toEqual({ error: "device_expired" });
+  });
 });
 
 describe("GET /api/native/today", () => {
