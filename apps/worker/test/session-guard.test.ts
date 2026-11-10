@@ -1674,6 +1674,67 @@ describe("the Calendar's drag of a done session, or one under way: refused where
     expect(rowOf(w, cal.workout)).toMatchObject({ date: FRI, completion: "completed" });
   });
 
+  it("a done session's event made all-day (RC boundary 1): the row and its credit never change, that sync's other ops still run, and later syncs leave it — the calendar stays all-day until edited again", async () => {
+    const w = await world();
+    let build: any;
+    const cal = await calendarWorld(async () => {
+      const id = await slotOn(w, FRI);
+      setClock(FRI, "18:00");
+      build = await buildAndStart(w, id);
+      return id;
+    }, w);
+    expect((await saved(w, cal.workout, build, FRI)).json.status).toBe("saved");
+    // Another session, open, dragged in the same sync: its op must still run.
+    setClock(FRI, "19:00");
+    const other = await slotOn(w, addDays(FRI, 3));
+    await syncCalendar(w.db, env, w.userId);
+    const otherEvent = [...cal.google.events.values()].find((e) => e.body.extendedProperties?.private?.rgWorkoutId === other)!;
+    await drive(w, addDays(FRI, 1), addDays(FRI, 2));
+    const control = fork(w);
+    const ev = [...cal.google.events.values()].find((e) => e.body.extendedProperties?.private?.rgWorkoutId === cal.workout)!;
+    ev.body = { ...ev.body, start: { date: addDays(FRI, 3) } as never, end: { date: addDays(FRI, 4) } as never };
+    ev.seq = ++(cal.google as unknown as { seq: number }).seq;
+    const shift = (iso: string) => new Date(Date.parse(iso) + 86_400_000).toISOString();
+    otherEvent.body = { ...otherEvent.body, start: { ...otherEvent.body.start, dateTime: shift(otherEvent.body.start.dateTime) }, end: { ...otherEvent.body.end, dateTime: shift(otherEvent.body.end.dateTime) } };
+    otherEvent.seq = ++(cal.google as unknown as { seq: number }).seq;
+    const spy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    await syncCalendar(w.db, env, w.userId);
+    await syncCalendar(w.db, env, w.userId);
+    spy.mockRestore();
+    expect(rowOf(w, cal.workout)).toMatchObject({ date: FRI, completion: "completed" });
+    expect(rowOf(w, other).date).toBe(addDays(FRI, 4));
+    expect((ev.body.start as { date?: string; dateTime?: string }).dateTime).toBeUndefined();
+    await drive(w, addDays(FRI, 3), addDays(TUE, 3));
+    await drive(control, addDays(FRI, 3), addDays(TUE, 3));
+    const credits = (x: World) => record(x).credits.flatMap((c) => c.completed.filter((y) => y.workoutId === cal.workout).map(() => c.date));
+    expect(credits(w)).toEqual([FRI]);
+    expect(credits(w)).toEqual(credits(control));
+  });
+
+  it("an owed restore is re-checked before it is paid (RC boundary 4): after Unstart, a drag the athlete makes is theirs — the old debt dropped, the drag taken, never overwritten", async () => {
+    const w = await world();
+    const cal = await calendarWorld(async () => {
+      const id = await slotOn(w, D);
+      setClock(D, "18:00");
+      await buildAndStart(w, id);
+      return id;
+    }, w);
+    cal.google.fail("PATCH", 1, "500");
+    const spy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    await cal.drag(2);
+    spy.mockRestore();
+    expect(rowOf(w, cal.workout)).toMatchObject({ date: D, content: "started" });
+    // The athlete discards it, then drags the event again, deliberately, before the owed restore is retried.
+    expect((await w.call("POST", `/api/sessions/${cal.workout}/unstart`)).status).toBe(200);
+    await cal.drag(3);
+    expect(rowOf(w, cal.workout).date).toBe(addDays(D, 5));
+    expect(cal.onCalendar()).not.toEqual(cal.planned);
+    // And the next sync: nothing owed puts the old day back — the event stays on the athlete's new day.
+    await syncCalendar(w.db, env, w.userId);
+    expect(rowOf(w, cal.workout).date).toBe(addDays(D, 5));
+    expect(cal.onCalendar()).not.toEqual(cal.planned);
+  });
+
   it("the phone's save landing inside the drag's move (a session started days ago, past its window): the guarded write refuses it, the event goes back, one credit on its day", async () => {
     const w = await world();
     let build: any;
