@@ -14,13 +14,18 @@
  *   POST /pair                      unauthenticated, {code, label} → {token, check, state: "pending", confirmBy}; every
  *                                   failure alike is 401 `pair_failed`
  *   POST /sign-out                  its device token: its own row revoked
+ *   GET  /me                        {userId, device: {label, expiresAt}} (§10.4, trimmed on the server)
+ *   GET  /today                     {today, sessions}: the day's training rows only (§10.4)
  *
  * The kill switch (`NATIVE_DEVICES`, a secret): unless it is "1", minting, redeeming and confirming are 404 — the
  * device list and revocation answer either way, so the owner can always see and stop a device.
  */
 import { Hono, type MiddlewareHandler } from "hono";
-import { nowInstant } from "@rg/domain";
+import { and, eq, isNull, ne } from "drizzle-orm";
+import { plannedWorkouts } from "@rg/database";
+import { nowInstant, todayInZone } from "@rg/domain";
 import { nativeDevicesEnabled } from "../env.js";
+import { loadPreferences } from "../services/calendar-sync.js";
 import type { AppContext } from "../auth/middleware.js";
 import { requireUser } from "../auth/middleware.js";
 import {
@@ -89,6 +94,52 @@ nativeRoutes.post("/devices/:id/revoke", requireUser, cookieOnly, async (c) => {
   const revoked = await revokeDevice(c.get("db"), c.get("userId"), c.req.param("id"), nowInstant(), "owner");
   if (revoked === null) return c.json({ error: "not_found" }, 404);
   return c.json({ ok: true, revoked });
+});
+
+/**
+ * The phone's account read (§10.4), in place of `/api/auth/me`: who it is signed in as, and its own label and expiry.
+ * No email, connections or restore state. A cookie gets `device: null`.
+ */
+nativeRoutes.get("/me", requireUser, async (c) => {
+  const device = c.get("device");
+  return c.json({ userId: c.get("userId"), device: device ? { label: device.label, expiresAt: device.expiresAt } : null });
+});
+
+/** A planned time, `HH:MM`. */
+const TIME = /^\d{2}:\d{2}$/;
+
+/**
+ * The phone's day (§10.4), in place of `/api/plan/today`: only the day's training rows — id, title, sport, category,
+ * date, time and state (`completionState`) — on the account's own clock. Rest rows and removed rows are not training;
+ * no sleep, readiness, coach text, garden, email or connections, none of which is read. Timed rows by time, then untimed.
+ */
+nativeRoutes.get("/today", requireUser, async (c) => {
+  const db = c.get("db");
+  const userId = c.get("userId");
+  const today = todayInZone((await loadPreferences(db, userId)).timezone);
+  const rows = await db
+    .select({
+      id: plannedWorkouts.id,
+      title: plannedWorkouts.title,
+      sport: plannedWorkouts.sport,
+      category: plannedWorkouts.category,
+      date: plannedWorkouts.effectiveDate,
+      time: plannedWorkouts.effectiveTime,
+      state: plannedWorkouts.completionState,
+    })
+    .from(plannedWorkouts)
+    .where(
+      and(
+        eq(plannedWorkouts.userId, userId),
+        eq(plannedWorkouts.effectiveDate, today),
+        isNull(plannedWorkouts.archivedAt),
+        ne(plannedWorkouts.category, "rest"),
+      ),
+    );
+  const sessions = rows
+    .map((r) => ({ ...r, time: TIME.test(r.time) ? r.time : null }))
+    .sort((a, b) => (a.time === null) !== (b.time === null) ? (a.time === null ? 1 : -1) : (a.time ?? "").localeCompare(b.time ?? "") || a.id.localeCompare(b.id));
+  return c.json({ today, sessions });
 });
 
 nativeRoutes.post("/sign-out", requireUser, async (c) => {
