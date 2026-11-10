@@ -36,7 +36,8 @@ import { separateDayCollisions, windowTimeFor } from "./day-placement.js";
 import { loadOwnProgramNames, unstampTitle } from "./coros-stamp.js";
 import { openMoveIntents, resolveIntent } from "./sync-intents.js";
 import { adoptsWatchCopy, watchCopyBase } from "./watch-copy-marker.js";
-import { dismissSyncNotesOf, postSyncNote } from "./sync-notes.js";
+import { dismissSyncNote, dismissSyncNotesOf, postSyncNote } from "./sync-notes.js";
+import { stillOpen } from "./session-guard.js";
 import { markMirrorOwed } from "./mirror-owed.js";
 import { reconcileWorkout } from "./reconcile.js";
 import { SETTLED_PUSH, sentBuildIdOf } from "./session-build.js";
@@ -285,6 +286,45 @@ export async function importPlanSnapshot(
 ): Promise<ImportStats> {
   const now = nowInstant();
   const today = todayInZone(prefs.timezone);
+
+  /**
+   * A SESSION'S DAY FOLLOWS ITS COPY'S (a move in COROS) in one statement of its own, held in its WHERE to the row still
+   * neither started nor done (`stillOpen`, the session guard in the write: a Start or a save landing after this import read
+   * its rows leaves it as it is). The read's date goes on record with the day, so a follow that loses consumes nothing.
+   * Whether it landed.
+   */
+  const followCopy = async (row: StoredWorkout, date: string, also: Record<string, unknown> = {}): Promise<boolean> => {
+    const landed = await db
+      .update(plannedWorkouts)
+      .set({
+        ...also,
+        effectiveDate: date,
+        lastVerifiedCorosDate: date,
+        calendarSyncState: row.calendarSyncState === "user_deleted" ? "user_deleted" : "pending",
+        updatedAt: now,
+      })
+      .where(and(eq(plannedWorkouts.id, row.id), stillOpen(row)))
+      .returning({ id: plannedWorkouts.id });
+    if (landed.length > 0) await dismissSyncNote(db, input.userId, keptDayNoteId(row.id, date));
+    return landed.length > 0;
+  };
+  /**
+   * A MOVE IN COROS A STARTED SESSION'S DAY DOESN'T FOLLOW (the session guard; the RC review's item 4): nothing of it is
+   * consumed — the row keeps the date the read last verified, so once the session is no longer started the next read finds
+   * the move again and follows it, as it would for any session. Meanwhile the athlete is told, once a move: "Changed in
+   * COROS — Run Garden kept its version" (dismiss-only). `check`: the follow lost in its write, so the row is read again —
+   * the note only for a session started now (a save landing instead keeps its day as done does, untold).
+   */
+  const keptItsDay = async (row: { id: string }, date: string, check: boolean): Promise<void> => {
+    if (check) {
+      const [state] = await db
+        .select({ contentState: plannedWorkouts.contentState, completionState: plannedWorkouts.completionState })
+        .from(plannedWorkouts)
+        .where(eq(plannedWorkouts.id, row.id));
+      if (!state || state.contentState !== "started" || state.completionState === "completed") return;
+    }
+    await postSyncNote(db, { id: keptDayNoteId(row.id, date), userId: input.userId, workoutId: row.id, kind: "watch_copy_changed", payload: { date } });
+  };
   // The mirror writes to the watch (`sweepPutsBack`): the athlete's COROS writes on and the watch switch on.
   const mirrorOn = prefs.corosWritesEnabled && input.watchPush === true;
   const stats: ImportStats = {
@@ -1109,28 +1149,27 @@ export async function importPlanSnapshot(
         // have moved it in COROS while a read missed it — and a "Removed from
         // your watch" posted while it was missed was false. A DONE slot stays:
         // its credit is on its day, and re-dating it would credit it again as the
-        // garden walks on. Nor does a STARTED one (the session guard; 3-R16's "a started one follows" withdrawn): its day
-        // stays, the read on record (`lastVerifiedCorosDate`), no note.
-        const moved = src.date !== slot.effectiveDate && slot.completionState !== "completed" && slot.contentState !== "started";
+        // garden walks on; the read is on record. Nor does a STARTED one (the session guard; 3-R16's "a started one
+        // follows" withdrawn), read so or started since (`followCopy`, held in its write): its day stays and its move is
+        // owed (`keptItsDay`). The copy is attached either way.
+        const follows = src.date !== slot.effectiveDate && slot.completionState !== "completed";
         await db
           .update(plannedWorkouts)
           .set({
             sourceWorkoutId: src.sourceWorkoutId,
             sourceIdInPlan: src.sourceIdInPlan ?? null,
             sourceProgramId: programId || null,
-            lastVerifiedCorosDate: src.date,
+            ...(follows ? {} : { lastVerifiedCorosDate: src.date }),
             sourceContentFingerprint: src.contentFingerprint,
             corosSyncState: "synced",
             missingReads: 0,
-            ...(moved
-              ? { effectiveDate: src.date, calendarSyncState: slot.calendarSyncState === "user_deleted" ? "user_deleted" : "pending" }
-              : {}),
             updatedAt: now,
           })
           .where(eq(plannedWorkouts.id, slot.id));
         seenProgramRows.add(slot.id);
         await dismissSyncNotesOf(db, input.userId, slot.id, "watch_copy_removed");
-        if (moved) {
+        const started = slot.contentState === "started";
+        if (follows && !started && (await followCopy(slot, src.date))) {
           await postSyncNote(db, {
             userId: input.userId,
             workoutId: slot.id,
@@ -1138,6 +1177,8 @@ export async function importPlanSnapshot(
             payload: { previousDate: slot.effectiveDate, newDate: src.date },
           });
           stats.updatedDates += 1;
+        } else if (follows) {
+          await keptItsDay(slot, src.date, !started);
         }
       } else if (
         prefs.corosWritesEnabled &&
@@ -1391,6 +1432,8 @@ export async function importPlanSnapshot(
     const pendingJob = pendingJobByWorkout.get(current.id);
     const verifiableJob = verifiableJobByWorkout.get(current.id);
     const corosDate = src.date;
+    /** What `followCopy` wrote of this row, for what reads the row as this import leaves it. */
+    let followed: Partial<StoredWorkout> = {};
 
     const action = reconcileWorkout({
       workoutId: current.id,
@@ -1444,23 +1487,25 @@ export async function importPlanSnapshot(
         break;
       }
       case "adopt_coros": {
-        updates.lastVerifiedCorosDate = corosDate;
         // A FINISHED session's day doesn't follow COROS: its credit is on its day, and re-dating it would credit it again as the
         // garden walks on (or lose it, moved back). The read is still on record, so the next read finds nothing new; no note,
         // since the app kept its day and there's nothing to undo.
-        // Nor does one STARTED (the session guard): moving it moves a session from under the device playing it, and its
-        // save is filed on its own days. Its read is on record; no note, the app kept its day.
-        if (current.completionState === "completed" || current.contentState === "started") {
+        if (current.completionState === "completed") {
+          updates.lastVerifiedCorosDate = corosDate;
           updates.corosSyncState = syncedUnlessClaimed();
           touched = true;
           break;
         }
-        updates.effectiveDate = corosDate;
-        updates.originalPlanDate = current.originalPlanDate;
-        updates.calendarSyncState =
-          current.calendarSyncState === "user_deleted" ? "user_deleted" : "pending";
-        updates.corosSyncState = syncedUnlessClaimed();
-        if (current.completionState === "unresolved") updates.completionState = "scheduled";
+        // Nor does one STARTED (the session guard): moving it moves a session from under the device playing it, and its
+        // save is filed on its own days. Read so, or started (or done) since this import read it — the follow is held in
+        // its own write (`followCopy`) — its day stays and its move is owed (`keptItsDay`).
+        const started = current.contentState === "started";
+        const also = { corosSyncState: syncedUnlessClaimed(), ...(current.completionState === "unresolved" ? { completionState: "scheduled" } : {}) };
+        if (started || !(await followCopy(current, corosDate, also))) {
+          await keptItsDay(current, corosDate, !started);
+          break;
+        }
+        followed = { effectiveDate: corosDate, lastVerifiedCorosDate: corosDate };
         if (action.note) {
           await postSyncNote(db, {
             userId: input.userId,
@@ -1529,7 +1574,7 @@ export async function importPlanSnapshot(
           // A document workout still to come: the app is the truth, and the mirror's sweep replaces the copy on its next
           // pass (§3.8) — `noticed` makes the copy not current (`currentCopy`), the owed mark puts it first in line. One
           // statement, on the one read that tells the athlete.
-          if (sweepPutsBack({ ...current, ...(updates as Partial<StoredWorkout>) }, today, mirrorOn)) {
+          if (sweepPutsBack({ ...current, ...followed, ...(updates as Partial<StoredWorkout>) }, today, mirrorOn)) {
             await markMirrorOwed(db, input.userId, current.id, now);
           }
         }
@@ -1999,6 +2044,9 @@ export const IMPORT_ROW_RETRIES = 10;
  * CHECK, a FOREIGN KEY) — the one failure a single bad row can cause. D1 says it in the message
  * (`… constraint failed … SQLITE_CONSTRAINT`), better-sqlite3 in `code` too.
  */
+/** The one note a refused follow posts (`keptItsDay`): one per session and COROS day, however many reads see it. */
+const keptDayNoteId = (workoutId: string, date: string): string => `kept-day-${workoutId}-${date}`;
+
 function rowConstraint(e: unknown): boolean {
   if (!(e instanceof Error)) return false;
   const code = (e as { code?: unknown }).code;

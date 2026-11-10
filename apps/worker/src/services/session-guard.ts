@@ -10,8 +10,18 @@ import { PROVISIONAL_KIND, PROVISIONAL_KIND_PATH, pushJobId, SETTLED_PUSH, UNSTA
  * direct calls reach these routes too. Held to it, each at its read and in its write: the athlete's move, skip and remove;
  * the coach's ops, the designer's and the thread's (the applier's own read, `stillOpen` on each write); a plan's bulk archives;
  * the swap; sync-note Undo; the Calendar's drag (its event put back); the day's placement (a started session pinned); a Start
- * (refused once its session is archived); and the COROS read (a done or started session keeps its day). Not held to it:
- * reconcile and the sweep (they resolve, never move), the retries (a row's own date), restore and repairs.
+ * (its write held to the row still on the plan and on the day it checked); and the COROS read: a done or started session keeps
+ * its day — as the import read it, and in the write, where each re-date of a session (its slot or its row following the copy's
+ * move, `followCopy` in import-plan.ts) is a statement of its own held to the row still neither started nor done. Not held to
+ * it: reconcile and the sweep (they resolve, never move), the retries (a row's own date), restore and repairs.
+ *
+ * A STARTED SESSION'S MOVE IN COROS IS OWED, NOT CONSUMED: the row keeps the date the read last verified and the athlete is
+ * told once ("Changed in COROS — Run Garden kept its version"); once it is no longer started (Unstart) the next read follows
+ * the copy, as for any session. A done one's is consumed (its day never follows). What that costs, while a follow is owed:
+ * the row's watch address still names the old day, so a delete of the copy then (Keep off; a remove once the session is past
+ * its days) is refused by the delete's own check (`stamp_mismatch`) and the copy stays, nothing else deleted. A save dated the
+ * copy's new day is refused (422), but no client makes one: the player dates its save by its build (`beginPlayer`), a build
+ * is made for the row's own day, and a watch review needs a match the row on its old day doesn't give.
  *
  * WHAT IS ATOMIC, and only this: a guarded move, a re-time, an ease, a plan's archive slice (its way off the watch included)
  * and a day's placement are each one D1 batch. Skip and remove are one guarded statement (the row's write, held to the row as

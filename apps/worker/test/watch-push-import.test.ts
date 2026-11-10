@@ -37,7 +37,7 @@ import { applyOps } from "../src/services/coach-apply.js";
 import { importPlanSnapshot } from "../src/services/import-plan.js";
 import { applyMove, emitPendingWork } from "../src/services/jobs.js";
 import { removeFromPlan } from "../src/services/plan-mutations.js";
-import { buildSession, loadSession, startSession } from "../src/services/session-build.js";
+import { buildSession, loadSession, startSession, unstartSession } from "../src/services/session-build.js";
 import { createDocWorkout } from "../src/services/doc-workouts.js";
 import { mirrorSweep, mirrorTakesTurn, queueProvisionalPush } from "../src/services/mirror.js";
 import { calmDoc } from "./doc-workout-fixture.js";
@@ -60,6 +60,23 @@ vi.mock("../src/services/calendar-sync.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../src/services/calendar-sync.js")>()),
   syncCalendar: vi.fn(async () => ({})),
 }));
+/**
+ * Something landing INSIDE a COROS read (the RC review's item 3): the import reads its rows, then loads the open move
+ * intents, then writes — a hold here runs after the rows were read and before any write.
+ */
+const midRead = vi.hoisted(() => ({ hold: null as null | (() => Promise<void>) }));
+vi.mock("../src/services/sync-intents.js", async (importOriginal) => {
+  const real = await importOriginal<typeof import("../src/services/sync-intents.js")>();
+  return {
+    ...real,
+    openMoveIntents: async (...args: Parameters<typeof real.openMoveIntents>) => {
+      const hold = midRead.hold;
+      midRead.hold = null;
+      if (hold) await hold();
+      return real.openMoveIntents(...args);
+    },
+  };
+});
 
 let db: Db;
 let userId: string;
@@ -82,6 +99,7 @@ beforeEach(() => {
   vi.setSystemTime(new Date(NOON));
 });
 afterEach(() => {
+  midRead.hold = null;
   vi.useRealTimers();
 });
 
@@ -342,14 +360,33 @@ describe("the import and a sent session", () => {
     expect(await notesOf(workoutId)).toEqual([]);
   });
 
-  it("(d) moved on COROS while it is under way: its day stays (the session guard; 3-R16's \"a started one follows\" withdrawn), the read on record, the build stays locked", async () => {
+  it("(d) moved on COROS while it is under way: its day stays (the session guard; 3-R16's \"a started one follows\" withdrawn), the build stays locked, the move NOT consumed — one dismiss-only note however many reads; after Unstart the next read follows it (RCR3b)", async () => {
     const { workoutId, buildId, stamp } = await pushed();
     await startSession(db, userId, workoutId, buildId, NOON);
     const LATER = addDays(DAY, 2);
     entityOf(programOn(stamp)!).happenDay = Number(localDateToCorosDay(LATER));
     await readNow();
-    expect(await rowOf(db, workoutId)).toMatchObject({ effectiveDate: DAY, lastVerifiedCorosDate: LATER, contentState: "started" });
+    await readNow();
+    expect(await rowOf(db, workoutId)).toMatchObject({ effectiveDate: DAY, lastVerifiedCorosDate: DAY, contentState: "started" });
     expect((await db.select().from(sessionBuilds).where(eq(sessionBuilds.id, buildId)))[0]!.lockedAt).not.toBeNull();
+    expect((await notesOf(workoutId)).map((n) => n.kind)).toEqual(["watch_copy_changed"]);
+    await unstartSession(db, userId, workoutId, { today: DAY, now: NOON });
+    await readNow();
+    expect(await rowOf(db, workoutId)).toMatchObject({ effectiveDate: LATER, lastVerifiedCorosDate: LATER, contentState: "built" });
+    expect((await notesOf(workoutId)).map((n) => n.kind)).toEqual(["watch_copy_moved"]);
+  });
+
+  it("(d) a Start landing inside the read that would re-date its session: the re-date is held in its write — the day stays, nothing consumed, no move note (RC review item 3)", async () => {
+    const { workoutId, buildId, stamp } = await pushed();
+    const LATER = addDays(DAY, 2);
+    entityOf(programOn(stamp)!).happenDay = Number(localDateToCorosDay(LATER));
+    midRead.hold = async () => {
+      expect((await startSession(db, userId, workoutId, buildId, NOON)).contentState).toBe("started");
+    };
+    await readNow();
+    expect(midRead.hold).toBeNull();
+    expect(await rowOf(db, workoutId)).toMatchObject({ effectiveDate: DAY, lastVerifiedCorosDate: DAY, contentState: "started" });
+    expect((await notesOf(workoutId)).map((n) => n.kind)).toEqual(["watch_copy_changed"]);
   });
 
   it("(d) Undo on a sent session's move note answers 422 not_undoable, and nothing comes off the watch (3-R15)", async () => {
@@ -421,7 +458,7 @@ describe("the import and a sent session", () => {
     ).toHaveLength(1);
   });
 
-  it("(f) a copy the row never learned about, moved on COROS, its slot done: attached, its day stays, no note (JOINT Fix 6); under way, it follows (3-R16)", async () => {
+  it("(f) a copy the row never learned about, moved on COROS, its slot done: attached, its day stays, no note (JOINT Fix 6); under way, attached, its day stays too, the move not consumed (the session guard; 3-R16's \"a started one follows\" withdrawn)", async () => {
     const LATER = addDays(DAY, 2);
     const done = await writeWithoutRecording();
     await db.update(plannedWorkouts).set({ completionState: "completed", resolutionDate: DAY }).where(eq(plannedWorkouts.id, done.workoutId));
@@ -432,10 +469,26 @@ describe("the import and a sent session", () => {
     await setup();
     const running = await writeWithoutRecording();
     await db.update(plannedWorkouts).set({ contentState: "started" }).where(eq(plannedWorkouts.id, running.workoutId));
+    const before = (await rowOf(db, running.workoutId)).lastVerifiedCorosDate;
     entityOf(programOn(running.stamp)!).happenDay = Number(localDateToCorosDay(LATER));
     await importFromCoros();
-    expect(await rowOf(db, running.workoutId)).toMatchObject({ effectiveDate: DAY, lastVerifiedCorosDate: LATER, contentState: "started" });
-    expect(await notesOf(running.workoutId)).toEqual([]);
+    expect(await rowOf(db, running.workoutId)).toMatchObject({ effectiveDate: DAY, lastVerifiedCorosDate: before, contentState: "started" });
+    expect((await rowOf(db, running.workoutId)).sourceWorkoutId).not.toBe(running.workoutId);
+    expect((await notesOf(running.workoutId)).map((n) => n.kind)).toEqual(["watch_copy_changed"]);
+  });
+
+  it("(f) a copy the row never learned about, moved on COROS, and a Start landing inside that read (RCR7a): attached, the re-date held in its write — the day stays, nothing consumed, no move note", async () => {
+    const LATER = addDays(DAY, 2);
+    const { workoutId, buildId, stamp } = await writeWithoutRecording();
+    const before = (await rowOf(db, workoutId)).lastVerifiedCorosDate;
+    entityOf(programOn(stamp)!).happenDay = Number(localDateToCorosDay(LATER));
+    midRead.hold = async () => {
+      expect((await startSession(db, userId, workoutId, buildId, NOON)).contentState).toBe("started");
+    };
+    await importFromCoros();
+    expect(midRead.hold).toBeNull();
+    expect(await rowOf(db, workoutId)).toMatchObject({ effectiveDate: DAY, lastVerifiedCorosDate: before, contentState: "started" });
+    expect((await notesOf(workoutId)).map((n) => n.kind)).toEqual(["watch_copy_changed"]);
   });
 
   it("(f) its slot gone: no new row, and unpush:<buildId> takes the stamp from the push and the address from the wire", async () => {
