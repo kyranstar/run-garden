@@ -1956,9 +1956,10 @@ async function lockProven(
   const adopted = opts.as === "start" && (row.contentState === null || row.contentState === "outline");
   const stored = storedOf(current);
   const content = adopted ? day.contentOf(stored) : null;
-  // Start's row and its build's lock, one batch, held to the row still on the plan (the RC's boundary 2): a remove or a
-  // plan's archive landing after the reads above fails it — nothing locked, nothing started — and the Start is refused as
-  // a Start after the archive is (`SessionNotFoundError`).
+  // Start's row and its build's lock, one batch, held to the row as Start validated it (the RC's boundary 2, and its
+  // review's item 2): still on the plan and on the day it checked. A remove, a plan's archive or a move landing after the
+  // reads above fails it — nothing locked, nothing started — and the Start is refused as a Start after that change is
+  // (`startLost`).
   try {
     await runAtomically(db, [
       ...(opts.as === "start"
@@ -1968,7 +1969,7 @@ async function lockProven(
               .set({
                 ...(adopted ? { ...(content ?? {}), sessionParams: stored.build.params as unknown as Record<string, unknown> } : {}),
                 contentState: "started",
-                effectiveDate: guardOrFail(isNull(plannedWorkouts.archivedAt), plannedWorkouts.effectiveDate),
+                effectiveDate: guardOrFail(and(...heldAsValidated(row))!, plannedWorkouts.effectiveDate),
                 updatedAt: ctx.now,
               })
               .where(and(eq(plannedWorkouts.id, workoutId), eq(plannedWorkouts.userId, userId))),
@@ -1977,7 +1978,7 @@ async function lockProven(
       db.update(sessionBuilds).set({ lockedAt: ctx.now }).where(eq(sessionBuilds.id, current.id)),
     ]);
   } catch (e) {
-    if (guardFailed(e)) throw new SessionNotFoundError();
+    if (guardFailed(e)) await startLost(db, userId, workoutId, row, ctx.today);
     throw e;
   }
   await pruneBuilds(db, workoutId, current.id);
@@ -2262,12 +2263,15 @@ export async function lockCurrentBuild(
             .set({ payload: sql`json_set(${sessionBuilds.payload}, '$.build.fromDoc.slots', json(${JSON.stringify(trimmed)}))` })
             .where(eq(sessionBuilds.id, locked.id));
         }
-        // Held to the row still on the plan (the RC's boundary 2): a remove or a plan's archive landing after the reads above
-        // leaves it unstarted, and the read below refuses it (`SessionNotFoundError`) — as if the Start came after the archive.
-        await db
+        // Held to the row as Start validated it (the RC's boundary 2, and its review's item 2): still on the plan and on the
+        // day it checked. A remove, a plan's archive or a move landing after the reads above leaves it unstarted, and Start is
+        // refused as it would be after them (`startLost`).
+        const wrote = await db
           .update(plannedWorkouts)
           .set({ contentState: "started", updatedAt: now })
-          .where(and(eq(plannedWorkouts.id, workoutId), eq(plannedWorkouts.userId, userId), eq(plannedWorkouts.contentState, "built"), isNull(plannedWorkouts.archivedAt)));
+          .where(and(eq(plannedWorkouts.id, workoutId), eq(plannedWorkouts.userId, userId), eq(plannedWorkouts.contentState, "built"), ...heldAsValidated(row)))
+          .returning({ id: plannedWorkouts.id });
+        if (wrote.length === 0) await startLost(db, userId, workoutId, row, today);
         return unchanged(readResponse(db, userId, await loadSlot(db, userId, workoutId), today));
       }
     }
@@ -2291,6 +2295,19 @@ export async function lockCurrentBuild(
     checks: inputs.checks,
     contentOf: engineContentOf(row, inputs.programName),
   });
+}
+
+/** What Start's write is held to: the row as Start validated it — still on the plan, on the day it checked. */
+const heldAsValidated = (row: SlotRow): SQL[] => [isNull(plannedWorkouts.archivedAt), eq(plannedWorkouts.effectiveDate, row.effectiveDate)];
+
+/**
+ * A Start whose held write found the row changed since it validated it: refused as a Start after that change is — gone from
+ * the plan (`SessionNotFoundError`), or on another day (`NotTodayError`). Nothing of the Start was written.
+ */
+async function startLost(db: Db, userId: string, workoutId: string, validated: SlotRow, today: string): Promise<never> {
+  const now = await loadSlot(db, userId, workoutId); // throws `SessionNotFoundError` once it is archived
+  if (now.effectiveDate !== validated.effectiveDate) throw new NotTodayError(now.effectiveDate, today);
+  throw new SessionNotFoundError();
 }
 
 /** A push job's id for a build (`push:<buildId>`): one per build, so sending the same build twice is one job. */

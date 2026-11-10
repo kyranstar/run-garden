@@ -508,6 +508,39 @@ describe("the save's day check for a sent build COROS moved", () => {
     expect((await rowOf(db, workoutId)).archivedAt).not.toBeNull();
   });
 
+  /** A slot built for today and not sent: Start goes through `lockProven` (its row and its build's lock, one batch). */
+  async function builtToday() {
+    const programId = await seedProgram(db, userId, `Built ${newId().slice(0, 6)}`);
+    const workoutId = await seedSlot(db, userId, programId, DAY);
+    const built = await buildSession(db, userId, workoutId, { checks: { tmj: { pre: 2, feelingOff: false } } }, { today: DAY, now: NOON, prefs });
+    return { workoutId, buildId: built.build!.buildId };
+  }
+  const lockedNow = async (buildId: string) => (await db.select().from(sessionBuilds).where(eq(sessionBuilds.id, buildId)))[0]!.lockedAt !== null;
+
+  it.each([
+    ["a guarded move to another day (RCR2a2)", async (id: string): Promise<void> => void (await planRoute(id, "move", { toDate: TOMORROW, toTime: "18:00" }))],
+    ["a remove (the lockProven half of 1def6eef)", async (id: string): Promise<void> => void (await planRoute(id, "remove" as never))],
+  ] as const)("%s landing at an unsent Start's last read: the Start is refused — never a started row off the day it checked, nothing locked", async (_what, land) => {
+    const { workoutId, buildId } = await builtToday();
+    gates.restore = async () => {
+      await land(workoutId);
+    };
+    await expect(startSession(db, userId, workoutId, buildId, NOON)).rejects.toThrow();
+    const row = await rowOf(db, workoutId);
+    expect(row.contentState).not.toBe("started");
+    expect(await lockedNow(buildId)).toBe(false);
+  });
+
+  it("a move landing at a sent Start's last read: refused, the row on its new day and not started", async () => {
+    const { workoutId, buildId } = await sentSlot({ verified: true });
+    gates.restore = async () => {
+      expect((await planRoute(workoutId, "move", { toDate: TOMORROW, toTime: "18:00" })).status).toBe(200);
+    };
+    await expect(startSession(db, userId, workoutId, buildId, NOON)).rejects.toThrow();
+    expect(await rowOf(db, workoutId)).toMatchObject({ effectiveDate: TOMORROW });
+    expect((await rowOf(db, workoutId)).contentState).not.toBe("started");
+  });
+
   it("HAZARD, as it stands (JOINT §3.2; the guard neither causes nor stops it): Discard on a sent build, then a move: the move unsends it and the phone's save answers 422 for good", async () => {
     const { workoutId, buildId, build } = await sentSlot({ verified: true });
     await startSession(db, userId, workoutId, buildId, NOON);
