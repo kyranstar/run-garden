@@ -234,6 +234,18 @@ describe("a cookie and a device token on one request", () => {
   });
 });
 
+describe("delete-all", () => {
+  it("by cookie removes the account's devices: the token is no device after (401 unauthenticated)", async () => {
+    const { token } = await seedDevice(w.db, w.userId);
+    const { userId: other } = await makeTestUser(w.db);
+    await seedDevice(w.db, other);
+    const a = await w.call("POST", "/api/settings/delete-all", { body: { confirm: "delete everything" } });
+    expect(a.status, a.text).toBe(200);
+    expect((await w.db.select().from(nativeDevices)).map((d) => d.userId)).toEqual([other]);
+    expect((await w.call("GET", `/api/sessions/${slot}`, { bearer: token })).json).toEqual({ error: "unauthenticated" });
+  });
+});
+
 describe("the kill switch is a Worker secret", () => {
   it("no wrangler config declares NATIVE_DEVICES (a declared var is reset by the next deploy; a secret persists)", () => {
     for (const file of ["../wrangler.toml", "../wrangler.dev.toml", "../wrangler.copier.toml", "../../web/e2e/fixture-stack.sh"]) {
