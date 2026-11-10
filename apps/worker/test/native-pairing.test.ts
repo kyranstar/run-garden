@@ -390,7 +390,10 @@ describe("device management is cookie only", () => {
     expect((await w.call("POST", "/api/native/pairings", { body: {}, ...off })).status).toBe(404);
     expect((await w.call("POST", "/api/native/pair", { cookie: false, body: { code: "ABCDEFGH", label: "x" }, ...off })).status).toBe(404);
     expect((await w.call("POST", `/api/native/devices/${pending}/confirm`, { body: { check: "0000" }, ...off })).status).toBe(404);
-    expect((await w.call("GET", "/api/native/devices", off)).json).toMatchObject({ enabled: false, devices: [expect.objectContaining({ id: a.id }), expect.objectContaining({ id: pending })] });
+    // Both made at the same faked instant: the list's order between them is its ids', so the ids are compared as a set.
+    const listed = (await w.call("GET", "/api/native/devices", off)).json;
+    expect(listed.enabled).toBe(false);
+    expect(listed.devices.map((d: { id: string }) => d.id).sort()).toEqual([a.id, pending].sort());
     expect((await w.call("POST", "/api/native/devices/revoke-all", { body: {}, ...off })).json).toEqual({ ok: true, revoked: 2 });
     expect((await pairing())!.usedAt).toBe(nowInstant());
   });
