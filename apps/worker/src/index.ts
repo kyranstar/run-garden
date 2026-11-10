@@ -302,6 +302,15 @@ export const bridgeGone: Handler<AppContext> = (c) => c.body(null, 410);
 app.all("/api/devices/*", bridgeGone);
 app.all("*", serveAsset);
 
+/**
+ * Every (method, path) the app mounts, middleware included, in mount order — what `native-allowlist.test.ts` holds
+ * against the device scope, every method, so a route added later fails that test until it is classified. A function,
+ * because every named export of the entry module must be one (entry-exports.test.ts).
+ */
+export function mountedRoutes(): Array<{ method: string; path: string }> {
+  return app.routes.map((r) => ({ method: r.method, path: r.path }));
+}
+
 // ── Cron ─────────────────────────────────────────────────────────────────────
 
 /**
