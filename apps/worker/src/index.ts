@@ -46,6 +46,7 @@ import { templateRoutes } from "./routes/templates.js";
 import { musicRoutes } from "./routes/music.js";
 import { todayBodyRoutes } from "./routes/today-body.js";
 import { growthRoutes } from "./routes/growth.js";
+import { nativeRoutes } from "./routes/native.js";
 import { makeDb, chunkIds, type Db } from "./services/db.js";
 import { fixtureThreshold, fixtureWatchJob } from "./services/designed-runs.js";
 import { loadPreferences, syncCalendar } from "./services/calendar-sync.js";
@@ -154,6 +155,9 @@ app.route("/api/lifeos", lifeosRoutes);
 app.route("/api/saves", savesRoutes);
 // The same import as the owner sees it in Settings -> Saves: the session cookie, 404 unless SAVES_IMPORT.
 app.route("/api/my-saves", mySavesRoutes);
+// Native device sign-in (SLICE-CONTRACT revision 2 §10): pairing and the laptop's devices, and the phone's own reads.
+// Not under /api/devices: that is the deleted bridge's 410, below.
+app.route("/api/native", nativeRoutes);
 // The parity harness: 404 unless staging or PARITY_ENABLED, then requireUser.
 // Its DTO hash calls this same app in-process, as the caller.
 app.route("/api/admin", adminRoutes((req, env, ctx) => app.fetch(req, env, ctx)));

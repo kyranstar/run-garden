@@ -8,6 +8,13 @@ export async function sha256Hex(data: string | Uint8Array): Promise<string> {
   return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
 }
 
+/** HMAC-SHA256 of `message` under `key` (both UTF-8), as lower-case hex. */
+export async function hmacSha256Hex(key: string, message: string): Promise<string> {
+  const k = await crypto.subtle.importKey("raw", enc.encode(key) as BufferSource, { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+  const mac = await crypto.subtle.sign("HMAC", k, enc.encode(message) as BufferSource);
+  return [...new Uint8Array(mac)].map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
 export function b64urlEncode(bytes: Uint8Array): string {
   let bin = "";
   for (const b of bytes) bin += String.fromCharCode(b);
