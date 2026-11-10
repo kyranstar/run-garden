@@ -70,10 +70,22 @@ export interface NativeWorld {
 }
 
 /** A world whose app mounts `mount` (path → routes). */
-export async function nativeWorld(mount: Array<[string, Hono<AppContext>]>, opts: { env?: Partial<Env>; db?: Db } = {}): Promise<NativeWorld> {
+export async function nativeWorld(
+  mount: Array<[string, Hono<AppContext>]>,
+  opts: { env?: Partial<Env>; db?: Db; onStatement?: (sql: string) => void } = {},
+): Promise<NativeWorld> {
   const statements: string[] = [];
   const binds: unknown[][] = [];
-  const db = opts.db ?? makeTestDb({ boundVariableCap: 100, onStatement: (s) => void statements.push(s), onBind: (_s, p) => void binds.push(p) });
+  const db =
+    opts.db ??
+    makeTestDb({
+      boundVariableCap: 100,
+      onStatement: (s) => {
+        statements.push(s);
+        opts.onStatement?.(s);
+      },
+      onBind: (_s, p) => void binds.push(p),
+    });
   const { userId } = await makeTestUser(db, { timezone: "America/Los_Angeles" });
   const [user] = await db.select().from(users).where(eq(users.id, userId));
   const email = user!.email;
