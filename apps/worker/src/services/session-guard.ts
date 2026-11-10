@@ -9,9 +9,17 @@ import { PROVISIONAL_KIND, PROVISIONAL_KIND_PATH, pushJobId, SETTLED_PUSH, UNSTA
  * and a session under way isn't moved out from under the device playing it. It is a server rule because old cached clients and
  * direct calls reach these routes too. Held to it, each at its read and in its write: the athlete's move, skip and remove;
  * the coach's ops, the designer's and the thread's (the applier's own read, `stillOpen` on each write); a plan's bulk archives;
- * the swap; sync-note Undo; the Calendar's drag (its event put back); and the day's placement (a started session pinned).
- * Not held to it: reconcile and the sweep (they resolve, never move), the retries (a row's own date), restore and repairs,
- * and the COROS read for a session under way (its guard follows the session's save days; a done one keeps its day).
+ * the swap; sync-note Undo; the Calendar's drag (its event put back); the day's placement (a started session pinned); a Start
+ * (refused once its session is archived); and the COROS read (a done or started session keeps its day). Not held to it:
+ * reconcile and the sweep (they resolve, never move), the retries (a row's own date), restore and repairs.
+ *
+ * WHAT IS ATOMIC, and only this: a guarded move, a re-time, an ease, a plan's archive slice (its way off the watch included)
+ * and a day's placement are each one D1 batch. Skip and remove are one guarded statement (the row's write, held to the row as
+ * read); their tails run after it, each on its own — remove's queued writes settled, its suppression, its intent, the copy's
+ * way off the watch; skip's way off. A fault in a tail never reaches a protected session (the guarded write already refused
+ * one), but it is NOT recovered: a retry finds the row skipped or removed and does nothing, and the next sync doesn't finish
+ * it (RC boundary 5, the probe in the migration's rc/ folder: the copy can stay on the watch, and a remove without its
+ * suppression can be un-archived by the next COROS read).
  *
  * COMPLETED: moving the row re-dates a credit the garden already walked. Moved ahead the walk credits it again; moved back a
  * later replay loses it (the owner's garden is not rebuilt to repair either).
