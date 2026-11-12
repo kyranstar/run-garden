@@ -28,11 +28,12 @@
  * profile that is not switched on. Everything engine-shaped lives in `services/session-build.ts`. A restore in
  * progress is refused (423) by `requireUser` before any write runs.
  *
- * A DEVICE'S READS ARE PURE READS (the phone's read contract, LifeOS migration kit v0.10). The web's `GET /:workoutId` and
- * `GET /:workoutId/review-basis` write a course's outline due today as they open it; a paired phone's (a request
- * `requireUser`'s device branch signed in with its token — never a header the client sets) answers 409 `not_written` for
- * any unwritten course outline, due or not, and writes nothing (`loadSession`'s `readOnly`). Every other row answers the
- * phone as it answers the web. The phone's day says beforehand which rows those are (`written`, routes/native.ts).
+ * A DEVICE NEVER WRITES AN OUTLINE (the phone's read contract, LifeOS migration kit v0.10). The web's `GET /:workoutId`,
+ * `GET /:workoutId/review-basis` and `POST /:workoutId/build` write a course's outline due today as they open it; a paired
+ * phone's (a request `requireUser`'s device branch signed in with its token — never a header the client sets) answers 409
+ * `not_written` for any unwritten course outline, due or not, and writes nothing (`refuseUnwritten`): no outline, no build
+ * or preview, no note. Every other row answers the phone as it answers the web. The phone's day says beforehand which rows
+ * those are (`written`, routes/native.ts). Start never writes an outline (it locks a build, and an outline has none).
  *
  * A DOCUMENT WORKOUT (a Studio or template row, Stage 2 spec §10) builds from its document, not the engine: the build
  * carries `fromDoc` (its revision, the day's swaps, what is still blocked). Start and Send re-gate it with the day's
@@ -168,17 +169,17 @@ async function refusal(c: Context<AppContext>, e: unknown): Promise<Response> {
 }
 
 /**
- * A pure read (the header's A DEVICE'S READS ARE PURE READS): the request was signed in by a device token. `device` is set
- * only by `requireUser`'s device branch, after the token is checked, so no header a client sends can set or clear it.
+ * The request was signed in by a device token (the header's A DEVICE NEVER WRITES AN OUTLINE): `device` is set only by
+ * `requireUser`'s device branch, after the token is checked, so no header a client sends can set or clear it.
  */
-const pureRead = (c: Context<AppContext>): boolean => c.get("device") !== undefined;
+const byDevice = (c: Context<AppContext>): boolean => c.get("device") !== undefined;
 
 sessionRoutes.get("/:workoutId", async (c) => {
   const db = c.get("db");
   const userId = c.get("userId");
   const prefs = await loadPreferences(db, userId);
   try {
-    return c.json(await withWatch(c, await loadSession(db, userId, c.req.param("workoutId"), todayInZone(prefs.timezone), { readOnly: pureRead(c) })));
+    return c.json(await withWatch(c, await loadSession(db, userId, c.req.param("workoutId"), todayInZone(prefs.timezone), { refuseUnwritten: byDevice(c) })));
   } catch (e) {
     return refusal(c, e);
   }
@@ -216,7 +217,7 @@ sessionRoutes.get("/:workoutId/review-basis", async (c) => {
   const userId = c.get("userId");
   const prefs = await loadPreferences(db, userId);
   try {
-    return c.json(await reviewBasis(db, userId, c.req.param("workoutId"), { today: todayInZone(prefs.timezone), unit: prefs.weightUnit, readOnly: pureRead(c) }));
+    return c.json(await reviewBasis(db, userId, c.req.param("workoutId"), { today: todayInZone(prefs.timezone), unit: prefs.weightUnit, refuseUnwritten: byDevice(c) }));
   } catch (e) {
     return refusal(c, e);
   }
@@ -242,7 +243,7 @@ sessionRoutes.post("/:workoutId/build", async (c) => {
   const now = nowInstant();
   try {
     // With the env, the day's build goes to the mirror (the watch mirrors the plan §3.3): handed over, replaced or pushed.
-    const { session, calendarChanged } = await buildSessionOutcome(db, userId, c.req.param("workoutId"), parsed.data, { today, now, prefs, env: c.env });
+    const { session, calendarChanged } = await buildSessionOutcome(db, userId, c.req.param("workoutId"), parsed.data, { today, now, prefs, env: c.env }, { refuseUnwritten: byDevice(c) });
     // A new build of the day renames and resizes the row: the calendar picks it up through the existing
     // reconciler. A stored build returned unchanged (or a preview) changed nothing it shows.
     if (calendarChanged) waitUntilSafe(c, syncCalendar(db, c.env, userId));

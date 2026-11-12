@@ -9,6 +9,9 @@
  *  - A DEVICE's `GET /api/sessions/:id` and `GET /api/sessions/:id/review-basis` of an unwritten course outline answer
  *    409 `not_written` and write nothing — no row, no revision, no `course_session_refused` note — due today or not,
  *    whatever `/today` said a moment before and whether or not it was asked. The cookie (the web) writes it as before.
+ *  - So does a device's `POST /api/sessions/:id/build {}` (no build, no outline written, no note); the web's Build is as it
+ *    was, and so is a device's Build of every other row — status, body and statements. A device's Start never reached the
+ *    outline's writer: it answers an outline as it did (no build to lock), writing nothing.
  *
  * Rows of every kind on one day: a Studio session, a template's, a course's outline due today, a course's session already
  * written, an engine programme slot, an imported run, a coach-designed run, a paused course's outline, an outline of a
@@ -28,7 +31,7 @@ vi.mock("../src/services/calendar-sync.js", async (importOriginal) => ({
 
 import { eq } from "drizzle-orm";
 import { schema } from "@rg/database";
-import { courseConfigSchema, newId, type CourseConfig, type UserPreferences, type WorkoutDoc } from "@rg/domain";
+import { courseConfigSchema, newId, type CourseConfig, type WorkoutDoc } from "@rg/domain";
 import { nativeRoutes } from "../src/routes/native.js";
 import { sessionRoutes } from "../src/routes/sessions.js";
 import { templateRoutes } from "../src/routes/templates.js";
@@ -50,11 +53,8 @@ const WED = "2026-10-07";
 const NOW = "2026-10-05T19:00:00.000Z";
 const WED_NOON = "2026-10-07T19:00:00.000Z";
 
-let w: NativeWorld;
-let prefs: UserPreferences;
-let token: string;
 /** The day's rows, by what they are. */
-let ids: {
+interface DayIds {
   studio: string;
   template: string;
   dueOutline: string;
@@ -66,24 +66,32 @@ let ids: {
   pausedOutline: string;
   goneDefinition: string;
   goneProgram: string;
-};
-let dueCourse: string;
+}
 
-beforeEach(async () => {
-  vi.useFakeTimers({ toFake: ["Date"] });
-  vi.setSystemTime(new Date(NOW));
-  w = await nativeWorld([
+let w: NativeWorld;
+let token: string;
+let ids: DayIds;
+
+/** A world with the day seeded and a paired phone that has made its first request. */
+async function world(): Promise<{ w: NativeWorld; token: string; ids: DayIds }> {
+  const v = await nativeWorld([
     ["/api/native", nativeRoutes],
     ["/api/sessions", sessionRoutes],
     ["/api/workouts", workoutRoutes],
     ["/api/templates", templateRoutes],
   ]);
-  prefs = await loadPreferences(w.db, w.userId);
-  ({ token } = await seedDevice(w.db, w.userId));
-  ids = await seedDay();
+  const { token: t } = await seedDevice(v.db, v.userId);
+  const seeded = await seedDay(v);
   // The device's first request writes its last use (at most hourly, `touchDevice`); the clock stands still from here, so
   // no later request of the device writes it, and what a request writes is the route's alone.
-  expect((await w.call("GET", "/api/native/me", { bearer: token })).status).toBe(200);
+  expect((await v.call("GET", "/api/native/me", { bearer: t })).status).toBe(200);
+  return { w: v, token: t, ids: seeded };
+}
+
+beforeEach(async () => {
+  vi.useFakeTimers({ toFake: ["Date"] });
+  vi.setSystemTime(new Date(NOW));
+  ({ w, token, ids } = await world());
 });
 afterEach(() => {
   vi.restoreAllMocks();
@@ -116,49 +124,49 @@ async function course(db: Db, userId: string, config: Partial<CourseConfig> = {}
 }
 
 /** A document workout made on the laptop for today, as the web makes one. */
-async function made(doc: WorkoutDoc, time: string): Promise<string> {
-  const a = await w.call("POST", "/api/workouts", { body: { doc, date: MON, time, clientId: `slot-${newId()}` } });
+async function made(v: NativeWorld, doc: WorkoutDoc, time: string): Promise<string> {
+  const a = await v.call("POST", "/api/workouts", { body: { doc, date: MON, time, clientId: `slot-${newId()}` } });
   expect(a.status, a.text).toBe(201);
   return a.json.workout.id as string;
 }
 
 /** A row the import or the coach put on today: not an app session. */
-async function foreignRow(over: Partial<typeof plannedWorkouts.$inferInsert>): Promise<string> {
+async function foreignRow(v: NativeWorld, over: Partial<typeof plannedWorkouts.$inferInsert>): Promise<string> {
   const id = newId();
-  await w.db.insert(plannedWorkouts).values({
-    id, userId: w.userId, planId: "coros-plan", sourceWorkoutId: `coros-plan:${id}`, title: "Easy 30", category: "easy", sport: "run",
+  await v.db.insert(plannedWorkouts).values({
+    id, userId: v.userId, planId: "coros-plan", sourceWorkoutId: `coros-plan:${id}`, title: "Easy 30", category: "easy", sport: "run",
     originalPlanDate: MON, lastVerifiedCorosDate: MON, effectiveDate: MON, effectiveTime: "06:30", sourceContentFingerprint: `fp-${id}`,
     calendarBlockDurationSeconds: 1800, fallbackEstimatedDurationSeconds: 1800, createdAt: NOW, updatedAt: NOW, ...over,
   });
   return id;
 }
 
-async function seedDay(): Promise<typeof ids> {
-  const studio = await made(calmDoc({ title: "Studio hips" }), "07:00");
-  const saved = await w.call("POST", "/api/templates", { body: { name: "Saved hips", doc: calmDoc({ title: "Template hips" }) } });
+async function seedDay(v: NativeWorld): Promise<DayIds> {
+  const studio = await made(v, calmDoc({ title: "Studio hips" }), "07:00");
+  const saved = await v.call("POST", "/api/templates", { body: { name: "Saved hips", doc: calmDoc({ title: "Template hips" }) } });
   expect(saved.status, saved.text).toBe(201);
-  const used = await w.call("POST", `/api/templates/${saved.json.template.id}/use`, { body: {} });
-  const template = await made(used.json.doc as WorkoutDoc, "08:00");
+  const used = await v.call("POST", `/api/templates/${saved.json.template.id}/use`, { body: {} });
+  const template = await made(v, used.json.doc as WorkoutDoc, "08:00");
 
-  dueCourse = await course(w.db, w.userId);
-  const written = await course(w.db, w.userId, { time: "19:30" });
+  const dueCourse = await course(v.db, v.userId);
+  const written = await course(v.db, v.userId, { time: "19:30" });
   // The web opened that one today: written as session 1, an ordinary document workout from now on.
-  const opened = await w.call("GET", `/api/sessions/${slotId(written, MON)}`);
+  const opened = await v.call("GET", `/api/sessions/${slotId(written, MON)}`);
   expect([opened.status, opened.json.origin], opened.text).toEqual([200, "studio"]);
-  const paused = await course(w.db, w.userId, { time: "20:00" });
-  await w.db.update(programs).set({ pausedUntil: WED }).where(eq(programs.id, paused));
-  const gone = await course(w.db, w.userId, { time: "20:30" });
-  const [goneRow] = await w.db.select().from(programs).where(eq(programs.id, gone));
-  await w.db.update(programs).set({ config: { ...(goneRow!.config as object), course: "gone" } }).where(eq(programs.id, gone));
+  const paused = await course(v.db, v.userId, { time: "20:00" });
+  await v.db.update(programs).set({ pausedUntil: WED }).where(eq(programs.id, paused));
+  const gone = await course(v.db, v.userId, { time: "20:30" });
+  const [goneRow] = await v.db.select().from(programs).where(eq(programs.id, gone));
+  await v.db.update(programs).set({ config: { ...(goneRow!.config as object), course: "gone" } }).where(eq(programs.id, gone));
 
-  const engine = await seedSlot(w.db, w.userId, MON);
-  const orphan = await seedSlot(w.db, w.userId, MON);
-  const [orphanRow] = await w.db.select().from(plannedWorkouts).where(eq(plannedWorkouts.id, orphan));
-  await w.db.delete(programs).where(eq(programs.id, orphanRow!.planId));
+  const engine = await seedSlot(v.db, v.userId, MON);
+  const orphan = await seedSlot(v.db, v.userId, MON);
+  const [orphanRow] = await v.db.select().from(plannedWorkouts).where(eq(plannedWorkouts.id, orphan));
+  await v.db.delete(programs).where(eq(programs.id, orphanRow!.planId));
 
-  const importedRun = await foreignRow({ origin: null });
+  const importedRun = await foreignRow(v, { origin: null });
   const runDoc = JSON.stringify({ version: 1, title: "Easy 30", intent: { summary: "Easy", goals: [], focus: [], effort: "maintain" }, parts: [{ purpose: "run", format: "steady", items: [{ kind: "run", target: { durationSec: 1800 }, effort: "easy" }] }], source: { kind: "studio" } });
-  const coachRun = await foreignRow({ origin: "coach", contentState: "outline", planId: "coach-plan", workoutDoc: runDoc, workoutDocRev: 3, effectiveTime: "06:00" });
+  const coachRun = await foreignRow(v, { origin: "coach", contentState: "outline", planId: "coach-plan", workoutDoc: runDoc, workoutDocRev: 3, effectiveTime: "06:00" });
 
   return {
     studio,
@@ -246,9 +254,27 @@ describe("GET /api/native/today: written and docRev, beside every field it had",
   });
 });
 
-describe("a device's opening of an unwritten course outline: 409 not_written, and nothing written", () => {
-  const OUTLINES = ["dueOutline", "laterOutline", "pausedOutline", "goneDefinition"] as const;
+/** The unwritten course outlines: due today, a day ahead, a paused plan's today, a gone definition's today. */
+const OUTLINES = ["dueOutline", "laterOutline", "pausedOutline", "goneDefinition"] as const;
 
+/** The course's documents name a move the library doesn't hold: the day's judge refuses them (and logs by code). */
+function refusedByTheDay(): void {
+  vi.spyOn(console, "error").mockImplementation(() => undefined);
+  const real = INTRO_COURSE.sessionDoc;
+  vi.spyOn(INTRO_COURSE, "sessionDoc").mockImplementation((n, opts) => {
+    const doc = real(n, opts);
+    return { ...doc, parts: [{ ...doc.parts[0]!, items: [{ kind: "exercise", libraryId: "noSuchMove", dose: { sets: 1, holdSec: 60 } }] }] };
+  });
+}
+
+/** A request's statements past signing in (the device's row, or the cookie's session). */
+const pastSignIn = (s: string[]) => s.filter((q) => !/"(native_devices|sessions)"/.test(q));
+
+/** A written session brought back on its day as an outline (`program-slots.ts`'s revive), its revision number kept. */
+const reviveAsOutline = (id: string) =>
+  w.db.update(plannedWorkouts).set({ origin: "program", courseSession: null, workoutDoc: null, contentState: "outline", sourceContentFingerprint: "program" }).where(eq(plannedWorkouts.id, id));
+
+describe("a device's opening of an unwritten course outline: 409 not_written, and nothing written", () => {
   for (const which of OUTLINES) {
     it(`GET /api/sessions/:id — ${which}`, async () => {
       const a = await writesNothing("GET", `/api/sessions/${ids[which]}`, { bearer: token });
@@ -262,13 +288,7 @@ describe("a device's opening of an unwritten course outline: 409 not_written, an
   }
 
   it("a document the day refuses: no course_session_refused note either (the web's opening leaves one)", async () => {
-    vi.spyOn(console, "error").mockImplementation(() => undefined);
-    // A document naming a move the library doesn't hold: the day's judge refuses it.
-    const real = INTRO_COURSE.sessionDoc;
-    vi.spyOn(INTRO_COURSE, "sessionDoc").mockImplementation((n, opts) => {
-      const doc = real(n, opts);
-      return { ...doc, parts: [{ ...doc.parts[0]!, items: [{ kind: "exercise", libraryId: "noSuchMove", dose: { sets: 1, holdSec: 60 } }] }] };
-    });
+    refusedByTheDay();
     for (const path of [`/api/sessions/${ids.dueOutline}`, `/api/sessions/${ids.dueOutline}/review-basis`]) {
       const a = await writesNothing("GET", path, { bearer: token });
       expect([a.status, a.json]).toEqual([409, NOT_WRITTEN]);
@@ -285,10 +305,7 @@ describe("a device's opening of an unwritten course outline: 409 not_written, an
   it("whatever /today said: a row read as written that has since become an outline is refused", async () => {
     expect((await todayRows()).find((s) => s.id === ids.writtenCourse)).toMatchObject({ written: true, docRev: 1 });
     // Its session retracted and brought back on its day (`program-slots.ts`'s revive): an outline again, its revision kept.
-    await w.db
-      .update(plannedWorkouts)
-      .set({ origin: "program", courseSession: null, workoutDoc: null, contentState: "outline", sourceContentFingerprint: "program" })
-      .where(eq(plannedWorkouts.id, ids.writtenCourse));
+    await reviveAsOutline(ids.writtenCourse);
     expect((await rowOf(ids.writtenCourse)).workoutDocRev).toBe(1);
 
     for (const path of [`/api/sessions/${ids.writtenCourse}`, `/api/sessions/${ids.writtenCourse}/review-basis`]) {
@@ -368,9 +385,8 @@ describe("written: true is exactly the rows a device opens as the web does", () 
         const web = await writesNothing("GET", path);
         expect([phone.status, phone.json], `${path} (${id})`).toEqual([web.status, web.json]);
         expect(phone.json, path).not.toEqual(NOT_WRITTEN);
-        // Statement for statement, past signing in (the device's row, or the cookie's session).
-        const route = (s: string[]) => s.filter((q) => !/"(native_devices|sessions)"/.test(q));
-        expect(route(phone.statements), path).toEqual(route(web.statements));
+        // Statement for statement, past signing in.
+        expect(pastSignIn(phone.statements), path).toEqual(pastSignIn(web.statements));
       }
     }
     // And every row it calls unwritten is refused to the device.
@@ -386,4 +402,126 @@ describe("written: true is exactly the rows a device opens as the web does", () 
     expect(phone.status, phone.text).toBe(200);
     expect(phone.json).toEqual((await w.call("GET", `/api/sessions/${ids.studio}/review-basis`)).json);
   });
+});
+
+describe("a device's Build of an unwritten course outline: 409 not_written, and nothing written", () => {
+  for (const which of OUTLINES) {
+    it(`POST /api/sessions/:id/build {} — ${which}`, async () => {
+      const a = await writesNothing("POST", `/api/sessions/${ids[which]}/build`, { bearer: token, body: {} });
+      expect([a.status, a.json]).toEqual([409, NOT_WRITTEN]);
+    });
+  }
+
+  it("a document the day refuses: not judged, no build, no course_session_refused note", async () => {
+    refusedByTheDay();
+    const a = await writesNothing("POST", `/api/sessions/${ids.dueOutline}/build`, { bearer: token, body: {} });
+    expect([a.status, a.json]).toEqual([409, NOT_WRITTEN]);
+    expect(INTRO_COURSE.sessionDoc).not.toHaveBeenCalled();
+    expect(await w.db.select().from(syncNotes)).toEqual([]);
+  });
+
+  it("whatever /today said: a row read as written that has since become an outline is refused", async () => {
+    expect((await todayRows()).find((s) => s.id === ids.writtenCourse)).toMatchObject({ written: true, docRev: 1 });
+    await reviveAsOutline(ids.writtenCourse);
+    const a = await writesNothing("POST", `/api/sessions/${ids.writtenCourse}/build`, { bearer: token, body: {} });
+    expect([a.status, a.json]).toEqual([409, NOT_WRITTEN]);
+  });
+
+  it("whatever /today said: a row read as unwritten that the hourly pass has since written is built, from its document", async () => {
+    expect((await todayRows()).find((s) => s.id === ids.dueOutline)).toMatchObject({ written: false });
+    expect((await writeCourseSessionsDue(w.db, new Date(NOW))).written).toBeGreaterThanOrEqual(1);
+    const a = await w.call("POST", `/api/sessions/${ids.dueOutline}/build`, { bearer: token, body: {} });
+    expect([a.status, a.json.origin, a.json.build?.fromDoc?.rev], a.text).toEqual([200, "studio", 1]);
+  });
+
+  it("asked straight, never having read /today: refused the same, by a device that has made no other request", async () => {
+    const fresh = await seedDevice(w.db, w.userId, { lastUsedAt: NOW });
+    const a = await writesNothing("POST", `/api/sessions/${ids.dueOutline}/build`, { bearer: fresh.token, body: {} });
+    expect([a.status, a.json]).toEqual([409, NOT_WRITTEN]);
+  });
+
+  it("another account's outline is not found, as before", async () => {
+    const other = await makeTestUser(w.db, { timezone: "America/Los_Angeles" });
+    const theirs = slotId(await course(w.db, other.userId), MON);
+    const a = await writesNothing("POST", `/api/sessions/${theirs}/build`, { bearer: token, body: {} });
+    expect([a.status, a.json]).toEqual([404, { error: "not_found" }]);
+  });
+});
+
+describe("the web's Build, unchanged", () => {
+  it("today's outline: written as session 1 and built from its document", async () => {
+    const web = await w.call("POST", `/api/sessions/${ids.dueOutline}/build`, { body: {} });
+    expect([web.status, web.json.origin, web.json.build?.fromDoc?.rev], web.text).toEqual([200, "studio", 1]);
+    const after = await rowOf(ids.dueOutline);
+    expect([after.origin, after.courseSession, after.workoutDocRev, after.contentState]).toEqual(["studio", 1, 1, "built"]);
+  });
+
+  it("a day ahead: a preview of the document it would be written with, the row left an outline", async () => {
+    const web = await w.call("POST", `/api/sessions/${ids.laterOutline}/build`, { body: {} });
+    expect([web.status, web.json.build?.version], web.text).toEqual([200, 0]);
+    const after = await rowOf(ids.laterOutline);
+    expect([after.origin, after.workoutDoc, after.contentState]).toEqual(["program", null, "outline"]);
+  });
+
+  it("a paused course's outline today: no build, and nothing written", async () => {
+    const web = await writesNothing("POST", `/api/sessions/${ids.pausedOutline}/build`, { body: {} });
+    expect([web.status, web.json.build, web.json.course?.held]).toEqual([200, null, "paused"]);
+  });
+
+  it("a document the day refuses: no build, and the note, as before", async () => {
+    refusedByTheDay();
+    const web = await w.call("POST", `/api/sessions/${ids.dueOutline}/build`, { body: {} });
+    expect([web.status, web.json.origin, web.json.build]).toEqual([200, "program", null]);
+    expect((await w.db.select().from(syncNotes)).map((n) => [n.kind, n.workoutId])).toEqual([["course_session_refused", ids.dueOutline]]);
+  });
+});
+
+/**
+ * Ids from a counter of each world's own (`use(name)` picks whose): two worlds made alike and asked alike hold the same ids —
+ * and so the engine's seed, a programme's id.
+ */
+function countedIds(): (name: string) => void {
+  const counts = new Map<string, number>();
+  let current = "";
+  vi.spyOn(globalThis.crypto, "randomUUID").mockImplementation(() => {
+    const n = (counts.get(current) ?? 0) + 1;
+    counts.set(current, n);
+    return `00000000-0000-4000-8000-${String(n).padStart(12, "0")}` as ReturnType<Crypto["randomUUID"]>;
+  });
+  return (name) => void (current = name);
+}
+
+describe("a device's Build of any other row: the web's, status, body and statements", () => {
+  it("in two worlds made alike, the device's Build of each row answers as the cookie's does, statement for statement", async () => {
+    const use = countedIds();
+    use("phone");
+    const phone = await world();
+    use("web");
+    const web = await world();
+    expect(web.ids).toEqual(phone.ids);
+    for (const kind of ["studio", "template", "writtenCourse", "engine", "goneProgram", "importedRun", "coachRun"] as const) {
+      use("phone");
+      const a = await phone.w.call("POST", `/api/sessions/${phone.ids[kind]}/build`, { bearer: phone.token, body: {} });
+      use("web");
+      const b = await web.w.call("POST", `/api/sessions/${web.ids[kind]}/build`, { body: {} });
+      expect([a.status, a.json], kind).toEqual([b.status, b.json]);
+      expect(a.json, kind).not.toEqual(NOT_WRITTEN);
+      expect(pastSignIn(a.statements), kind).toEqual(pastSignIn(b.statements));
+    }
+  });
+});
+
+describe("a device's Start of an unwritten outline never reached the outline's writer: as it was, nothing written", () => {
+  const ANSWERS = {
+    dueOutline: { error: "not_built" },
+    laterOutline: { error: "not_today", date: WED, today: MON },
+    pausedOutline: { error: "not_built" },
+    goneDefinition: { error: "not_built" },
+  } as const;
+  for (const which of OUTLINES) {
+    it(`POST /api/sessions/:id/start — ${which}`, async () => {
+      const a = await writesNothing("POST", `/api/sessions/${ids[which]}/start`, { bearer: token, body: { buildId: "a-build" } });
+      expect([a.status, a.json]).toEqual([409, ANSWERS[which]]);
+    });
+  }
 });

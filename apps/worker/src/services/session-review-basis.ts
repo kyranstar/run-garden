@@ -400,10 +400,10 @@ export async function reviewBasis(
   db: Db,
   userId: string,
   workoutId: string,
-  ctx: { today: string; unit: WeightUnit; readOnly?: boolean | undefined },
+  ctx: { today: string; unit: WeightUnit; refuseUnwritten?: boolean | undefined },
 ): Promise<ReviewBasis> {
-  // `readOnly` (a device's): `loadSession`'s pure read, which refuses an unwritten course outline rather than write it.
-  const session = await loadSession(db, userId, workoutId, ctx.today, { readOnly: ctx.readOnly });
+  // `refuseUnwritten` (a device's): `loadSession`'s pure read, which refuses an unwritten course outline rather than write it.
+  const session = await loadSession(db, userId, workoutId, ctx.today, { refuseUnwritten: ctx.refuseUnwritten });
   const build = session.build;
   if (!build) throw new NotBuiltError();
   const [slot] = await db

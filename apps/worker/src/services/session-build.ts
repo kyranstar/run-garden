@@ -434,7 +434,7 @@ export class NotBuiltError extends Error {
   }
 }
 
-/** A pure read (`loadSession`'s `readOnly`, a device's opening) of an unwritten course outline, which only an opening that writes it opens. */
+/** A device's opening or Build (`refuseUnwritten`) of an unwritten course outline, which only an opening that writes it opens. */
 export class NotWrittenError extends Error {
   constructor() {
     super("not_written");
@@ -1098,24 +1098,19 @@ async function readResponse(db: Db, userId: string, row: SlotRow, today: string,
  * has only a preview to serve, and it isn't served: it may be of a dose the sessions done or the easing have since moved on
  * from, and only computing it says, which is the sheet's own build. So its builds aren't read.
  *
- * A PURE READ (`readOnly`: a device's opening, the phone's read contract): an unwritten course outline, due or not, is refused
- * (`NotWrittenError`) instead of written — the same `courseOf` that alone lets an opening write — and nothing else here
- * writes, so the read writes nothing at all: no row, no revision, no refusal note. Every other row reads as the web's
- * opening reads it, statement for statement. The row is read as it stands now, whatever the phone's day said of it.
+ * A PURE READ (`refuseUnwritten`: a device's opening, the phone's read contract): an unwritten course outline, due or not, is
+ * refused (`NotWrittenError`, `openCourseOutline`) instead of written, and nothing else here writes, so the read writes
+ * nothing at all: no row, no revision, no refusal note. Every other row reads as the web's opening reads it, statement for
+ * statement. The row is read as it stands now, whatever the phone's day said of it.
  */
 export async function loadSession(
   db: Db,
   userId: string,
   workoutId: string,
   today: string,
-  { readOnly = false }: { readOnly?: boolean | undefined } = {},
+  { refuseUnwritten = false }: { refuseUnwritten?: boolean | undefined } = {},
 ): Promise<SessionResponse> {
-  const slot = await loadSlot(db, userId, workoutId);
-  if (readOnly) {
-    if (await courseOf(db, userId, slot)) throw new NotWrittenError();
-    return readResponse(db, userId, slot, today);
-  }
-  const { row, course } = await openCourseOutline(db, userId, slot, { today });
+  const { row, course } = await openCourseOutline(db, userId, await loadSlot(db, userId, workoutId), { today }, { refuseUnwritten });
   return readResponse(db, userId, row, today, course ? [] : undefined);
 }
 
@@ -2144,6 +2139,11 @@ async function refuseGatedSnapshot(db: Db, userId: string, row: SlotRow, sent: B
  * `SessionLockedError` (carrying the locked session), `NotTodayError`, `UnknownProfileError`, and for a document
  * workout `NoDocumentError` and `DocTooLargeRefusal`. A course's outline never reaches the engine: today's is written and
  * goes on as a document row, one ahead previews, and one that can't be either answers as it stands, with no build.
+ *
+ * `refuseUnwritten` (a device's Build, the phone's read contract): an unwritten course outline that gets as far as its opening
+ * — today's or ahead, due or not — is refused (`NotWrittenError`) and nothing is written: no outline, no build, no preview,
+ * no check, no note. The refusals before it (not found, locked, a day gone) answer as they did. Every other row builds as the
+ * web's Build does, statement for statement: the refusal rides on reads the Build makes anyway.
  */
 export async function buildSessionOutcome(
   db: Db,
@@ -2151,6 +2151,7 @@ export async function buildSessionOutcome(
   workoutId: string,
   req: BuildRequest,
   ctx: BuildCtx,
+  { refuseUnwritten = false }: { refuseUnwritten?: boolean | undefined } = {},
 ): Promise<BuildOutcome> {
   const loaded = await loadSlot(db, userId, workoutId);
   const builds = await loadBuilds(db, userId, workoutId);
@@ -2160,8 +2161,12 @@ export async function buildSessionOutcome(
   }
   if (loaded.effectiveDate < ctx.today) throw new NotTodayError(loaded.effectiveDate, ctx.today);
   // An outline's preview can't be computed afresh now, and a stale dose is worse than none (`loadSession`).
-  if (await restoreInProgress(db, userId)) return { session: await readResponse(db, userId, loaded, ctx.today, (await courseOf(db, userId, loaded)) ? [] : builds), calendarChanged: false };
-  const { row, course } = await openCourseOutline(db, userId, loaded, ctx, { asked: req.checks, restoreLooked: true });
+  if (await restoreInProgress(db, userId)) {
+    const outline = await courseOf(db, userId, loaded);
+    if (outline && refuseUnwritten) throw new NotWrittenError();
+    return { session: await readResponse(db, userId, loaded, ctx.today, outline ? [] : builds), calendarChanged: false };
+  }
+  const { row, course } = await openCourseOutline(db, userId, loaded, ctx, { asked: req.checks, restoreLooked: true, refuseUnwritten });
   if (course) {
     const ahead = row.effectiveDate > ctx.today ? await coursePreviewDoc(db, userId, course) : null;
     if (!ahead) {

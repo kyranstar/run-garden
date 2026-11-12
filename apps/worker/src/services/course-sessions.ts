@@ -67,7 +67,7 @@ import { separateDayCollisions } from "./day-placement.js";
 import { dayValidateCtx, judgeDoc } from "./doc-build.js";
 import { markMirrorOwedIf } from "./mirror-owed.js";
 import { courseSessionsDone, pausedOn } from "./program-slots.js";
-import { activeProfilesOf, bookedSeconds, loadSlot, slotChecks, UnknownProfileError, type BuildCtx, type CheckAnswer } from "./session-build.js";
+import { activeProfilesOf, bookedSeconds, loadSlot, NotWrittenError, slotChecks, UnknownProfileError, type BuildCtx, type CheckAnswer } from "./session-build.js";
 import { postSyncNote } from "./sync-notes.js";
 import { revisionInsert, updateDocColumns } from "./workout-doc-store.js";
 
@@ -88,7 +88,7 @@ const isOutline = (row: Pick<SlotRow, "origin" | "contentState">): boolean => ro
 /**
  * AN UNWRITTEN COURSE OUTLINE, from the row and its plan's kind as one read holds them (null: no plan of the account's by
  * that id): exactly the rows `courseOf` finds a course for, and so the only rows an opening can write (`openCourseOutline`),
- * due or not. The phone's day says so of each row (`written`, routes/native.ts); a device's opening refuses them.
+ * due or not. The phone's day says so of each row (`written`, routes/native.ts); a device's opening and Build refuse them.
  */
 export const unwrittenCourseOutline = (row: Pick<SlotRow, "origin" | "contentState">, planKind: string | null): boolean => isOutline(row) && planKind === "course";
 
@@ -300,15 +300,24 @@ export interface OpenedOutline {
  * again and tries once more (the header's A LOST CLAIM). `asked`: the answers the request sent. `restoreLooked`: the caller
  * looked for a restore just now. No statement for a row that isn't a programme's, and none past its plan's read for one that
  * isn't due. `prefs` and `now` are read only for a write.
+ *
+ * `refuseUnwritten` (a device's opening or Build, the phone's read contract): an unwritten course outline, due or not, is
+ * refused (`NotWrittenError`) as soon as its plan's read finds it one, before anything is judged or written — no row, no
+ * revision, no note. Every other row opens as it does without it, statement for statement: the read is the same one.
  */
 export async function openCourseOutline(
   db: Db,
   userId: string,
   row: SlotRow,
   ctx: { today: string; now?: string; prefs?: UserPreferences },
-  { asked, restoreLooked }: { asked?: Record<string, CheckAnswer> | undefined; restoreLooked?: boolean } = {},
+  {
+    asked,
+    restoreLooked,
+    refuseUnwritten = false,
+  }: { asked?: Record<string, CheckAnswer> | undefined; restoreLooked?: boolean; refuseUnwritten?: boolean | undefined } = {},
 ): Promise<OpenedOutline> {
   const course = await courseOf(db, userId, row);
+  if (course && refuseUnwritten) throw new NotWrittenError();
   if (!course?.definition || !courseSessionDue(row, course.program, ctx.today)) return { row, course };
   const write: BuildCtx = { today: ctx.today, now: ctx.now ?? nowInstant(), prefs: ctx.prefs ?? (await loadPreferences(db, userId)) };
   const first = await writeDue(db, userId, row, course, course.definition, write, { asked, restoreLooked });
