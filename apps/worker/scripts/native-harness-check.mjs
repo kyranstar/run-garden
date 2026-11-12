@@ -98,7 +98,10 @@ const doc = {
 const made = await call("POST", "/api/workouts", { cookie: true, body: { doc, date: day, time: "23:30", clientId: `harness-${Date.now()}` } });
 check("the laptop makes today's session", made.status < 300, true);
 const id = made.json.workout.id;
-check("the phone's day lists it, trimmed", (await call("GET", "/api/native/today", { bearer: token })).json.sessions.find((s) => s.id === id) && Object.keys((await call("GET", "/api/native/today", { bearer: token })).json.sessions.find((s) => s.id === id)).sort(), ["category", "date", "id", "sport", "state", "time", "title"]);
+const listed4 = (await call("GET", "/api/native/today", { bearer: token })).json.sessions.find((s) => s.id === id);
+// `written` and `docRev`: the phone's read contract (kit v0.10), beside the fields it had.
+check("the phone's day lists it, trimmed", listed4 && Object.keys(listed4).sort(), ["category", "date", "docRev", "id", "sport", "state", "time", "title", "written"]);
+check("…written, at its document's revision 1", listed4 && [listed4.written, listed4.docRev], [true, 1]);
 check("GET /api/sessions/:id with the token: 200", (await call("GET", `/api/sessions/${id}`, { bearer: token })).status, 200);
 check("Build with an override: 403 out_of_scope", (await call("POST", `/api/sessions/${id}/build`, { bearer: token, body: { overrides: { mode: "build" } } })).json, { error: "out_of_scope" });
 const built = await call("POST", `/api/sessions/${id}/build`, { bearer: token, body: {} });
@@ -127,6 +130,30 @@ check("the same save again (an answer lost): same_payload", (await call("PUT", `
 check("the web sees it done", (await call("GET", `/api/sessions/${id}`, { cookie: true })).json.contentState, "done");
 check("one performed session, by the phone's id", sql(`select id, workout_id as w, activity_id as a from performed_sessions where workout_id = '${id}'`), [{ id: performedId, w: id, a: performedId }]);
 check("one live match, the app session's", sql(`select activity_id as a, method from workout_completion_matches where workout_id = '${id}' and undone_at is null`), [{ a: performedId, method: "app_session" }]);
+
+// 4b. The phone's read contract (kit v0.10) on local D1: a course's outline is unwritten, and the phone's opening of it is
+// refused 409 not_written and writes nothing — the row, its revisions and its notes as they were.
+const started = await call("POST", "/api/plans/courses", { cookie: true, body: { course: "posture-neck", weekdays: [0, 1, 2, 3, 4, 5, 6], time: "23:45" } });
+check("the laptop starts a course", started.status, 200);
+const [outline] = sql(
+  "select w.id, w.effective_date as date from planned_workouts w join programs p on p.id = w.plan_id and p.user_id = w.user_id " +
+    "where p.kind = 'course' and w.origin = 'program' and coalesce(w.content_state, 'outline') = 'outline' and w.archived_at is null order by w.effective_date, w.id limit 1",
+);
+check("…which places an unwritten outline", !!outline, true);
+if (outline) {
+  const trace = () =>
+    sql(
+      `select (select origin || ':' || coalesce(content_state, '-') || ':' || (workout_doc is null) || ':' || updated_at from planned_workouts where id = '${outline.id}') as row, ` +
+        `(select count(*) from workout_doc_revisions where workout_id = '${outline.id}') as revisions, (select count(*) from sync_notes where workout_id = '${outline.id}') as notes`,
+    )[0];
+  const before = trace();
+  check("the phone's GET of the outline: 409 not_written", (await call("GET", `/api/sessions/${outline.id}`, { bearer: token })).json, { error: "not_written" });
+  check("…and its review basis: 409 not_written", (await call("GET", `/api/sessions/${outline.id}/review-basis`, { bearer: token })).json, { error: "not_written" });
+  check("…and nothing was written: the row, its revisions, its notes", trace(), before);
+  if (outline.date === day) {
+    check("the phone's day lists today's outline as unwritten", (await call("GET", "/api/native/today", { bearer: token })).json.sessions.find((s) => s.id === outline.id)?.written, false);
+  }
+}
 
 // 5. More races on local D1: three codes (the mint bound is 5 a window, and this check mints 5 in all), each redeemed by
 // four requests at once — one device each, never two. Each new code lifts the redeem throttles, so each race starts clean.
