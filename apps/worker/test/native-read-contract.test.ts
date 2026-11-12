@@ -31,7 +31,7 @@ vi.mock("../src/services/calendar-sync.js", async (importOriginal) => ({
 
 import { eq } from "drizzle-orm";
 import { schema } from "@rg/database";
-import { courseConfigSchema, newId, type CourseConfig, type WorkoutDoc } from "@rg/domain";
+import { courseConfigSchema, newId, performedSessionSaveSchema, type CourseConfig, type WorkoutDoc } from "@rg/domain";
 import { nativeRoutes } from "../src/routes/native.js";
 import { sessionRoutes } from "../src/routes/sessions.js";
 import { templateRoutes } from "../src/routes/templates.js";
@@ -40,6 +40,7 @@ import { loadPreferences } from "../src/services/calendar-sync.js";
 import { writeCourseSessionsDue } from "../src/services/course-sessions.js";
 import type { Db } from "../src/services/db.js";
 import { placeSlots, slotId } from "../src/services/program-slots.js";
+import { buildSessionOutcome, NotWrittenError } from "../src/services/session-build.js";
 import { INTRO_COURSE } from "./course-fixture.js";
 import { calmDoc } from "./doc-workout-fixture.js";
 import { makeTestUser } from "./helpers.js";
@@ -524,4 +525,134 @@ describe("a device's Start of an unwritten outline never reached the outline's w
       expect([a.status, a.json]).toEqual([409, ANSWERS[which]]);
     });
   }
+});
+
+/** What the phone's outbox sends for a session of `workoutId` (the session-slice suite's `wire`): from its build, or none. */
+function saveBody(performedId: string, workoutId: string, build: Record<string, any> | null) {
+  const items = (build?.items ?? []) as Array<{ exerciseId: string; slotKey?: string }>;
+  return performedSessionSaveSchema.parse({
+    id: performedId, source: "app", sourceRef: null, workoutId, buildId: build?.buildId ?? null, localDate: build?.date ?? MON,
+    startedAt: "2026-10-05T18:00:00.000Z", endedAt: "2026-10-05T18:30:00.000Z", seconds: 1800, plannedSeconds: build?.plannedSeconds ?? null,
+    minutes: build?.minutes ?? null, mode: build?.mode ?? null, theme: build?.theme ?? null, locationId: build?.locationId ?? null,
+    blockRef: build?.blockRef ?? null, blockNumber: null, completed: true, stepsTotal: (build?.steps ?? []).length || null,
+    stepsDone: (build?.steps ?? []).length || null, movesDone: items.map((i) => ({ exerciseId: i.exerciseId, seconds: 120, ...(i.slotKey ? { slotKey: i.slotKey } : {}) })),
+    note: null, newMove: build?.newMove ?? null,
+    entries: items.length > 0 ? [{ exerciseId: items[0]!.exerciseId, implement: null, format: "straight", perSide: false, sets: [{ setIndex: 0, reps: 10, seconds: null, load: null }] }] : [],
+    checks: [], review: {},
+  });
+}
+
+/** Build `{}` and Start `{buildId}` of `id`, by the device (a bearer) or the web (none): the started build. */
+async function starts(v: NativeWorld, id: string, bearer?: string): Promise<Record<string, any>> {
+  const as = bearer === undefined ? {} : { bearer };
+  const built = await v.call("POST", `/api/sessions/${id}/build`, { ...as, body: {} });
+  expect(built.status, built.text).toBe(200);
+  const started = await v.call("POST", `/api/sessions/${id}/start`, { ...as, body: { buildId: built.json.build.buildId } });
+  expect(started.status, started.text).toBe(200);
+  return started.json.build;
+}
+
+describe("a device's save naming an unwritten course outline: 409 not_written, and nothing written", () => {
+  for (const which of OUTLINES) {
+    it(`PUT /api/sessions/performed/:id with no build — ${which}`, async () => {
+      const body = saveBody(newId(), ids[which], null);
+      const a = await writesNothing("PUT", `/api/sessions/performed/${body.id}`, { bearer: token, body });
+      expect([a.status, a.json]).toEqual([409, NOT_WRITTEN]);
+    });
+  }
+
+  it("whatever /today said: a row read as written that has since become an outline is refused, with its build or none", async () => {
+    expect((await todayRows()).find((s) => s.id === ids.writtenCourse)).toMatchObject({ written: true });
+    const build = await starts(w, ids.writtenCourse, token);
+    await reviveAsOutline(ids.writtenCourse);
+    for (const body of [saveBody(newId(), ids.writtenCourse, build), saveBody(newId(), ids.writtenCourse, null)]) {
+      const a = await writesNothing("PUT", `/api/sessions/performed/${body.id}`, { bearer: token, body });
+      expect([a.status, a.json]).toEqual([409, NOT_WRITTEN]);
+    }
+  });
+
+  it("a retry of a session already saved answers same_payload as before, even once its row has become an outline", async () => {
+    const body = saveBody(newId(), ids.writtenCourse, await starts(w, ids.writtenCourse, token));
+    const saved = await w.call("PUT", `/api/sessions/performed/${body.id}`, { bearer: token, body });
+    expect([saved.status, saved.json.status], saved.text).toEqual([200, "saved"]);
+    await reviveAsOutline(ids.writtenCourse);
+    const again = await writesNothing("PUT", `/api/sessions/performed/${body.id}`, { bearer: token, body });
+    expect([again.status, again.json]).toEqual([200, { status: "same_payload" }]);
+  });
+
+  it("another account's outline is not found, as before", async () => {
+    const other = await makeTestUser(w.db, { timezone: "America/Los_Angeles" });
+    const body = saveBody(newId(), slotId(await course(w.db, other.userId), MON), null);
+    const a = await writesNothing("PUT", `/api/sessions/performed/${body.id}`, { bearer: token, body });
+    expect([a.status, a.json]).toEqual([404, { error: "not_found" }]);
+  });
+
+  it("the web's save of one, unchanged: saved, and the outline completed as it stands", async () => {
+    const body = saveBody(newId(), ids.dueOutline, null);
+    const web = await w.call("PUT", `/api/sessions/performed/${body.id}`, { body });
+    expect([web.status, web.json.status], web.text).toEqual([200, "saved"]);
+    const after = await rowOf(ids.dueOutline);
+    expect([after.origin, after.contentState, after.completionState, after.courseSession, after.workoutDoc]).toEqual(["program", "done", "completed", 1, null]);
+  });
+});
+
+describe("a device's save of a written row: the web's, status, body and statements", () => {
+  it("in two worlds made alike, each row built, started and saved — and the save retried — answers as the cookie's does", async () => {
+    const use = countedIds();
+    use("phone");
+    const phone = await world();
+    use("web");
+    const web = await world();
+    for (const kind of ["studio", "template", "writtenCourse", "engine"] as const) {
+      use("phone");
+      const pb = await starts(phone.w, phone.ids[kind], phone.token);
+      use("web");
+      const wb = await starts(web.w, web.ids[kind]);
+      expect(pb, kind).toEqual(wb);
+      const body = saveBody(`p-${kind}`, phone.ids[kind], pb);
+      for (const attempt of ["save", "retry"]) {
+        use("phone");
+        const a = await phone.w.call("PUT", `/api/sessions/performed/${body.id}`, { bearer: phone.token, body });
+        use("web");
+        const b = await web.w.call("PUT", `/api/sessions/performed/${body.id}`, { body });
+        expect([a.status, a.json], `${kind} ${attempt}`).toEqual([b.status, b.json]);
+        expect(a.json.status, `${kind} ${attempt}`).toBe(attempt === "save" ? "saved" : "same_payload");
+        expect(pastSignIn(a.statements), `${kind} ${attempt}`).toEqual(pastSignIn(b.statements));
+      }
+    }
+  });
+});
+
+describe("Build's restore branch (reached only in a race: a device's POST is 423 at sign-in while a restore is marked)", () => {
+  it("refuses an unwritten outline there too, writing nothing; without the refusal, answers it as it stands", async () => {
+    await w.db.insert(schema.accountState).values({ userId: w.userId, restoreId: newId(), restoreStartedAt: NOW, updatedAt: NOW });
+    const ctx = { today: MON, now: NOW, prefs: await loadPreferences(w.db, w.userId) };
+    for (const which of ["dueOutline", "laterOutline"] as const) {
+      const before = snapshot();
+      await expect(buildSessionOutcome(w.db, w.userId, ids[which], {}, ctx, { refuseUnwritten: true }), which).rejects.toBeInstanceOf(NotWrittenError);
+      const web = await buildSessionOutcome(w.db, w.userId, ids[which], {}, ctx);
+      expect([web.session.origin, web.session.build, web.calendarChanged], which).toEqual(["program", null, false]);
+      expect(snapshot(), which).toEqual(before);
+    }
+    // A written row isn't refused: it answers as it stands while the restore runs, as the web's does.
+    const phone = await buildSessionOutcome(w.db, w.userId, ids.studio, {}, ctx, { refuseUnwritten: true });
+    expect(phone).toEqual(await buildSessionOutcome(w.db, w.userId, ids.studio, {}, ctx));
+  });
+});
+
+describe("the plan /today reads is the account's own", () => {
+  it("a row of this account whose plan id is another account's course is no outline of this account's course: written, and opened as it stands", async () => {
+    const other = await makeTestUser(w.db, { timezone: "America/Los_Angeles" });
+    const theirs = await course(w.db, other.userId);
+    const id = newId();
+    await w.db.insert(plannedWorkouts).values({
+      id, userId: w.userId, planId: theirs, sourceWorkoutId: id, title: "Borrowed", category: "yoga", sport: "yoga", originalPlanDate: MON, lastVerifiedCorosDate: "",
+      effectiveDate: MON, effectiveTime: "09:00", sourceContentFingerprint: "program", calendarBlockDurationSeconds: 1800, fallbackEstimatedDurationSeconds: 1800,
+      corosSyncState: "calendar_only", completionState: "scheduled", origin: "program", contentState: "outline", createdAt: NOW, updatedAt: NOW,
+    });
+    expect((await todayRows()).find((s) => s.id === id)).toMatchObject({ written: true, docRev: null });
+    const phone = await writesNothing("GET", `/api/sessions/${id}`, { bearer: token });
+    expect([phone.status, phone.json.contentState]).toEqual([200, "outline"]);
+    expect(phone.json).toEqual((await writesNothing("GET", `/api/sessions/${id}`)).json);
+  });
 });

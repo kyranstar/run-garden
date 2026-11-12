@@ -32,8 +32,10 @@
  * `GET /:workoutId/review-basis` and `POST /:workoutId/build` write a course's outline due today as they open it; a paired
  * phone's (a request `requireUser`'s device branch signed in with its token — never a header the client sets) answers 409
  * `not_written` for any unwritten course outline, due or not, and writes nothing (`refuseUnwritten`): no outline, no build
- * or preview, no note. Every other row answers the phone as it answers the web. The phone's day says beforehand which rows
- * those are (`written`, routes/native.ts). Start never writes an outline (it locks a build, and an outline has none).
+ * or preview, no note. Nor does its save complete one (`PUT /performed/:id` naming an unwritten outline: 409 `not_written`,
+ * after a retry of a session already saved is answered `same_payload`). Every other row answers the phone as it answers the
+ * web. The phone's day says beforehand which rows those are (`written`, routes/native.ts). Start never writes an outline
+ * (it locks a build, and an outline has none).
  *
  * A DOCUMENT WORKOUT (a Studio or template row, Stage 2 spec §10) builds from its document, not the engine: the build
  * carries `fromDoc` (its revision, the day's swaps, what is still blocked). Start and Send re-gate it with the day's
@@ -504,6 +506,7 @@ sessionRoutes.put("/performed/:id", async (c) => {
       now: nowInstant(),
       prefs,
       watchReviews: watchPushEnabled(c.env),
+      refuseUnwritten: byDevice(c),
     });
     if (outcome.status === "conflict") return c.json({ error: "conflict" }, 409);
     if (outcome.status === "slot_done") return c.json({ error: "slot_done" }, 409);

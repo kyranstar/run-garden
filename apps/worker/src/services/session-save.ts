@@ -86,7 +86,8 @@ import { chunkIds, insertBatches, runAtomically, type AtomicStatement, type Db }
 import { loadEngineContext, loadProgramState } from "./engine-inputs.js";
 import { gardenChangeStatement, REQUEST_GARDEN_STEP, resimulateFrom } from "./garden-sync.js";
 import { claimUserLock, releaseUserLock } from "./locks.js";
-import { engineDataFor, sentBuildIdOf, SessionNotFoundError, UNSTARTED_AT_PATH } from "./session-build.js";
+import { courseOf } from "./course-sessions.js";
+import { engineDataFor, NotWrittenError, sentBuildIdOf, SessionNotFoundError, UNSTARTED_AT_PATH } from "./session-build.js";
 import { sessionAnswerStatements } from "./session-answers.js";
 import { saveWatchReview } from "./session-watch-review.js";
 import { PENDING_HASH, removeWatchSessionStatements, WATCH_SOURCE } from "./watch-sets.js";
@@ -122,6 +123,12 @@ export interface SaveCtx {
    * absent — it is refused 422 as before Phase 3 (audit 3-B S-5); the outbox keeps the entry (Retry) for when it is on.
    */
   watchReviews?: boolean;
+  /**
+   * A device's save (the phone's read contract, kit v0.10): one naming an unwritten course outline (`courseOf`, what the
+   * phone's day calls `written: false`) is refused `NotWrittenError` (409 `not_written`) and writes nothing — after a retry
+   * is answered, so a session already saved still answers `same_payload`. Absent (the web's), the save is as it was.
+   */
+  refuseUnwritten?: boolean | undefined;
 }
 
 type SlotRow = typeof plannedWorkouts.$inferSelect;
@@ -443,7 +450,10 @@ export async function releaseMergeLocks(db: Db, userId: string, held: ReadonlyAr
   for (const { kind, token } of held) await releaseUserLock(db, userId, kind, token).catch(() => undefined);
 }
 
-/** `PUT /api/sessions/performed/:id`. Throws `InvalidSaveError` (422) and `SessionNotFoundError` (404). */
+/**
+ * `PUT /api/sessions/performed/:id`. Throws `InvalidSaveError` (422) and `SessionNotFoundError` (404); for a device's save of
+ * an unwritten course outline, `NotWrittenError` (409, `SaveCtx.refuseUnwritten`).
+ */
 export async function savePerformedSession(db: Db, userId: string, performedId: string, body: unknown, ctx: SaveCtx): Promise<SaveOutcome> {
   const parsed = performedSessionSaveSchema.safeParse(body);
   if (!parsed.success) throw new InvalidSaveError(parsed.error.issues);
@@ -487,6 +497,9 @@ export async function savePerformedSession(db: Db, userId: string, performedId: 
     .where(and(eq(plannedWorkouts.id, p.workoutId), eq(plannedWorkouts.userId, userId)))
     .limit(1);
   if (!slot || !appAuthoredRow(slot)) throw new SessionNotFoundError();
+  // A device's save of an unwritten course outline (`SaveCtx.refuseUnwritten`): refused before anything is written, its build
+  // named or not. No statement for a row that isn't a programme's outline, so every other save runs as it did.
+  if (ctx.refuseUnwritten && (await courseOf(db, userId, slot))) throw new NotWrittenError();
   // Ruling 2b-R7 as amended (audit 2b-A I-4): the session's day is the day its LOCKED build was built and started for
   // — or the next, for a session that ran past midnight — and never after tomorrow. A build started once and
   // un-started since counts too (ruling 2b-R19): another device's save made from it may drain after the Discard and a
