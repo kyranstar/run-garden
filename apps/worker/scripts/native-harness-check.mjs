@@ -133,8 +133,8 @@ check("one live match, the app session's", sql(`select activity_id as a, method 
 
 // 4b. The phone's read contract (kit v0.10) on local D1: a course's outline is unwritten, and the phone's opening of it is
 // refused 409 not_written and writes nothing — the row, its revisions and its notes as they were.
-const started = await call("POST", "/api/plans/courses", { cookie: true, body: { course: "posture-neck", weekdays: [0, 1, 2, 3, 4, 5, 6], time: "23:45" } });
-check("the laptop starts a course", started.status, 200);
+const courseStart = await call("POST", "/api/plans/courses", { cookie: true, body: { course: "posture-neck", weekdays: [0, 1, 2, 3, 4, 5, 6], time: "23:45" } });
+check("the laptop starts a course", courseStart.status, 200);
 const [outline] = sql(
   "select w.id, w.effective_date as date from planned_workouts w join programs p on p.id = w.plan_id and p.user_id = w.user_id " +
     "where p.kind = 'course' and w.origin = 'program' and coalesce(w.content_state, 'outline') = 'outline' and w.archived_at is null order by w.effective_date, w.id limit 1",
