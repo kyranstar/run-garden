@@ -85,6 +85,13 @@ export interface CourseOutline {
 /** An outline's row, by what makes it one: the slot's origin, with nothing built on it. */
 const isOutline = (row: Pick<SlotRow, "origin" | "contentState">): boolean => row.origin === "program" && (row.contentState === null || row.contentState === "outline");
 
+/**
+ * AN UNWRITTEN COURSE OUTLINE, from the row and its plan's kind as one read holds them (null: no plan of the account's by
+ * that id): exactly the rows `courseOf` finds a course for, and so the only rows an opening can write (`openCourseOutline`),
+ * due or not. The phone's day says so of each row (`written`, routes/native.ts); a device's opening refuses them.
+ */
+export const unwrittenCourseOutline = (row: Pick<SlotRow, "origin" | "contentState">, planKind: string | null): boolean => isOutline(row) && planKind === "course";
+
 /** The plan as a course, or null when it's another kind. Logs by code when a running course can't be made. */
 function courseOfPlan(program: ProgramRow): CourseOutline | null {
   if (program.kind !== "course") return null;

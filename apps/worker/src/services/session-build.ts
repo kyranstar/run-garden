@@ -434,6 +434,13 @@ export class NotBuiltError extends Error {
   }
 }
 
+/** A pure read (`loadSession`'s `readOnly`, a device's opening) of an unwritten course outline, which only an opening that writes it opens. */
+export class NotWrittenError extends Error {
+  constructor() {
+    super("not_written");
+  }
+}
+
 /**
  * Start named a build that is no longer the one the day's inputs make (audit I3): `session` is the fresh build, made
  * as `POST /build {}` makes it; `calendarChanged` when making it changed what the slot's calendar event shows.
@@ -1090,9 +1097,25 @@ async function readResponse(db: Db, userId: string, row: SlotRow, today: string,
  * due today is written first (`openCourseOutline`); a row that isn't a programme's reads no programme for it. An outline
  * has only a preview to serve, and it isn't served: it may be of a dose the sessions done or the easing have since moved on
  * from, and only computing it says, which is the sheet's own build. So its builds aren't read.
+ *
+ * A PURE READ (`readOnly`: a device's opening, the phone's read contract): an unwritten course outline, due or not, is refused
+ * (`NotWrittenError`) instead of written — the same `courseOf` that alone lets an opening write — and nothing else here
+ * writes, so the read writes nothing at all: no row, no revision, no refusal note. Every other row reads as the web's
+ * opening reads it, statement for statement. The row is read as it stands now, whatever the phone's day said of it.
  */
-export async function loadSession(db: Db, userId: string, workoutId: string, today: string): Promise<SessionResponse> {
-  const { row, course } = await openCourseOutline(db, userId, await loadSlot(db, userId, workoutId), { today });
+export async function loadSession(
+  db: Db,
+  userId: string,
+  workoutId: string,
+  today: string,
+  { readOnly = false }: { readOnly?: boolean | undefined } = {},
+): Promise<SessionResponse> {
+  const slot = await loadSlot(db, userId, workoutId);
+  if (readOnly) {
+    if (await courseOf(db, userId, slot)) throw new NotWrittenError();
+    return readResponse(db, userId, slot, today);
+  }
+  const { row, course } = await openCourseOutline(db, userId, slot, { today });
   return readResponse(db, userId, row, today, course ? [] : undefined);
 }
 

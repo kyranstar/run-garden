@@ -17,7 +17,9 @@
  * Both are worked out in the database as summaries (ruling 2b-R11; below): the same statements and a bounded number of
  * rows from the first session to the thousandth (review-basis-summary.test.ts).
  *
- * A read: nothing is written. 404 for a slot that is not this user's; 409 `not_built` before there is a build.
+ * A read: nothing is written past `loadSession`'s opening, which by the web writes a course's outline due today first, and by
+ * a device refuses an unwritten one (409 `not_written`) and writes nothing. 404 for a slot that is not this user's; 409
+ * `not_built` before there is a build.
  */
 import { and, eq, inArray, sql } from "drizzle-orm";
 import { exercisePrefs, plannedWorkouts, programs } from "@rg/database";
@@ -394,8 +396,14 @@ function weeklyGoalOf(program: { kind: string; config: unknown } | undefined): n
   return goal(adaptiveConfigSchema.safeParse(program?.config ?? {}).data?.weeklyGoal);
 }
 
-export async function reviewBasis(db: Db, userId: string, workoutId: string, ctx: { today: string; unit: WeightUnit }): Promise<ReviewBasis> {
-  const session = await loadSession(db, userId, workoutId, ctx.today);
+export async function reviewBasis(
+  db: Db,
+  userId: string,
+  workoutId: string,
+  ctx: { today: string; unit: WeightUnit; readOnly?: boolean | undefined },
+): Promise<ReviewBasis> {
+  // `readOnly` (a device's): `loadSession`'s pure read, which refuses an unwritten course outline rather than write it.
+  const session = await loadSession(db, userId, workoutId, ctx.today, { readOnly: ctx.readOnly });
   const build = session.build;
   if (!build) throw new NotBuiltError();
   const [slot] = await db

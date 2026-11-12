@@ -3,8 +3,9 @@
  * or `/api/plan/today` (403, native-gate.test.ts); it gets these:
  *
  *  - `GET /api/native/me`: `{userId, device: {label, expiresAt}}` — no email, no connections, no restore state;
- *  - `GET /api/native/today`: the day's training rows, each `{id, title, sport, category, date, time, state}` — no sleep,
- *    readiness, coach text, garden, email or connections. Rest rows, removed rows and other days are not in it.
+ *  - `GET /api/native/today`: the day's training rows, each `{id, title, sport, category, date, time, state}` and, since
+ *    kit v0.10, `written` and `docRev` (native-read-contract.test.ts) — no sleep, readiness, coach text, garden, email or
+ *    connections. Rest rows, removed rows and other days are not in it.
  *
  * The account is seeded with each of those things under a sentinel string, and the web's own reads are shown to carry
  * them, so their absence from the native reads is the trimming and not an empty account. The native reads don't even
@@ -114,8 +115,9 @@ describe("GET /api/native/today", () => {
     expect(a.json).toEqual({
       today,
       sessions: [
-        { id: rows.run, title: "Easy run", sport: "run", category: "easy", date: today, time: "07:30", state: "completed" },
-        { id: rows.lift, title: "Strength A", sport: "strength", category: "strength", date: today, time: "18:00", state: "scheduled" },
+        // `written` and `docRev`: kit v0.10's two fields, added after the rest (engine slots: written, no document).
+        { id: rows.run, title: "Easy run", sport: "run", category: "easy", date: today, time: "07:30", state: "completed", written: true, docRev: null },
+        { id: rows.lift, title: "Strength A", sport: "strength", category: "strength", date: today, time: "18:00", state: "scheduled", written: true, docRev: null },
       ],
     });
   });
@@ -125,7 +127,8 @@ describe("GET /api/native/today", () => {
     const a = await w.call("GET", "/api/native/today", { bearer: token });
     expect(keysOf(a.json).filter((k) => FORBIDDEN_KEYS.includes(k))).toEqual([]);
     for (const s of [w.email, SENTINELS.coach, SENTINELS.focus, "25217", "coros", "Rest", "Removed"]) expect(a.text, s).not.toContain(s);
-    expect(tablesOf(a.statements)).toEqual(["native_devices", "planned_workouts", "user_preferences", "users"]);
+    // `programs`: the plan's kind, joined into the rows' one statement for `written` (kit v0.10).
+    expect(tablesOf(a.statements)).toEqual(["native_devices", "planned_workouts", "programs", "user_preferences", "users"]);
   });
 
   it("answers a cookie the same rows", async () => {

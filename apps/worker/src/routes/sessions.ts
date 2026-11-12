@@ -28,6 +28,12 @@
  * profile that is not switched on. Everything engine-shaped lives in `services/session-build.ts`. A restore in
  * progress is refused (423) by `requireUser` before any write runs.
  *
+ * A DEVICE'S READS ARE PURE READS (the phone's read contract, LifeOS migration kit v0.10). The web's `GET /:workoutId` and
+ * `GET /:workoutId/review-basis` write a course's outline due today as they open it; a paired phone's (a request
+ * `requireUser`'s device branch signed in with its token — never a header the client sets) answers 409 `not_written` for
+ * any unwritten course outline, due or not, and writes nothing (`loadSession`'s `readOnly`). Every other row answers the
+ * phone as it answers the web. The phone's day says beforehand which rows those are (`written`, routes/native.ts).
+ *
  * A DOCUMENT WORKOUT (a Studio or template row, Stage 2 spec §10) builds from its document, not the engine: the build
  * carries `fromDoc` (its revision, the day's swaps, what is still blocked). Start and Send re-gate it with the day's
  * reading: 409 `gated` with the validator's `issues` when a move the day keeps out has no alternate to stand in (a
@@ -61,6 +67,7 @@ import {
   NoDocumentError,
   NotBuiltError,
   NotTodayError,
+  NotWrittenError,
   PerformedExistsError,
   recordCheck,
   RestoringError,
@@ -152,6 +159,7 @@ async function refusal(c: Context<AppContext>, e: unknown): Promise<Response> {
   if (e instanceof NotTodayError) return c.json({ error: "not_today", date: e.date, today: e.today }, 409);
   if (e instanceof SessionLockedError) return c.json({ error: "locked", session: await withWatch(c, e.session) }, 409);
   if (e instanceof NotBuiltError) return c.json({ error: "not_built" }, 409);
+  if (e instanceof NotWrittenError) return c.json({ error: "not_written" }, 409);
   if (e instanceof GatedError) return c.json({ error: "gated", issues: e.issues }, 409);
   if (e instanceof NoDocumentError) return c.json({ error: "no_document" }, 409);
   if (e instanceof DocTooLargeRefusal) return c.json({ error: "too_large", issues: e.issues }, 409);
@@ -159,12 +167,18 @@ async function refusal(c: Context<AppContext>, e: unknown): Promise<Response> {
   throw e;
 }
 
+/**
+ * A pure read (the header's A DEVICE'S READS ARE PURE READS): the request was signed in by a device token. `device` is set
+ * only by `requireUser`'s device branch, after the token is checked, so no header a client sends can set or clear it.
+ */
+const pureRead = (c: Context<AppContext>): boolean => c.get("device") !== undefined;
+
 sessionRoutes.get("/:workoutId", async (c) => {
   const db = c.get("db");
   const userId = c.get("userId");
   const prefs = await loadPreferences(db, userId);
   try {
-    return c.json(await withWatch(c, await loadSession(db, userId, c.req.param("workoutId"), todayInZone(prefs.timezone))));
+    return c.json(await withWatch(c, await loadSession(db, userId, c.req.param("workoutId"), todayInZone(prefs.timezone), { readOnly: pureRead(c) })));
   } catch (e) {
     return refusal(c, e);
   }
@@ -202,7 +216,7 @@ sessionRoutes.get("/:workoutId/review-basis", async (c) => {
   const userId = c.get("userId");
   const prefs = await loadPreferences(db, userId);
   try {
-    return c.json(await reviewBasis(db, userId, c.req.param("workoutId"), { today: todayInZone(prefs.timezone), unit: prefs.weightUnit }));
+    return c.json(await reviewBasis(db, userId, c.req.param("workoutId"), { today: todayInZone(prefs.timezone), unit: prefs.weightUnit, readOnly: pureRead(c) }));
   } catch (e) {
     return refusal(c, e);
   }

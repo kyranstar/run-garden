@@ -15,7 +15,8 @@
  *                                   failure alike is 401 `pair_failed`
  *   POST /sign-out                  its device token: its own row revoked
  *   GET  /me                        {userId, device: {label, expiresAt}} (§10.4, trimmed on the server)
- *   GET  /today                     {today, sessions}: the day's training rows only (§10.4)
+ *   GET  /today                     {today, sessions}: the day's training rows only (§10.4), each saying whether the phone
+ *                                   can open it (`written`) and its document's revision (`docRev`; kit v0.10)
  *
  * The kill switch (`NATIVE_DEVICES`, a secret): unless it is "1", minting, redeeming and confirming are 404 — the
  * device list and revocation answer either way, so the owner can always see and stop a device.
@@ -25,11 +26,12 @@
  * Confirm's wrong check numbers revoke the pending phone at CONFIRM_MAX_WRONG (409 `check_mismatch`, `revoked: true`).
  */
 import { Hono, type MiddlewareHandler } from "hono";
-import { and, eq, isNull, ne } from "drizzle-orm";
-import { plannedWorkouts } from "@rg/database";
+import { and, eq, isNull, ne, sql } from "drizzle-orm";
+import { plannedWorkouts, programs } from "@rg/database";
 import { nowInstant, todayInZone } from "@rg/domain";
 import { nativeDevicesEnabled } from "../env.js";
 import { loadPreferences } from "../services/calendar-sync.js";
+import { unwrittenCourseOutline } from "../services/course-sessions.js";
 import type { AppContext } from "../auth/middleware.js";
 import { requireUser } from "../auth/middleware.js";
 import {
@@ -120,6 +122,17 @@ const TIME = /^\d{2}:\d{2}$/;
  * The phone's day (§10.4), in place of `/api/plan/today`: only the day's training rows — id, title, sport, category,
  * date, time and state (`completionState`) — on the account's own clock. Rest rows and removed rows are not training;
  * no sleep, readiness, coach text, garden, email or connections, none of which is read. Timed rows by time, then untimed.
+ *
+ * Two more fields on each row (the phone's read contract, kit v0.10), every other as it was:
+ *  - `written`: false only for an UNWRITTEN COURSE OUTLINE (`unwrittenCourseOutline`: a programme's row with nothing on it
+ *    whose plan is a course), due today or not — the rows a device's `GET /api/sessions/:id` and its review basis refuse 409
+ *    `not_written`, and the only rows a web opening writes. True for every other row: a Studio or template workout, a
+ *    course's session already written, an engine programme slot (its opening reads; its build is the sheet's own Build),
+ *    an outline whose plan is gone, and a row that is no app session (an import's run, the coach's), which the session
+ *    routes answer 404 as before. Advice only: the session routes decide again from the row as it then stands.
+ *  - `docRev`: the row's document revision while it holds a document, else null (a revived outline keeps the number its
+ *    next write goes past, and holds no document). Read without the document's bytes.
+ * One statement still: the plan's kind is joined in.
  */
 nativeRoutes.get("/today", requireUser, async (c) => {
   const db = c.get("db");
@@ -134,8 +147,14 @@ nativeRoutes.get("/today", requireUser, async (c) => {
       date: plannedWorkouts.effectiveDate,
       time: plannedWorkouts.effectiveTime,
       state: plannedWorkouts.completionState,
+      origin: plannedWorkouts.origin,
+      contentState: plannedWorkouts.contentState,
+      planKind: programs.kind,
+      docRev: sql<number | null>`case when ${plannedWorkouts.workoutDoc} is not null then ${plannedWorkouts.workoutDocRev} end`,
     })
     .from(plannedWorkouts)
+    // `courseOf`'s read of the plan: this account's plan by the row's plan id.
+    .leftJoin(programs, and(eq(programs.id, plannedWorkouts.planId), eq(programs.userId, plannedWorkouts.userId)))
     .where(
       and(
         eq(plannedWorkouts.userId, userId),
@@ -145,7 +164,12 @@ nativeRoutes.get("/today", requireUser, async (c) => {
       ),
     );
   const sessions = rows
-    .map((r) => ({ ...r, time: TIME.test(r.time) ? r.time : null }))
+    .map(({ origin, contentState, planKind, docRev, ...r }) => ({
+      ...r,
+      time: TIME.test(r.time) ? r.time : null,
+      written: !unwrittenCourseOutline({ origin, contentState }, planKind),
+      docRev: docRev ?? null,
+    }))
     .sort((a, b) => (a.time === null) !== (b.time === null) ? (a.time === null ? 1 : -1) : (a.time ?? "").localeCompare(b.time ?? "") || a.id.localeCompare(b.id));
   return c.json({ today, sessions });
 });
