@@ -131,8 +131,8 @@ check("the web sees it done", (await call("GET", `/api/sessions/${id}`, { cookie
 check("one performed session, by the phone's id", sql(`select id, workout_id as w, activity_id as a from performed_sessions where workout_id = '${id}'`), [{ id: performedId, w: id, a: performedId }]);
 check("one live match, the app session's", sql(`select activity_id as a, method from workout_completion_matches where workout_id = '${id}' and undone_at is null`), [{ a: performedId, method: "app_session" }]);
 
-// 4b. The phone's read contract (kit v0.10) on local D1: a course's outline is unwritten, and the phone's opening and Build of
-// it are refused 409 not_written and write nothing — the row, its revisions, its builds and its notes as they were.
+// 4b. The phone's read contract (kit v0.10) on local D1: a course's outline is unwritten, and the phone's opening, Build and
+// save of it are refused 409 not_written and write nothing — the row, its revisions, builds, saves and notes as they were.
 const courseStart = await call("POST", "/api/plans/courses", { cookie: true, body: { course: "posture-neck", weekdays: [0, 1, 2, 3, 4, 5, 6], time: "23:45" } });
 check("the laptop starts a course", courseStart.status, 200);
 const [outline] = sql(
@@ -145,13 +145,19 @@ if (outline) {
     sql(
       `select (select origin || ':' || coalesce(content_state, '-') || ':' || (workout_doc is null) || ':' || updated_at from planned_workouts where id = '${outline.id}') as row, ` +
         `(select count(*) from workout_doc_revisions where workout_id = '${outline.id}') as revisions, (select count(*) from sync_notes where workout_id = '${outline.id}') as notes, ` +
-        `(select count(*) from session_builds where workout_id = '${outline.id}') as builds`,
+        `(select count(*) from session_builds where workout_id = '${outline.id}') as builds, (select count(*) from performed_sessions where workout_id = '${outline.id}') as saves`,
     )[0];
   const before = trace();
   check("the phone's GET of the outline: 409 not_written", (await call("GET", `/api/sessions/${outline.id}`, { bearer: token })).json, { error: "not_written" });
   check("…and its review basis: 409 not_written", (await call("GET", `/api/sessions/${outline.id}/review-basis`, { bearer: token })).json, { error: "not_written" });
   check("…and its Build {}: 409 not_written", (await call("POST", `/api/sessions/${outline.id}/build`, { bearer: token, body: {} })).json, { error: "not_written" });
-  check("…and nothing was written: the row, its revisions, its builds, its notes", trace(), before);
+  // A save naming it with no build (review finding 1): it would have completed the outline without a document.
+  const outlineSave = {
+    ...save, id: `harness-outline-${outline.id}`, workoutId: outline.id, buildId: null, localDate: outline.date, plannedSeconds: null, minutes: null, mode: null,
+    theme: null, locationId: null, blockRef: null, stepsTotal: null, stepsDone: null, movesDone: [], newMove: null, entries: [],
+  };
+  check("…and a save naming it, no build: 409 not_written", (await call("PUT", `/api/sessions/performed/${outlineSave.id}`, { bearer: token, body: outlineSave })).json, { error: "not_written" });
+  check("…and nothing was written: the row, its revisions, builds, saves and notes", trace(), before);
   if (outline.date === day) {
     check("the phone's day lists today's outline as unwritten", (await call("GET", "/api/native/today", { bearer: token })).json.sessions.find((s) => s.id === outline.id)?.written, false);
   }
