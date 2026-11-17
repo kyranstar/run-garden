@@ -532,6 +532,28 @@ describe("Move's from: a move made against a stale view is refused, for every ca
     expect(everything()).toEqual(laptop);
     expect(rowOf(id)).toMatchObject({ date: THU, time: "18:00" });
   });
+
+  it("skipped and then removed on the laptop: removed is what it says (404 not_found), before set aside (r2 N7)", async () => {
+    expect((await skip(id, null)).status).toBe(200);
+    const removed = await w.call("POST", `/api/plan/workouts/${id}/remove`, { body: {} });
+    expect(removed.status, removed.text).toBe(200);
+    expect(q(`select archived_at is not null as archived, completion_state as state from planned_workouts where id = ?`, id)).toEqual([{ archived: 1, state: "skipped" }]);
+    const before = everything();
+    const a = await move(id, { toDate: SAT, toTime: "18:15", from: { date: THU, time: "18:00" } });
+    expect([a.status, a.json]).toEqual([404, { error: "not_found", why: GONE_WORDS }]);
+    expect(everything()).toEqual(before);
+  });
+
+  it("the web's move audit is as it always was, with no seen; only a move sent with from records one (r2 N9)", async () => {
+    const audit = () => q(`select detail from audit_events where kind = 'workout_moved' order by created_at desc, rowid desc limit 1`).map((r) => JSON.parse(r.detail as string))[0];
+    expect((await move(id, { toDate: FRI, toTime: "07:00" }, null)).status).toBe(200);
+    expect(audit()).toEqual({ workoutId: id, fromDate: THU, toDate: FRI, toTime: "07:00", source: "app" });
+    // The phone's move without from: as the web's.
+    expect((await move(id, { toDate: SAT, toTime: "07:00" })).status).toBe(200);
+    expect(audit()).toEqual({ workoutId: id, fromDate: FRI, toDate: SAT, toTime: "07:00", source: "app" });
+    expect((await move(id, { toDate: THU, toTime: "18:00", from: { date: SAT, time: "07:00" } })).status).toBe(200);
+    expect(audit()).toEqual({ workoutId: id, fromDate: SAT, toDate: THU, toTime: "18:00", source: "app", seen: { date: SAT, time: "07:00" } });
+  });
 });
 
 describe("a race the guard wins: its own words, never 'moved since' (m4)", () => {
@@ -853,6 +875,19 @@ describe("a retried request whose first answer was lost (kit v0.14): 200, and no
     expect((await move(id, { toDate: FRI, toTime: "07:00" }, null)).status).toBe(200);
     expect([(await unskip(id)).status]).toEqual([422]);
   });
+
+  it("an unskip resent after the laptop removed it: 422, not taken (r2 N13)", async () => {
+    expect((await skip(id)).status).toBe(200);
+    expect((await unskip(id)).json).toEqual({ ok: true });
+    expect((await w.call("POST", `/api/plan/workouts/${id}/remove`, { body: {} })).status).toBe(200);
+    // Removing writes no schedule override: the row's latest is still the unskip's restore, so only the archive says no.
+    expect(overridesOf(id).at(-1)).toMatchObject({ kind: "restore", source: "app" });
+    const before = everything();
+    const a = await unskip(id);
+    expect([a.status, a.json]).toEqual([422, { error: "not_skipped" }]);
+    expect(everything()).toEqual(before);
+  });
+
 });
 
 describe("the request budget: every v2 request within 45 statements and fetches, D1's bind cap on", () => {
