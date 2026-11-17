@@ -547,6 +547,33 @@ const isRecord = (r: unknown): r is PlayerRecord => {
   return !!x && x.kind === "rg-player" && x.v === 1 && !!x.live && Array.isArray(x.live.steps) && Array.isArray(x.live.reached);
 };
 
+/** What a kept session says of its progress without its build: the web's list and the phone's summary read it (Q-167). */
+export interface LiveProgress {
+  /** Past the last step, or ended early: the review waits. */
+  ended: boolean;
+  /** Epoch ms it ended (a record from before `finishedAt`: its last write), else null. */
+  endedAt: number | null;
+  /** 0-based; past the last step once its last step ran out. */
+  stepIndex: number;
+  steps: number;
+  paused: boolean;
+  startedAt: number;
+}
+
+/** A kept session's progress, read by the one rule `fromLiveSession` reads it by; null when it is not the player's record. */
+export function liveProgress(stored: LiveSession<unknown>): LiveProgress | null {
+  if (!isRecord(stored.recorder)) return null;
+  const r = stored.recorder;
+  return {
+    ended: r.finished,
+    endedAt: r.finishedAt ?? (r.finished ? stored.updatedAt : null),
+    stepIndex: stored.stepIndex,
+    steps: r.live.steps.length,
+    paused: stored.paused,
+    startedAt: stored.startedAt,
+  };
+}
+
 /** The session as IndexedDB holds it, for this build; null when it is not one the player can resume. */
 export function fromLiveSession(stored: LiveSession<unknown>, src: Pick<PlayerSource, "workoutId" | "build">): PlayerState | null {
   if (stored.workoutId !== src.workoutId || stored.buildId !== src.build.buildId || !isRecord(stored.recorder)) return null;

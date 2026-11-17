@@ -10,6 +10,7 @@ import {
   endSession,
   fromLiveSession,
   isComplete,
+  liveProgress,
   logTarget,
   next,
   pause,
@@ -316,5 +317,45 @@ describe("the save", () => {
     });
     expect(save.entries.map((e) => [e.id, e.sets.length])).toEqual([["gobletSquat", 1]]);
     expect(save.done.map((d) => d.id)).toEqual(["lowLunge", "gobletSquat"]);
+  });
+});
+
+describe("a kept session's progress without its build (Q-167): what the web's list and the phone's summary read", () => {
+  /** Kept as IndexedDB keeps it: plain data. */
+  const kept = (s: PlayerState, at: number) => JSON.parse(JSON.stringify(toLiveSession(s, at)));
+
+  it("ended by End and review: ended, at the moment End was pressed (not the write), at the step it ended on", () => {
+    const s = endSession(walkTo(begin(), 2, T0), T0 + 5 * S);
+    expect(liveProgress(kept(s, T0 + 9 * S))).toEqual({ ended: true, endedAt: T0 + 5 * S, stepIndex: 2, steps: 9, paused: false, startedAt: T0 });
+  });
+
+  it("ended by its last step running out: ended at the moment the step ran out, past the last step", () => {
+    const last = resume(walkTo(begin(), 8, T0), T0);
+    // The cool-down's 8 s get-ready and 60 s hold.
+    const s = settle(last, T0 + 90 * S, { autoAdvance: true });
+    expect(s.finished).toBe(true);
+    expect(liveProgress(kept(s, T0 + 90 * S))).toEqual({ ended: true, endedAt: T0 + 68 * S, stepIndex: 9, steps: 9, paused: false, startedAt: T0 });
+  });
+
+  it("paused mid-step: not ended, paused, at its step", () => {
+    const s = pause(walkTo(begin(), 2, T0), T0 + 10 * S);
+    expect(liveProgress(kept(s, T0 + 10 * S))).toEqual({ ended: false, endedAt: null, stepIndex: 2, steps: 9, paused: true, startedAt: T0 });
+    expect(liveProgress(kept(resume(s, T0 + 20 * S), T0 + 20 * S))).toMatchObject({ ended: false, paused: false });
+  });
+
+  it("a record kept before finishedAt was: its last write stands in for an ended one; an unended one has none", () => {
+    const ended = kept(endSession(begin(), T0 + 5 * S), T0 + 50 * S);
+    delete ended.recorder.finishedAt;
+    expect(liveProgress(ended)).toMatchObject({ ended: true, endedAt: T0 + 50 * S });
+    const going = kept(begin(), T0 + 50 * S);
+    delete going.recorder.finishedAt;
+    expect(liveProgress(going)).toMatchObject({ ended: false, endedAt: null });
+  });
+
+  it("something that isn't the player's record says nothing (null)", () => {
+    const stored = kept(begin(), T0);
+    for (const recorder of [null, undefined, {}, "rg-player", { ...stored.recorder, kind: "other" }, { ...stored.recorder, v: 2 }, { ...stored.recorder, live: { steps: [] } }]) {
+      expect(liveProgress({ ...stored, recorder })).toBeNull();
+    }
   });
 });

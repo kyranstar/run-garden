@@ -28,6 +28,7 @@ import { liveSessions } from "../offline/live.js";
 import { isLocalId, loadLocalStart } from "../offline/local-starts.js";
 import { outboxEntries } from "../offline/outbox.js";
 import { cuePlayer } from "../player/cue-player.js";
+import { liveProgress } from "../player/run.js";
 import { discardHere } from "../player/save.js";
 import { loadExtras } from "../player/stored.js";
 
@@ -49,14 +50,14 @@ export async function sessionsInProgress(db: OfflineDb, userId: string): Promise
     // The signed-in account's own (ruling 2b-R6): Start, or the player, tagged it.
     if (!extras || extras.userId !== userId) continue;
     const stored = await loadBuild(db, live.workoutId);
-    const recorder = live.recorder as { finished?: boolean; live?: { steps?: unknown[] } } | null;
-    const steps = recorder?.live?.steps?.length ?? stored?.build.steps.length ?? 0;
+    // The player's own reader (Q-167), so this list and the phone's summary say "ended" by one rule.
+    const progress = liveProgress(live);
     out.push({
       workoutId: live.workoutId,
       title: extras.title,
       date: stored?.build.date ?? null,
-      step: recorder?.finished ? null : live.stepIndex + 1,
-      steps,
+      step: progress?.ended ? null : live.stepIndex + 1,
+      steps: progress?.steps ?? stored?.build.steps.length ?? 0,
       startedAt: live.startedAt,
     });
   }
