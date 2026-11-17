@@ -79,6 +79,8 @@ check("the laptop lists the pending phone with the phone's check number", !!pend
 check("Confirm: 200", (await call("POST", `/api/native/devices/${pending.id}/confirm`, { cookie: true, body: { check: won.check } })).status, 200);
 const me = await call("GET", "/api/native/me", { bearer: token });
 check("active: /api/native/me is {userId, device}", Object.keys(me.json).sort(), ["device", "userId"]);
+// Stage 2a: a new pairing is minted at the newest scope, and /me says so (DESIGN §5.1).
+check("…and its device is training-v2: {label, expiresAt, scope}", [Object.keys(me.json.device ?? {}).sort(), me.json.device?.scope], [["expiresAt", "label", "scope"], "training-v2"]);
 
 // 3. Off the slice: refused.
 for (const [method, path] of [["GET", "/api/plan/today"], ["GET", "/api/auth/me"], ["POST", "/api/native/pairings"], ["GET", "/api/native/devices"], ["POST", "/api/settings/delete-all"]]) {
@@ -162,6 +164,67 @@ if (outline) {
     check("the phone's day lists today's outline as unwritten", (await call("GET", "/api/native/today", { bearer: token })).json.sessions.find((s) => s.id === outline.id)?.written, false);
   }
 }
+
+// 4c. Stage 2a on local D1 (DESIGN §9, "Moves in run-garden too"): the v2 phone moves, skips and puts back a session the
+// laptop made; a move made against a stale view (Move's `from`) is refused 409 session_changed with nothing written; two
+// moves from the same slot at once, interleaved by workerd on the local D1, land one and refuse the other; a v1 phone is
+// still refused.
+const plusDays = (d, n) => new Date(Date.parse(`${d}T12:00:00Z`) + n * 86_400_000).toISOString().slice(0, 10);
+const [d1, d2, d3] = [plusDays(day, 1), plusDays(day, 2), plusDays(day, 3)];
+const planned = await call("POST", "/api/workouts", { cookie: true, body: { doc: { ...doc, title: "Harness plan edit" }, date: d1, time: "07:00", clientId: `harness-edit-${Date.now()}` } });
+check("the laptop makes tomorrow's session", planned.status < 300, true);
+const pid = planned.json.workout.id;
+const editTrace = () =>
+  sql(
+    `select (select effective_date || ' ' || effective_time || ' ' || completion_state || ' ' || updated_at from planned_workouts where id = '${pid}') as row, ` +
+      `(select count(*) from schedule_overrides where workout_id = '${pid}') as overrides, (select count(*) from audit_events where kind = 'workout_moved') as audits, ` +
+      `(select count(*) from sync_intents where target_id = '${pid}') as intents`,
+  )[0];
+const slotOf = () => sql(`select effective_date as date, effective_time as time, completion_state as state from planned_workouts where id = '${pid}'`)[0];
+const moveAs = (bearer, body) => call("POST", `/api/plan/workouts/${pid}/move`, bearer ? { bearer, body } : { cookie: true, body });
+const moved = await moveAs(token, { toDate: d2, toTime: "07:30", from: { date: d1, time: "07:00" } });
+check("the v2 phone moves it to another day, from where it saw it: 200", [moved.status, moved.json.workoutId], [200, pid]);
+check("…and it stands there on local D1", slotOf(), { date: d2, time: "07:30", state: "scheduled" });
+const beforeStale = editTrace();
+const stale = await moveAs(token, { toDate: d3, toTime: "18:00", from: { date: d1, time: "07:00" } });
+check("a move from the old slot (a stale view): 409 session_changed, moved since", [stale.status, stale.json], [409, { error: "session_changed", why: "This session was moved since this change was made, so it stays where it is now." }]);
+check("…and nothing was written: the row, its overrides, intents and the move audits", editTrace(), beforeStale);
+check("a move with a body outside the phone's grammar: 403 out_of_scope", (await moveAs(token, { toDate: d3, toTime: "18:00", force: true })).json, { error: "out_of_scope" });
+// Two at once from the same slot: the guarded write takes exactly one.
+const race = await Promise.all([
+  moveAs(token, { toDate: d3, toTime: "06:00", from: { date: d2, time: "07:30" } }),
+  moveAs(token, { toDate: d3, toTime: "19:00", from: { date: d2, time: "07:30" } }),
+]);
+check("two moves at once from the same slot: one 200, one 409 session_changed", race.map((a) => `${a.status} ${a.json.error ?? ""}`.trim()).sort(), ["200", "409 session_changed"]);
+const winner = race.find((a) => a.status === 200) === race[0] ? "06:00" : "19:00";
+check("…and the row is the winner's", slotOf(), { date: d3, time: winner, state: "scheduled" });
+// The laptop moves it meanwhile; the phone's Undo (back, from its own new slot) is refused, never an overwrite.
+check("the laptop moves it (no from: the web's move as before)", (await moveAs(null, { toDate: d2, toTime: "12:00" })).status, 200);
+const undo = await moveAs(token, { toDate: d2, toTime: "07:30", from: { date: d3, time: winner } });
+check("…so the phone's late Undo is 409 session_changed, the laptop's choice kept", [undo.status, undo.json.error, slotOf()], [409, "session_changed", { date: d2, time: "12:00", state: "scheduled" }]);
+check("the phone skips it: 200 ok", (await call("POST", `/api/plan/workouts/${pid}/skip`, { bearer: token })).json, { ok: true });
+check("…skipped on local D1", slotOf().state, "skipped");
+check("the phone puts it back: 200 ok", (await call("POST", `/api/plan/workouts/${pid}/unskip`, { bearer: token })).json, { ok: true });
+check("…scheduled again", slotOf().state, "scheduled");
+check("the session the phone saved (section 4) is done: its move is 409 session_completed", (await call("POST", `/api/plan/workouts/${id}/move`, { bearer: token, body: { toDate: d1, toTime: "07:00", from: { date: day, time: "23:30" } } })).json.error, "session_completed");
+check("the watch drain, the switch off here: 404 not_found, as for the web", (await call("POST", "/api/sessions/watch/drain", { bearer: token, body: {} })).json, { error: "not_found" });
+// A phone paired before v2 (its row written as one was then): it keeps v1, and v1 is refused the plan edits.
+const v1Token = `rgd_${createHash("sha256").update(`harness-v1-${Date.now()}`).digest("base64url")}`;
+const at = new Date().toISOString();
+sql(
+  `insert into native_devices (id, user_id, scope, label, state, check_number, created_at, expires_at, confirmed_at, check_tries) values ` +
+    `('${createHash("sha256").update(v1Token).digest("hex")}', '${me.json.userId}', 'training-slice-v1', 'Harness v1 phone', 'active', '0000', '${at}', '${new Date(Date.now() + 86_400_000).toISOString()}', '${at}', 0)`,
+);
+check("a v1 phone: /me says training-slice-v1", (await call("GET", "/api/native/me", { bearer: v1Token })).json.device?.scope, "training-slice-v1");
+const v1Before = editTrace();
+check("…and its move, skip, unskip and drain are 403 out_of_scope", await Promise.all([
+  moveAs(v1Token, { toDate: d3, toTime: "07:00", from: { date: d2, time: "12:00" } }),
+  call("POST", `/api/plan/workouts/${pid}/skip`, { bearer: v1Token }),
+  call("POST", `/api/plan/workouts/${pid}/unskip`, { bearer: v1Token }),
+  call("POST", "/api/sessions/watch/drain", { bearer: v1Token, body: {} }),
+]).then((all) => all.map((a) => `${a.status} ${a.json.error}`)), Array(4).fill("403 out_of_scope"));
+check("…with nothing written", editTrace(), v1Before);
+check("…while its own slice still answers", (await call("GET", "/api/native/today", { bearer: v1Token })).status, 200);
 
 // 5. More races on local D1: three codes (the mint bound is 5 a window, and this check mints 5 in all), each redeemed by
 // four requests at once — one device each, never two. Each new code lifts the redeem throttles, so each race starts clean.
