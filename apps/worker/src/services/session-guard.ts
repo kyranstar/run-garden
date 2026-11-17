@@ -44,6 +44,8 @@ import { PROVISIONAL_KIND, PROVISIONAL_KIND_PATH, pushJobId, SETTLED_PUSH, UNSTA
 /** Done: it stays as it is. Not "on the day it was done": a match may be a day off its slot, or made by hand. */
 export const COMPLETED_WORDS = "This session is done, so it stays as it is on your plan.";
 export const UNDER_WAY_WORDS = "This session was started and may still be running on another device, so it stays as it is.";
+/** A move made against a stale view (Move's `from`): the session was moved elsewhere since — on the laptop, by the coach or COROS. */
+export const MOVED_SINCE_WORDS = "This session was moved since this change was made, so it stays where it is now.";
 
 export interface GuardRefusal {
   error: "session_completed" | "session_under_way";
@@ -140,4 +142,32 @@ export async function guardedNow(db: Db, userId: string, ids: readonly string[],
 export function stillOpen(row: Pick<Guarded, "contentState">): SQL {
   const pw = plannedWorkouts;
   return and(ne(pw.completionState, "completed"), row.contentState === "started" ? undefined : or(isNull(pw.contentState), ne(pw.contentState, "started")))!;
+}
+
+/**
+ * WHERE A CLIENT LAST SAW A SESSION (Move's optional `from`, stage 2 DESIGN §5.3): its day, and its time as the reads give
+ * one — `HH:MM`, or null when the row holds none (`/api/native/today` and the plan read say null for any other value).
+ */
+export interface SeenAt {
+  date: string;
+  time: string | null;
+}
+
+/**
+ * The row still stands where the client saw it, as an SQL condition: beside `stillOpen` in a guarded write's condition, so a
+ * move made against a stale view — an edit kept offline for hours, while the laptop, the coach or COROS moved the session — is
+ * refused in the write itself, never an overwrite of the newer choice. "No time" is the reads' rule (`/^\d{2}:\d{2}$/`) as a
+ * GLOB; every constant in it is a literal, and the date and time bind two values.
+ */
+export function stillAt(seen: SeenAt): SQL {
+  const pw = plannedWorkouts;
+  const time = seen.time === null ? sql`${pw.effectiveTime} not glob '[0-9][0-9]:[0-9][0-9]'` : eq(pw.effectiveTime, seen.time);
+  return and(eq(pw.effectiveDate, seen.date), time)!;
+}
+
+/** Whether the row stands where the client saw it now (one read): a lost guarded move tells "moved since" from a race. */
+export async function standsAt(db: Db, userId: string, id: string, seen: SeenAt): Promise<boolean> {
+  const pw = plannedWorkouts;
+  const [row] = await db.select({ id: pw.id }).from(pw).where(and(eq(pw.id, id), eq(pw.userId, userId), stillAt(seen))).limit(1);
+  return row !== undefined;
 }

@@ -96,7 +96,7 @@ import { todayConditions } from "../services/condition-views.js";
 import { watchReviewOffers } from "../services/session-watch-review.js";
 import { plannedRowColumns, type PlannedRow } from "../services/planned-columns.js";
 import { DESIGNED_RUN_SEED } from "../services/designed-runs.js";
-import { guardRefusal, readGuarded, refusalNow, stillOpen } from "../services/session-guard.js";
+import { guardRefusal, MOVED_SINCE_WORDS, readGuarded, refusalNow, standsAt, stillAt, stillOpen } from "../services/session-guard.js";
 import { reopenedDocColumns, resolveLibraryName } from "../services/workout-doc-store.js";
 
 export const planRoutes = new Hono<AppContext>();
@@ -1665,14 +1665,26 @@ planRoutes.post("/repair-fidelity", async (c) => {
   return c.json({ ok: true, ...report });
 });
 
-const moveSchema = z.object({ toDate: z.string().refine(isLocalDate), toTime: z.string() });
+const moveSchema = z.object({
+  toDate: z.string().refine(isLocalDate),
+  toTime: z.string(),
+  /** Where the client last saw the session (stage 2 DESIGN §5.3): optional for every caller; the web sends none. */
+  from: z.object({ date: z.string().refine(isLocalDate), time: z.string().regex(/^\d{2}:\d{2}$/).nullable() }).strict().optional(),
+});
 
-/** A move of the athlete's own (`session-guard.ts`: a done session, or one under way, is refused 409 `{error, why}`). */
+/**
+ * A move of the athlete's own (`session-guard.ts`: a done session, or one under way, is refused 409 `{error, why}`).
+ *
+ * `from`, when sent (the phone always sends it; the web may): the move is held to the row still standing there, in the guarded
+ * write itself (`stillAt`, beside `stillOpen`), so a move made against a stale view — kept offline while the laptop, the coach
+ * or COROS moved the session — is refused 409 `session_changed` and writes nothing. Without it the move is exactly as it was.
+ */
 planRoutes.post("/workouts/:id/move", async (c) => {
   const db = c.get("db");
   const userId = c.get("userId");
   const parsed = moveSchema.safeParse(await c.req.json());
   if (!parsed.success) return c.json({ error: "invalid_request" }, 400);
+  const { from } = parsed.data;
   const prefs = await loadPreferences(db, userId);
   const today = todayInZone(prefs.timezone);
   const row = await readGuarded(db, userId, c.req.param("id"));
@@ -1686,7 +1698,7 @@ planRoutes.post("/workouts/:id/move", async (c) => {
       toTime: parsed.data.toTime,
       source: "app",
       corosWritesEnabled: prefs.corosWritesEnabled,
-      ...(row ? { onlyIf: stillOpen(row) } : {}),
+      ...(row ? { onlyIf: from ? and(stillOpen(row), stillAt(from))! : stillOpen(row) } : {}),
     });
     // Cloud-direct: the queued write executes now, not when a Mac wakes. A programme session's watch copy comes off
     // in its own request instead (ruling 3-R11, re-review 3-B NEW-1): the client drains it, so this invocation stays
@@ -1697,7 +1709,14 @@ planRoutes.post("/workouts/:id/move", async (c) => {
     return c.json({ ...outcome, ...(watchDrain ? { watchDrain: true } : {}) });
   } catch (e) {
     const msg = e instanceof Error ? e.message : "move_failed";
-    if (msg === "session_changed") return c.json(await refusalNow(db, userId, c.req.param("id"), today), 409);
+    if (msg === "session_changed") {
+      const lost = await refusalNow(db, userId, c.req.param("id"), today);
+      // Not done or under way now, and no longer where the client saw it: moved since, said so (not "just now. Try again").
+      if (from && lost.error === "session_changed" && !(await standsAt(db, userId, c.req.param("id"), from))) {
+        return c.json({ error: "session_changed", why: MOVED_SINCE_WORDS }, 409);
+      }
+      return c.json(lost, 409);
+    }
     // Gone (never there, or hard-deleted before its move was written): 404 in words, as note Undo answers — nothing to retry.
     if (msg === "workout_not_found") return c.json({ error: "not_found", why: "This session is no longer on your plan." }, 404);
     return c.json({ error: msg }, msg === "races_cannot_move" ? 422 : 500);
