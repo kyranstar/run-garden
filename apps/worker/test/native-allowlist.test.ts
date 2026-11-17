@@ -48,7 +48,7 @@ vi.mock("../src/services/calendar-sync.js", async (importOriginal) => ({
 }));
 
 const { default: worker, mountedRoutes } = await import("../src/index.js");
-const { DEVICE_SCOPES, deviceMoveBody, deviceRouteOf, deviceSaveBody, emptyBody, emptyObjectBody } = await import("../src/auth/device-scope.js");
+const { DEVICE_SCOPES, deviceDrainBody, deviceMoveBody, deviceRouteOf, deviceSaveBody, emptyBody, emptyObjectBody } = await import("../src/auth/device-scope.js");
 
 vi.setConfig({ testTimeout: 600_000 });
 
@@ -75,9 +75,13 @@ const DEVICE_PAIRS: Record<Scope, readonly string[]> = {
     "POST /api/sessions/watch/drain",
   ],
 };
-/** A probe's body where `{}` is outside the pair's body rule: a move in its grammar (the route then answers 404). */
+/**
+ * A probe's body where `{}` is outside the pair's body rule: a move in its grammar (the route then answers 404), and the
+ * phone's drain naming a session (which claims nothing for an id that isn't the account's).
+ */
 const PROBE_BODIES: Record<string, string> = {
   "POST /api/plan/workouts/:id/move": JSON.stringify({ toDate: "2026-11-20", toTime: "07:30" }),
+  "POST /api/sessions/watch/drain": JSON.stringify({ workoutId: "probe-id" }),
 };
 
 const keyOf = (r: { method: string; path: string }) => `${r.method} ${r.path}`;
@@ -189,7 +193,7 @@ describe("every mounted route is classified", () => {
       ["POST", String(/^\/api\/plan\/workouts\/[^/]+\/move$/), deviceMoveBody],
       ["POST", String(/^\/api\/plan\/workouts\/[^/]+\/skip$/), emptyBody],
       ["POST", String(/^\/api\/plan\/workouts\/[^/]+\/unskip$/), emptyBody],
-      ["POST", String(/^\/api\/sessions\/watch\/drain$/), emptyBody],
+      ["POST", String(/^\/api\/sessions\/watch\/drain$/), deviceDrainBody],
     ]);
     expect(Object.keys(DEVICE_SCOPES).sort()).toEqual([...SCOPES].sort());
   });

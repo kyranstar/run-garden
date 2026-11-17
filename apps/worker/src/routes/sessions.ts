@@ -459,6 +459,13 @@ sessionRoutes.get("/:workoutId/watch-review", async (c) => {
  * switch is off. `{ran, pending}` — and `retried: true` when the job that ran was re-queued after a transient COROS
  * failure (a push's or a delete's try spent): the client's chain stops there, so a short outage never burns a job's
  * three tries in seconds; the hourly or the next open resumes (the watch mirrors the plan, final review Important 1).
+ *
+ * BOUND TO ONE SESSION when the body names it, `{workoutId}` — the phone's drain always does (device-scope.ts
+ * `deviceDrainBody`; kit v0.14): no mirror's turn (the sweep is the account's), and only that session's own queued watch
+ * jobs are claimed and counted (`pending` is that session's), so a phone's move runs the take-off it queued and never
+ * another session's push or record. A session id that isn't the account's claims nothing. What it leaves (a document
+ * workout's new copy, which the sweep makes) the hourly lane or the web's drain does. The web's drain, naming none, is the
+ * account's, exactly as before.
  */
 sessionRoutes.post("/watch/drain", async (c) => {
   const off = switchedOff(c);
@@ -466,6 +473,12 @@ sessionRoutes.post("/watch/drain", async (c) => {
   const db = c.get("db");
   const userId = c.get("userId");
   const prefs = await loadPreferences(db, userId);
+  const named = ((await c.req.json().catch(() => null)) as { workoutId?: unknown } | null)?.workoutId;
+  if (typeof named === "string" && named.length > 0) {
+    const drained = await executeCloudJobs(db, c.env, userId, prefs, { cap: 1, watchOnly: true, workoutId: named });
+    const retriedOne = (drained.retried ?? 0) > 0;
+    return c.json({ ran: drained.executed > 0, pending: await queuedWatchJobs(db, userId, named), ...(retriedOne ? { retried: true } : {}) });
+  }
   let ran: boolean;
   try {
     ran = await mirrorTakesTurn(db, c.env, userId, prefs, { today: todayInZone(prefs.timezone), now: nowInstant(), prefs });

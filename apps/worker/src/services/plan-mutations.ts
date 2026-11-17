@@ -1,4 +1,4 @@
-import { and, eq, inArray, isNull, notInArray, type SQL } from "drizzle-orm";
+import { and, eq, inArray, isNull, notInArray, sql, type SQL } from "drizzle-orm";
 import { calendarEventSuppressions, corosWriteJobs, plannedWorkouts, scheduleOverrides } from "@rg/database";
 import { appAuthoredRow, docOriginRow, newId, watchAddressOf, type ArchiveReason, type UserPreferences } from "@rg/domain";
 import { chunkIds, type AtomicStatement, type Db } from "./db.js";
@@ -453,4 +453,23 @@ export async function unskipWorkout(
   });
   if (docOriginRow(w) && w.effectiveDate >= opts.today) await markMirrorOwed(db, userId, w.id, now);
   return { restored: true, resolvedOn };
+}
+
+/**
+ * A RESENT UNSKIP (its first answer lost, kit v0.14): the row is on the plan and scheduled, and the last change to its
+ * schedule is an unskip of this kind (`source`) — its `restore` override, which only `unskipWorkout` writes, is the row's
+ * latest. A row put back and then moved, or never skipped at all, isn't. One read.
+ */
+export async function unskippedAlready(db: Db, userId: string, workoutId: string, source: "app" | "coach"): Promise<boolean> {
+  const pw = plannedWorkouts;
+  // The row's latest override, correlated by explicit table names (no binds): newest first, the insert order breaking a tie.
+  const latest = sql.raw(
+    `(select o.kind || ':' || coalesce(o.source, '') from schedule_overrides o where o.workout_id = "planned_workouts"."id" order by o.created_at desc, o.rowid desc limit 1)`,
+  );
+  const [row] = await db
+    .select({ archivedAt: pw.archivedAt, completionState: pw.completionState, last: sql<string | null>`${latest}` })
+    .from(pw)
+    .where(and(eq(pw.id, workoutId), eq(pw.userId, userId)))
+    .limit(1);
+  return !!row && row.archivedAt === null && row.completionState === "scheduled" && row.last === `restore:${source}`;
 }

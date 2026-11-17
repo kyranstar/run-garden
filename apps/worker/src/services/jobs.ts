@@ -56,6 +56,12 @@ export interface MoveRequest {
    * the move is exactly as it always was, its row written last.
    */
   onlyIf?: SQL;
+  /**
+   * Where the client saw the session when it asked (Move's `from`), recorded in the move's own audit (`seen`): what tells
+   * a resent move whose first answer was lost from another change that left the row in the same place (kit v0.14). Absent,
+   * the audit is exactly as it always was.
+   */
+  seen?: { date: string; time: string | null };
 }
 
 export interface MoveOutcome {
@@ -291,7 +297,7 @@ export async function applyMove(db: Db, req: MoveRequest): Promise<MoveOutcome> 
     id: newId(),
     userId: req.userId,
     kind: "workout_moved",
-    detail: { workoutId: workout.id, fromDate, toDate: req.toDate, toTime: req.toTime, source: req.source, jobId },
+    detail: { workoutId: workout.id, fromDate, toDate: req.toDate, toTime: req.toTime, source: req.source, jobId, ...(req.seen ? { seen: req.seen } : {}) },
     createdAt: now,
   });
 
@@ -363,7 +369,7 @@ async function guardedMove(
       id: newId(),
       userId: req.userId,
       kind: "workout_moved",
-      detail: { workoutId: workout.id, fromDate, toDate: req.toDate, toTime: req.toTime, source: req.source, jobId: job?.jobId },
+      detail: { workoutId: workout.id, fromDate, toDate: req.toDate, toTime: req.toTime, source: req.source, jobId: job?.jobId, ...(req.seen ? { seen: req.seen } : {}) },
       createdAt: now,
     }),
   ];
@@ -464,12 +470,22 @@ export async function emitPendingWork(
 // The watch's own jobs, as SQL: a leaf (watch-jobs.ts), shared with the sheet's watch state and the account line.
 export { watchJobCondition } from "./watch-jobs.js";
 
-/** How many of the account's watch jobs (`watchJobCondition`) are queued — what is left to drain. ONE COUNT. */
-export async function queuedWatchJobs(db: Db, userId: string): Promise<number> {
+/**
+ * How many of the account's watch jobs (`watchJobCondition`) are queued — what is left to drain; with `workoutId`, that one
+ * session's only (the phone's bound drain, kit v0.14). ONE COUNT.
+ */
+export async function queuedWatchJobs(db: Db, userId: string, workoutId?: string): Promise<number> {
   const [row] = await db
     .select({ n: sql<number>`count(*)` })
     .from(corosWriteJobs)
-    .where(and(eq(corosWriteJobs.userId, userId), eq(corosWriteJobs.status, "queued"), watchJobCondition()));
+    .where(
+      and(
+        eq(corosWriteJobs.userId, userId),
+        eq(corosWriteJobs.status, "queued"),
+        watchJobCondition(),
+        ...(workoutId !== undefined ? [eq(corosWriteJobs.workoutId, workoutId)] : []),
+      ),
+    );
   return Number(row?.n ?? 0);
 }
 
@@ -497,6 +513,12 @@ export async function claimNextJob(
      * request (ruling 3-R11). A queued read or a program push never takes its slot.
      */
     onlyKinds?: readonly string[];
+    /**
+     * Only this session's jobs — the phone's bound watch drain (kit v0.14): what its own move queued, never another
+     * session's. (The stale-claim revert above every claim stays the account's, as for every claimer: it only makes a
+     * claim abandoned for 10 minutes claimable again.)
+     */
+    workoutId?: string;
   } = {},
 ): Promise<
   | (typeof corosWriteJobs.$inferSelect & {
@@ -531,6 +553,7 @@ export async function claimNextJob(
         ...(opts.excludeKinds?.length ? [notInArray(corosWriteJobs.kind, [...opts.excludeKinds])] : []),
         ...(opts.onlyKinds ? [inArray(corosWriteJobs.kind, [...opts.onlyKinds])] : []),
         ...(opts.watchOnly ? [watchJobCondition()] : []),
+        ...(opts.workoutId !== undefined ? [eq(corosWriteJobs.workoutId, opts.workoutId)] : []),
       ),
     )
     // The targeted drain puts a new copy on before it takes an old one off (either order is safe, A6): a replacement's

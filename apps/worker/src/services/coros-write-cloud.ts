@@ -311,6 +311,8 @@ export async function executeCloudJobs(
     watchOnly?: boolean;
     /** Claim only these kinds — the coach drain (`COACH_DRAIN_KINDS`, ruling 3-R11). */
     onlyKinds?: readonly string[];
+    /** Claim only this session's jobs — the phone's bound watch drain (kit v0.14). */
+    workoutId?: string;
   } = {},
 ): Promise<{
   executed: number;
@@ -352,6 +354,7 @@ export async function executeCloudJobs(
         excludeKinds: ["backfill", ...(watchPushEnabled(env) ? [] : ["program_session_push"])],
         ...(opts.watchOnly ? { watchOnly: true } : {}),
         ...(opts.onlyKinds ? { onlyKinds: opts.onlyKinds } : {}),
+        ...(opts.workoutId !== undefined ? { workoutId: opts.workoutId } : {}),
       });
       if (!job) break;
 

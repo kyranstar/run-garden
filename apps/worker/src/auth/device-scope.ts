@@ -73,7 +73,7 @@ export const deviceSaveBody: BodyRule = (raw) => {
   return true;
 };
 
-/** Skip, unskip and the drain from the phone carry nothing: no body, or `{}` (the routes read none). */
+/** Skip and unskip from the phone carry nothing: no body, or `{}` (the routes read none). */
 export const emptyBody: BodyRule = (raw) => raw.trim() === "" || emptyObjectBody(raw);
 
 /** A time the phone moves a session to: a clock time, `HH:MM`. */
@@ -101,6 +101,18 @@ export const deviceMoveBody: BodyRule = (raw) => {
   return typeof from.date === "string" && isLocalDate(from.date) && (from.time === null || (typeof from.time === "string" && READ_TIME.test(from.time)));
 };
 
+/**
+ * The phone's watch drain names the one session it moved: exactly `{workoutId}`, 1–200 characters (kit v0.14). The drain
+ * then runs only that session's own queued watch jobs — never another session's push, nor the mirror's sweep. The web's
+ * drain, which names none, is the account's, as before.
+ */
+export const deviceDrainBody: BodyRule = (raw) => {
+  const p = parsed(raw);
+  if (!p.ok || !isPlainObject(p.value) || !keysAre(p.value, ["workoutId"])) return false;
+  const { workoutId } = p.value;
+  return typeof workoutId === "string" && workoutId.length >= 1 && workoutId.length <= 200;
+};
+
 /** One path segment, as Hono's `:param` matches one. */
 const SEG = "[^/]+";
 
@@ -118,14 +130,15 @@ const TRAINING_SLICE_V1: readonly DeviceRoute[] = [
 
 /**
  * Stage 2a (DESIGN §9): v1's own entries, then a linked workout moved, skipped or put back on run-garden's plan, and the
- * watch drain a move hands back (`watchDrain: true`; the drain is 404 while the watch switch is off, as for the web).
+ * watch drain a move hands back (`watchDrain: true`), bound to the session moved (`deviceDrainBody`; 404 while the watch
+ * switch is off, as for the web).
  */
 const TRAINING_V2: readonly DeviceRoute[] = [
   ...TRAINING_SLICE_V1,
   { method: "POST", pattern: new RegExp(`^/api/plan/workouts/${SEG}/move$`), body: deviceMoveBody },
   { method: "POST", pattern: new RegExp(`^/api/plan/workouts/${SEG}/skip$`), body: emptyBody },
   { method: "POST", pattern: new RegExp(`^/api/plan/workouts/${SEG}/unskip$`), body: emptyBody },
-  { method: "POST", pattern: /^\/api\/sessions\/watch\/drain$/, body: emptyBody },
+  { method: "POST", pattern: /^\/api\/sessions\/watch\/drain$/, body: deviceDrainBody },
 ];
 
 /** Each scope's list. Nothing else answers a device of that scope. */

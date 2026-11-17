@@ -75,7 +75,7 @@ import { chunkIds, type Db } from "../services/db.js";
 import { markSessionDone } from "../services/mark-done.js";
 import { applyMove } from "../services/jobs.js";
 import { provisionalRecord } from "../services/session-build.js";
-import { removeFromPlan, skipWorkout, unskipWorkout } from "../services/plan-mutations.js";
+import { removeFromPlan, skipWorkout, unskippedAlready, unskipWorkout } from "../services/plan-mutations.js";
 import { gardenSees, recentGardenEvents, REQUEST_GARDEN_STEP, resimulateFrom } from "../services/garden-sync.js";
 import {
   contentClaims,
@@ -96,7 +96,7 @@ import { todayConditions } from "../services/condition-views.js";
 import { watchReviewOffers } from "../services/session-watch-review.js";
 import { plannedRowColumns, type PlannedRow } from "../services/planned-columns.js";
 import { DESIGNED_RUN_SEED } from "../services/designed-runs.js";
-import { GONE_WORDS, guardRefusal, readGuarded, refusalNow, seenRefusal, stillAsSeen, stillOpen } from "../services/session-guard.js";
+import { GONE_WORDS, guardRefusal, lostMoveAnswer, readGuarded, refusalNow, stillAsSeen, stillOpen } from "../services/session-guard.js";
 import { reopenedDocColumns, resolveLibraryName } from "../services/workout-doc-store.js";
 
 export const planRoutes = new Hono<AppContext>();
@@ -1680,6 +1680,12 @@ const moveSchema = z.object({
  * against a stale view, kept offline while the laptop, the coach or COROS changed the session, writes nothing: removed since,
  * 404 `not_found`; set aside (skipped, missed) or moved since, 409 `session_changed`, each with its own words; done or under
  * way, the guard's own refusal first. Without it the move is exactly as it was.
+ *
+ * A RESEND WHOSE FIRST ANSWER WAS LOST (kit v0.14): the same `{toDate, toTime, from}` again, after the first landed and
+ * nothing changed the session since (`lostMoveAnswer`: the row at `to`, scheduled, and its last move this route's from
+ * `from` to `to`, recorded in the move's audit as `seen`). Answered 200 with the first answer's shape — and `watchDrain`
+ * again where the first had it, the take-off it queued still the phone's to drain — writing nothing: its guarded batch
+ * rolled back whole, and no provider lane, calendar sync or audit runs on this path.
  */
 planRoutes.post("/workouts/:id/move", async (c) => {
   const db = c.get("db");
@@ -1692,6 +1698,10 @@ planRoutes.post("/workouts/:id/move", async (c) => {
   const row = await readGuarded(db, userId, c.req.param("id"));
   const refused = row ? guardRefusal(row, today) : null;
   if (refused) return c.json(refused, 409);
+  // Cloud-direct: the queued write executes now, not when a Mac wakes. A programme session's watch copy comes off
+  // in its own request instead (ruling 3-R11, re-review 3-B NEW-1): the client drains it, so this invocation stays
+  // within the free plan's per-request budget.
+  const watchDrain = row !== undefined && appAuthoredRow(row) && watchPushEnabled(c.env);
   try {
     const outcome = await applyMove(db, {
       userId,
@@ -1701,11 +1711,8 @@ planRoutes.post("/workouts/:id/move", async (c) => {
       source: "app",
       corosWritesEnabled: prefs.corosWritesEnabled,
       ...(row ? { onlyIf: from ? and(stillOpen(row), stillAsSeen(from))! : stillOpen(row) } : {}),
+      ...(from ? { seen: from } : {}),
     });
-    // Cloud-direct: the queued write executes now, not when a Mac wakes. A programme session's watch copy comes off
-    // in its own request instead (ruling 3-R11, re-review 3-B NEW-1): the client drains it, so this invocation stays
-    // within the free plan's per-request budget.
-    const watchDrain = row !== undefined && appAuthoredRow(row) && watchPushEnabled(c.env);
     if (!watchDrain) waitUntilSafe(c, executeCloudJobs(db, c.env, userId, prefs).catch(() => undefined),);
     await syncCalendar(db, c.env, userId).catch(() => undefined);
     return c.json({ ...outcome, ...(watchDrain ? { watchDrain: true } : {}) });
@@ -1713,11 +1720,14 @@ planRoutes.post("/workouts/:id/move", async (c) => {
     const msg = e instanceof Error ? e.message : "move_failed";
     if (msg === "session_changed") {
       const lost = await refusalNow(db, userId, c.req.param("id"), today);
-      // Not done or under way now, and no longer as the client saw it: removed, set aside or moved since, said so (never
-      // "just now. Try again": the phone doesn't resend a refused edit).
+      // Not done or under way now, and no longer as the client saw it: already taken (a resend), or removed, set aside or
+      // moved since, said so (never "just now. Try again": the phone doesn't resend a refused edit).
       if (from && lost.error === "session_changed") {
-        const seen = await seenRefusal(db, userId, c.req.param("id"), from);
-        if (seen) return c.json(seen.body, seen.status);
+        const answer = await lostMoveAnswer(db, userId, c.req.param("id"), from, parsed.data);
+        if (answer && "taken" in answer) {
+          return c.json({ workoutId: c.req.param("id"), ...answer.taken, ...(watchDrain ? { watchDrain: true } : {}) });
+        }
+        if (answer) return c.json(answer.body, answer.status);
       }
       return c.json(lost, 409);
     }
@@ -1759,6 +1769,9 @@ planRoutes.post("/workouts/:id/skip", async (c) => {
  * `missedRuns` into the garden sim (garden-sync.ts's `buildDayInput`) —
  * resimulated from that same date so the garden forgets the miss, mirroring
  * how the skip route itself resimulates from the date it just wrote.
+ *
+ * A resent unskip whose first answer was lost (kit v0.14) answers 200 as the first did, writing nothing: the row scheduled
+ * and its last schedule change this route's own unskip (`unskippedAlready`). Any other row not skipped is 422, as before.
  */
 planRoutes.post("/workouts/:id/unskip", async (c) => {
   const db = c.get("db");
@@ -1766,7 +1779,10 @@ planRoutes.post("/workouts/:id/unskip", async (c) => {
   const prefs = await loadPreferences(db, userId);
   const res = await unskipWorkout(db, userId, c.req.param("id"), { now: nowInstant(), today: todayInZone(prefs.timezone), source: "app" });
   if (res.reason === "not_found") return c.json({ error: "not_found" }, 404);
-  if (res.reason === "not_skipped") return c.json({ error: "not_skipped" }, 422);
+  if (res.reason === "not_skipped") {
+    if (await unskippedAlready(db, userId, c.req.param("id"), "app")) return c.json({ ok: true });
+    return c.json({ error: "not_skipped" }, 422);
+  }
   await resimulateFrom(db, userId, res.resolvedOn!, prefs, new Date(), REQUEST_GARDEN_STEP).catch(() => undefined);
   return c.json({ ok: true });
 });

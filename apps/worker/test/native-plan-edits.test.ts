@@ -103,7 +103,9 @@ async function costed(method: string, path: string, opts: CallOpts = {}): Promis
 const move = (id: string, body: unknown, bearer: string | null = v2) => costed("POST", `/api/plan/workouts/${id}/move`, bearer === null ? { body } : { bearer, body });
 const skip = (id: string, bearer: string | null = v2) => costed("POST", `/api/plan/workouts/${id}/skip`, bearer === null ? {} : { bearer });
 const unskip = (id: string, bearer: string | null = v2) => costed("POST", `/api/plan/workouts/${id}/unskip`, bearer === null ? {} : { bearer });
-const drain = (bearer: string | null = v2) => costed("POST", "/api/sessions/watch/drain", bearer === null ? { body: {} } : { bearer, body: {} });
+/** The watch drain: the phone's names the session it moved (`{workoutId}`, its bound); the web's sends `{}`, as it does. */
+const drain = (bearer: string | null = v2, workoutId?: string) =>
+  costed("POST", "/api/sessions/watch/drain", bearer === null ? { body: workoutId ? { workoutId } : {} } : { bearer, body: workoutId ? { workoutId } : {} });
 
 /** A Studio workout the laptop makes on `day` at `time`: the kind of session the phone plays. */
 async function workoutOn(day: string, time = "18:00"): Promise<string> {
@@ -205,8 +207,8 @@ describe("a v2 phone moves, skips and unskips through run-garden's own routes", 
     expect([u.status, u.json]).toEqual([200, { ok: true }]);
     expect(rowOf(id)).toMatchObject({ date: THU, completion: "scheduled" });
     expect(overridesOf(id).at(-1)).toMatchObject({ kind: "restore", source: "app" });
-    // Unskip of one not skipped, and of one that isn't on the plan: the route's own answers.
-    expect([(await unskip(id)).status, (await unskip(id)).json]).toEqual([422, { error: "not_skipped" }]);
+    // The same unskip again (its answer lost): 200 as the first (kit v0.14, below); one that isn't on the plan: 404.
+    expect([(await unskip(id)).status, (await unskip(id)).json]).toEqual([200, { ok: true }]);
     expect([(await unskip("no-such-session")).status, (await unskip("no-such-session")).json]).toEqual([404, { error: "not_found" }]);
   });
 
@@ -252,6 +254,7 @@ describe("a v1 phone is refused them, and keeps v1", () => {
       await skip(id, v1),
       await unskip(id, v1),
       await drain(v1),
+      await drain(v1, id),
     ]) {
       expect([a.status, a.json]).toEqual([403, { error: "out_of_scope" }]);
       expect(a.statements).toHaveLength(1);
@@ -327,8 +330,8 @@ describe("the device's bodies", () => {
     expect(rowOf(id)).toMatchObject({ date: FRI, time: "07:00" });
   });
 
-  it("skip, unskip and the drain carry no body (or {}): anything in one is 403 out_of_scope", async () => {
-    for (const path of [`/api/plan/workouts/${id}/skip`, `/api/plan/workouts/${id}/unskip`, "/api/sessions/watch/drain"]) {
+  it("skip and unskip carry no body (or {}): anything in one is 403 out_of_scope", async () => {
+    for (const path of [`/api/plan/workouts/${id}/skip`, `/api/plan/workouts/${id}/unskip`]) {
       for (const raw of ['{"x":1}', '{"until":"2026-11-30"}', "[]", "null", "not json", "{} {}"]) {
         const a = await w.call("POST", path, { bearer: v2, raw });
         expect([path, raw, a.status, a.json]).toEqual([path, raw, 403, { error: "out_of_scope" }]);
@@ -339,6 +342,14 @@ describe("the device's bodies", () => {
     expect((await w.call("POST", `/api/plan/workouts/${id}/skip`, { bearer: v2 })).json).toEqual({ ok: true });
     expect((await w.call("POST", `/api/plan/workouts/${id}/unskip`, { bearer: v2, raw: " { } " })).json).toEqual({ ok: true });
     expect((await w.call("POST", `/api/plan/workouts/${id}/skip`, { bearer: v2, raw: "" })).json).toEqual({ ok: true });
+  });
+
+  it("the phone's drain names the one session it moved, exactly {workoutId}: no body, {} or anything more is 403 out_of_scope", async () => {
+    for (const raw of ["", "{}", " { } ", '{"workoutId":""}', `{"workoutId":${JSON.stringify("x".repeat(201))}}`, '{"workoutId":7}', '{"workoutId":null}', `{"workoutId":"${id}","all":true}`, '{"x":1}', "[]", "null", "not json"]) {
+      const a = await w.call("POST", "/api/sessions/watch/drain", { bearer: v2, raw });
+      expect([raw.slice(0, 40), a.status, a.json]).toEqual([raw.slice(0, 40), 403, { error: "out_of_scope" }]);
+      expect(a.writes).toEqual([]);
+    }
   });
 });
 
@@ -563,7 +574,7 @@ describe("the gate, as for v1", () => {
     await w.call("POST", `/api/plan/workouts/${id}/move`, { bearer, env, body: { toDate: FRI, toTime: "07:00", from: { date: THU, time: "18:00" } } }),
     await w.call("POST", `/api/plan/workouts/${id}/skip`, { bearer, env }),
     await w.call("POST", `/api/plan/workouts/${id}/unskip`, { bearer, env }),
-    await w.call("POST", "/api/sessions/watch/drain", { bearer, env, body: {} }),
+    await w.call("POST", "/api/sessions/watch/drain", { bearer, env, body: { workoutId: id } }),
   ];
 
   it("the restore lock: each is 423 restore_in_progress and writes nothing; reads still answer; v1 is still 403 first", async () => {
@@ -671,13 +682,70 @@ describe("the watch: watchDrain handed back, and the phone's drain", () => {
     expect((await jobOf(`unpush:${buildId}`))!.status).toBe("queued");
     expect(copiesNamed(stamp)).toBe(1);
 
-    const d = await drain();
+    const d = await drain(v2, workoutId);
     expect([d.status, d.json], d.text).toEqual([200, { ran: true, pending: 0 }]);
     expect(d.total).toBeLessThanOrEqual(BUDGET);
     expect((await jobOf(`unpush:${buildId}`))!.status).toBe("verified");
     expect(copiesNamed(stamp)).toBe(0);
     // Nothing left: the phone's chain stops on the next answer.
-    expect((await drain()).json).toEqual({ ran: false, pending: 0 });
+    expect((await drain(v2, workoutId)).json).toEqual({ ran: false, pending: 0 });
+  });
+
+  it("its answer lost, the move resent: 200 with the same answer (watchDrain still, the take-off still waiting), nothing new queued", async () => {
+    const { workoutId, buildId, stamp } = await sentSlot();
+    const body = { toDate: TOMORROW, toTime: "18:00", from: { date: DAY, time: "18:00" } };
+    const first = await move(workoutId, body);
+    expect(first.status, first.text).toBe(200);
+    const before = everything();
+    const again = await move(workoutId, body);
+    expect([again.status, again.json]).toEqual([200, first.json]);
+    expect(again.total).toBeLessThanOrEqual(BUDGET);
+    expect(everything()).toEqual(before);
+    expect((await drain(v2, workoutId)).json).toEqual({ ran: true, pending: 0 });
+    expect((await jobOf(`unpush:${buildId}`))!.status).toBe("verified");
+    expect(copiesNamed(stamp)).toBe(0);
+  });
+
+  it("the phone's drain runs only the session it names: another session's queued push and the mirror's sweep wait for the lanes", async () => {
+    const { workoutId, buildId } = await sentSlot();
+    // Another programme's session today, built and sent on the laptop, its push queued and not yet run.
+    const other = "prog-native-plan-edits-02";
+    await w.db.insert(programs).values({
+      id: other, userId: w.userId, kind: "adaptive", name: "Mobility program", status: "active", disciplines: ["strength", "yoga"],
+      startDate: null, endDate: null, raceDate: null, source: null, config: adaptiveConfigSchema.parse({ defaultMinutes: 30 }),
+      createdAt: NOON, updatedAt: NOON, archivedAt: null,
+    });
+    const otherId = slotId(other, DAY);
+    await w.db.insert(plannedWorkouts).values({
+      id: otherId, userId: w.userId, planId: other, sourceWorkoutId: otherId, title: "Mobility program", category: "strength", sport: "strength",
+      originalPlanDate: DAY, lastVerifiedCorosDate: "", effectiveDate: DAY, effectiveTime: "07:00", sourceContentFingerprint: "program",
+      calendarBlockDurationSeconds: 1800, fallbackEstimatedDurationSeconds: 1800, corosSyncState: "calendar_only",
+      completionState: "scheduled", origin: "program", contentState: "outline", createdAt: NOON, updatedAt: NOON,
+    });
+    const otherBuild = (await buildToday(w.db, w.userId, await loadPreferences(w.db, w.userId), otherId)).build!.buildId;
+    const { digest } = (await w.call("GET", `/api/sessions/${otherId}/watch-preview`)).json as { digest: string };
+    expect((await w.call("POST", `/api/sessions/${otherId}/send-to-watch`, { body: { buildId: otherBuild, digest } })).status).toBe(200);
+    expect((await jobOf(`push:${otherBuild}`))!.status).toBe("queued");
+    // And a Studio workout tomorrow with no copy yet: the mirror's sweep has work.
+    const studio = await workoutOn(TOMORROW);
+
+    expect((await move(workoutId, { toDate: TOMORROW, toTime: "18:00", from: { date: DAY, time: "18:00" } })).json.watchDrain).toBe(true);
+    const jobsBefore = q(`select id, status from coros_write_jobs where workout_id <> ? order by id`, workoutId);
+    const buildsBefore = q(`select id from session_builds where workout_id = ? order by id`, studio);
+    // The account's drain takes a push first; the phone's runs only its own session's take-off, and counts only its own.
+    const d = await drain(v2, workoutId);
+    expect([d.status, d.json], d.text).toEqual([200, { ran: true, pending: 0 }]);
+    expect((await jobOf(`unpush:${buildId}`))!.status).toBe("verified");
+    expect(q(`select id, status from coros_write_jobs where workout_id <> ? order by id`, workoutId)).toEqual(jobsBefore);
+    expect((await jobOf(`push:${otherBuild}`))!.status).toBe("queued");
+    expect(q(`select id from session_builds where workout_id = ? order by id`, studio)).toEqual(buildsBefore);
+    expect((await drain(v2, workoutId)).json).toEqual({ ran: false, pending: 0 });
+    // A session id that isn't the account's: nothing runs.
+    expect((await drain(v2, "someone-elses-session")).json).toEqual({ ran: false, pending: 0 });
+    // The web's drain is the account's, as before: it runs the other work.
+    const web = await drain(null);
+    expect([web.status, web.json.ran]).toEqual([200, true]);
+    expect(q(`select id, status from coros_write_jobs where workout_id <> ? order by id`, workoutId)).not.toEqual(jobsBefore);
   });
 
   it("with the watch switch off: the move hands back no watchDrain, and the drain is 404 as for the web", async () => {
@@ -686,10 +754,89 @@ describe("the watch: watchDrain handed back, and the phone's drain", () => {
     const mv = await w.call("POST", `/api/plan/workouts/${workoutId}/move`, { bearer: v2, env: off, body: { toDate: TOMORROW, toTime: "18:00", from: { date: DAY, time: "18:00" } } });
     expect(mv.status, mv.text).toBe(200);
     expect(mv.json.watchDrain).toBeUndefined();
-    for (const bearer of [v2, null]) {
-      const d = await w.call("POST", "/api/sessions/watch/drain", { ...(bearer ? { bearer } : {}), env: off, body: {} });
+    for (const [bearer, body] of [[v2, { workoutId }], [null, {}]] as const) {
+      const d = await w.call("POST", "/api/sessions/watch/drain", { ...(bearer ? { bearer } : {}), env: off, body });
       expect([d.status, d.json]).toEqual([404, { error: "not_found" }]);
     }
+  });
+});
+
+describe("a retried request whose first answer was lost (kit v0.14): 200, and nothing new", () => {
+  let id: string;
+  beforeEach(async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    setClock(D, "09:00");
+    await world();
+    id = await workoutOn(THU);
+  });
+  const body = { toDate: SAT, toTime: "18:15", from: { date: THU, time: "18:00" } };
+
+  it("a move resent with the same {toDate, toTime, from}: 200 with the first answer, no row, override, intent, job or audit added", async () => {
+    const first = await move(id, body);
+    expect(first.status, first.text).toBe(200);
+    const before = everything();
+    for (let i = 0; i < 2; i++) {
+      const again = await move(id, body);
+      expect([again.status, again.json]).toEqual([200, first.json]);
+    }
+    expect(everything()).toEqual(before);
+  });
+
+  it("an untimed session's move (from's time null), resent: 200, nothing added", async () => {
+    exec(`update planned_workouts set effective_time = '' where id = ?`, id);
+    const untimed = { ...body, from: { date: THU, time: null } };
+    expect((await move(id, untimed)).status).toBe(200);
+    const before = everything();
+    expect((await move(id, untimed)).status).toBe(200);
+    expect(everything()).toEqual(before);
+  });
+
+  it("not the phone's own success: the laptop put it at the phone's destination itself — 409 moved since, nothing written", async () => {
+    expect((await move(id, { toDate: SAT, toTime: "18:15" }, null)).status).toBe(200);
+    const before = everything();
+    const a = await move(id, body);
+    expect([a.status, a.json]).toEqual([409, { error: "session_changed", why: MOVED_SINCE_WORDS }]);
+    expect(everything()).toEqual(before);
+  });
+
+  it("not once something else moved it since, even back to the same place: 409 moved since", async () => {
+    expect((await move(id, body)).status).toBe(200);
+    expect((await move(id, { toDate: FRI, toTime: "07:00" }, null)).status).toBe(200);
+    expect((await move(id, { toDate: SAT, toTime: "18:15" }, null)).status).toBe(200);
+    const a = await move(id, body);
+    expect([a.status, a.json]).toEqual([409, { error: "session_changed", why: MOVED_SINCE_WORDS }]);
+  });
+
+  it("not once it was set aside since: 409 set aside; nor another move from the same slot to elsewhere: 409 moved since", async () => {
+    expect((await move(id, body)).status).toBe(200);
+    expect((await move(id, { ...body, toDate: FRI })).json).toEqual({ error: "session_changed", why: MOVED_SINCE_WORDS });
+    expect((await skip(id, null)).status).toBe(200);
+    expect((await move(id, body)).json).toEqual({ error: "session_changed", why: SET_ASIDE_WORDS });
+  });
+
+  it("a skip resent: 200, skipped once (no second skip, take-off or override)", async () => {
+    expect((await skip(id)).json).toEqual({ ok: true });
+    const row = q(`select * from planned_workouts where id = ?`, id);
+    const changes = () => ({ overrides: overridesOf(id), jobs: q(`select * from coros_write_jobs order by id`), intents: q(`select * from sync_intents order by rowid`), audits: q(`select * from audit_events order by rowid`) });
+    const before = changes();
+    expect((await skip(id)).json).toEqual({ ok: true });
+    expect(q(`select * from planned_workouts where id = ?`, id)).toEqual(row);
+    expect(changes()).toEqual(before);
+  });
+
+  it("an unskip resent: 200, as the first was, nothing written; an unskip of one never skipped, or changed since, is still 422", async () => {
+    expect((await skip(id)).status).toBe(200);
+    expect((await unskip(id)).json).toEqual({ ok: true });
+    const before = everything();
+    const again = await unskip(id);
+    expect([again.status, again.json]).toEqual([200, { ok: true }]);
+    expect(everything()).toEqual(before);
+    // Never skipped: as before.
+    const other = await workoutOn(FRI);
+    expect([(await unskip(other)).status, (await unskip(other)).json]).toEqual([422, { error: "not_skipped" }]);
+    // Moved since the unskip: the resent unskip is no longer the last thing that happened to it.
+    expect((await move(id, { toDate: FRI, toTime: "07:00" }, null)).status).toBe(200);
+    expect([(await unskip(id)).status]).toEqual([422]);
   });
 });
 
@@ -712,18 +859,24 @@ describe("the request budget: every v2 request within 45 statements and fetches,
     await spend("move, from", move(doc, { toDate: SAT, toTime: "18:15", from: { date: THU, time: "18:00" } }));
     await spend("move, stale from", move(doc, { toDate: FRI, toTime: "18:15", from: { date: THU, time: "18:00" } }));
     await spend("move, the slot (watchDrain)", move(slot, { toDate: FRI, toTime: "18:00", from: { date: THU, time: "18:00" } }));
-    await spend("drain", drain());
+    await spend("move, the slot, resent", move(slot, { toDate: FRI, toTime: "18:00", from: { date: THU, time: "18:00" } }));
+    await spend("drain, the slot", drain(v2, slot));
     await spend("skip", skip(doc));
+    await spend("skip, resent", skip(doc));
     await spend("unskip", unskip(doc));
+    await spend("unskip, resent", unskip(doc));
     await spend("skip, the slot", skip(slot));
     await spend("unskip, the slot", unskip(slot));
     expect(costs.map(([label, status]) => [label, status])).toEqual([
       ["move, from", 200],
       ["move, stale from", 409],
       ["move, the slot (watchDrain)", 200],
-      ["drain", 200],
+      ["move, the slot, resent", 200],
+      ["drain, the slot", 200],
       ["skip", 200],
+      ["skip, resent", 200],
       ["unskip", 200],
+      ["unskip, resent", 200],
       ["skip, the slot", 200],
       ["unskip, the slot", 200],
     ]);

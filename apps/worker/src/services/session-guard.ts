@@ -1,5 +1,5 @@
-import { and, eq, inArray, isNull, ne, or, sql, type SQL } from "drizzle-orm";
-import { corosWriteJobs, plannedWorkouts, sessionBuilds } from "@rg/database";
+import { and, desc, eq, inArray, isNull, ne, or, sql, type SQL } from "drizzle-orm";
+import { auditEvents, corosWriteJobs, plannedWorkouts, sessionBuilds } from "@rg/database";
 import { addDays, isLocalDate } from "@rg/domain";
 import { chunkIds, type Db } from "./db.js";
 import { PROVISIONAL_KIND, PROVISIONAL_KIND_PATH, pushJobId, SETTLED_PUSH, UNSTARTED_AT_PATH } from "./session-build.js";
@@ -185,20 +185,54 @@ export type SeenRefusal =
   | { status: 404; body: { error: "not_found"; why: string } }
   | { status: 409; body: { error: "session_changed"; why: string } };
 
+/** A resent move whose first answer was lost: it landed, and nothing has changed the session since (kit v0.14). */
+export interface AlreadyMoved {
+  taken: { corosSyncState: string; jobId?: string };
+}
+
 /**
- * Why a guarded move made from `seen` lost, as the row stands now (one read), when the guard's own refusals (done, under way:
- * `refusalNow`, asked first) don't say: removed (or gone) is 404 `not_found`; set aside is 409 `session_changed`, set aside;
- * moved is 409 `session_changed`, moved since. Null when it still stands as seen: the race was something else.
+ * HOW A GUARDED MOVE MADE FROM `seen` TO `to` LOST, as the row stands now, when the guard's own refusals (done, under way:
+ * `refusalNow`, asked first) don't say:
+ *
+ *  - ALREADY TAKEN (`{taken}`): the phone's resend of a move whose answer was lost. The row is on the plan, scheduled, at
+ *    exactly `to`, and the LAST move written to it (its latest `workout_moved` audit) is this route's from exactly `seen` to
+ *    exactly `to` (`MoveRequest.seen`). A row that sits at `to` after any other change — the laptop's own move there, or a
+ *    move away and back — has a later audit, or one with no `seen`, and is not this edit's success. The caller answers 200
+ *    as the first answer was, writing nothing.
+ *  - removed (or gone): 404 `not_found`; set aside (skipped, missed): 409 `session_changed`, set aside; moved: 409
+ *    `session_changed`, moved since.
+ *
+ * Null when it still stands as seen: the race was something else. One read, and a second (the latest move audit, newest
+ * first by its time index) only when the row stands at `to`.
  */
-export async function seenRefusal(db: Db, userId: string, id: string, seen: SeenAt): Promise<SeenRefusal | null> {
+export async function lostMoveAnswer(db: Db, userId: string, id: string, seen: SeenAt, to: { toDate: string; toTime: string }): Promise<AlreadyMoved | SeenRefusal | null> {
   const pw = plannedWorkouts;
   const [row] = await db
-    .select({ archivedAt: pw.archivedAt, completionState: pw.completionState, at: sql<number>`case when ${stillAt(seen)} then 1 else 0 end` })
+    .select({
+      archivedAt: pw.archivedAt,
+      completionState: pw.completionState,
+      effectiveDate: pw.effectiveDate,
+      effectiveTime: pw.effectiveTime,
+      corosSyncState: pw.corosSyncState,
+      at: sql<number>`case when ${stillAt(seen)} then 1 else 0 end`,
+    })
     .from(pw)
     .where(and(eq(pw.id, id), eq(pw.userId, userId)))
     .limit(1);
   if (!row || row.archivedAt !== null) return { status: 404, body: { error: "not_found", why: GONE_WORDS } };
   if (!(PLANNED_STATES as readonly string[]).includes(row.completionState)) return { status: 409, body: { error: "session_changed", why: SET_ASIDE_WORDS } };
-  if (!Number(row.at)) return { status: 409, body: { error: "session_changed", why: MOVED_SINCE_WORDS } };
-  return null;
+  if (Number(row.at)) return null;
+  if (row.completionState === "scheduled" && row.effectiveDate === to.toDate && row.effectiveTime === to.toTime) {
+    const [last] = await db
+      .select({ detail: auditEvents.detail })
+      .from(auditEvents)
+      .where(and(eq(auditEvents.userId, userId), eq(auditEvents.kind, "workout_moved"), sql`json_extract(${auditEvents.detail}, '$.workoutId') = ${id}`))
+      .orderBy(desc(auditEvents.createdAt), sql`rowid desc`)
+      .limit(1);
+    const d = (last?.detail ?? null) as { source?: unknown; toDate?: unknown; toTime?: unknown; jobId?: unknown; seen?: { date?: unknown; time?: unknown } } | null;
+    if (d && d.source === "app" && d.toDate === to.toDate && d.toTime === to.toTime && d.seen?.date === seen.date && (d.seen.time ?? null) === seen.time) {
+      return { taken: { corosSyncState: row.corosSyncState, ...(typeof d.jobId === "string" ? { jobId: d.jobId } : {}) } };
+    }
+  }
+  return { status: 409, body: { error: "session_changed", why: MOVED_SINCE_WORDS } };
 }
