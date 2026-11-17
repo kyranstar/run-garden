@@ -595,6 +595,15 @@ describe("the gate, as for v1", () => {
     expect(everything()).toEqual(before);
   });
 
+  it("a device row with a scope this Worker doesn't know, a prototype's name included: 403 out_of_scope, never a 500 (m2)", async () => {
+    for (const scope of ["__proto__", "constructor", "toString", "hasOwnProperty", "valueOf", "training-v3", "TRAINING-V2", "training-v2 ", ""]) {
+      const { token } = await seedDevice(w.db, w.userId, { scope, lastUsedAt: nowInstant() });
+      for (const a of [await w.call("GET", "/api/native/me", { bearer: token }), await w.call("GET", "/api/native/today", { bearer: token }), ...(await all(token))]) {
+        expect([scope, a.status, a.json]).toEqual([scope, 403, { error: "out_of_scope" }]);
+      }
+    }
+  });
+
   it("a revoke takes effect on the next request: the phone that moved is refused right after", async () => {
     const phone = await seedDevice(w.db, w.userId, { scope: V2, lastUsedAt: nowInstant() });
     expect((await move(id, { toDate: FRI, toTime: "07:00" }, phone.token)).status).toBe(200);
