@@ -194,7 +194,8 @@ export interface AlreadyMoved {
  * HOW A GUARDED MOVE MADE FROM `seen` TO `to` LOST, as the row stands now, when the guard's own refusals (done, under way:
  * `refusalNow`, asked first) don't say:
  *
- *  - ALREADY TAKEN (`{taken}`): the phone's resend of a move whose answer was lost. The row is on the plan, scheduled, at
+ *  - ALREADY TAKEN (`{taken}`): the phone's resend of a move whose answer was lost. The row is on the plan, still planned
+ *    (scheduled — or unresolved, its new day passed since with nothing done: the move still landed; review RG r2-m2), at
  *    exactly `to`, and the LAST move written to it (its latest `workout_moved` audit) is this route's from exactly `seen` to
  *    exactly `to` (`MoveRequest.seen`). A row that sits at `to` after any other change — the laptop's own move there, or a
  *    move away and back — has a later audit, or one with no `seen`, and is not this edit's success. The caller answers 200
@@ -222,7 +223,7 @@ export async function lostMoveAnswer(db: Db, userId: string, id: string, seen: S
   if (!row || row.archivedAt !== null) return { status: 404, body: { error: "not_found", why: GONE_WORDS } };
   if (!(PLANNED_STATES as readonly string[]).includes(row.completionState)) return { status: 409, body: { error: "session_changed", why: SET_ASIDE_WORDS } };
   if (Number(row.at)) return null;
-  if (row.completionState === "scheduled" && row.effectiveDate === to.toDate && row.effectiveTime === to.toTime) {
+  if (row.effectiveDate === to.toDate && row.effectiveTime === to.toTime) {
     const [last] = await db
       .select({ detail: auditEvents.detail })
       .from(auditEvents)

@@ -42,6 +42,7 @@ vi.mock("../src/services/session-build.js", async (importOriginal) => {
 import { sha256Hex } from "../src/auth/crypto.js";
 import type { Env } from "../src/env.js";
 import { savePreferences, loadPreferences } from "../src/services/calendar-sync.js";
+import { reconcileCompletionStates } from "../src/services/reconcile-daily.js";
 import { COMPLETED_WORDS, GONE_WORDS, MOVED_SINCE_WORDS, SET_ASIDE_WORDS, UNDER_WAY_WORDS } from "../src/services/session-guard.js";
 import { slotId } from "../src/services/program-slots.js";
 import { nativeRoutes } from "../src/routes/native.js";
@@ -888,6 +889,18 @@ describe("a retried request whose first answer was lost (kit v0.14): 200, and no
     expect(everything()).toEqual(before);
   });
 
+  it("a move resent after its destination day passed (unresolved, at exactly its destination): taken, 200, nothing written (r2-m2)", async () => {
+    const first = await move(id, body);
+    expect(first.status, first.text).toBe(200);
+    // The destination day passes with nothing done: the daily reconcile asks about it.
+    setClock(addDays(SAT, 2), "03:15");
+    await reconcileCompletionStates(w.db, w.userId, await loadPreferences(w.db, w.userId));
+    expect(rowOf(id)).toMatchObject({ date: SAT, time: "18:15", completion: "unresolved" });
+    const before = everything();
+    const again = await move(id, body);
+    expect([again.status, again.json]).toEqual([200, first.json]);
+    expect(everything()).toEqual(before);
+  });
 });
 
 describe("the request budget: every v2 request within 45 statements and fetches, D1's bind cap on", () => {
