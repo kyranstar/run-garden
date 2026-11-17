@@ -118,7 +118,7 @@ const TRAINING_SLICE_V1: readonly DeviceRoute[] = [
 
 /**
  * Stage 2a (DESIGN §9): v1's own entries, then a linked workout moved, skipped or put back on run-garden's plan, and the
- * watch drain a move or skip hands back (`watchDrain`; 404 while the watch switch is off, as for the web).
+ * watch drain a move hands back (`watchDrain: true`; the drain is 404 while the watch switch is off, as for the web).
  */
 const TRAINING_V2: readonly DeviceRoute[] = [
   ...TRAINING_SLICE_V1,
