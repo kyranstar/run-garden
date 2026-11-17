@@ -96,7 +96,7 @@ import { todayConditions } from "../services/condition-views.js";
 import { watchReviewOffers } from "../services/session-watch-review.js";
 import { plannedRowColumns, type PlannedRow } from "../services/planned-columns.js";
 import { DESIGNED_RUN_SEED } from "../services/designed-runs.js";
-import { guardRefusal, MOVED_SINCE_WORDS, readGuarded, refusalNow, standsAt, stillAt, stillOpen } from "../services/session-guard.js";
+import { GONE_WORDS, guardRefusal, readGuarded, refusalNow, seenRefusal, stillAsSeen, stillOpen } from "../services/session-guard.js";
 import { reopenedDocColumns, resolveLibraryName } from "../services/workout-doc-store.js";
 
 export const planRoutes = new Hono<AppContext>();
@@ -1675,9 +1675,11 @@ const moveSchema = z.object({
 /**
  * A move of the athlete's own (`session-guard.ts`: a done session, or one under way, is refused 409 `{error, why}`).
  *
- * `from`, when sent (the phone always sends it; the web may): the move is held to the row still standing there, in the guarded
- * write itself (`stillAt`, beside `stillOpen`), so a move made against a stale view — kept offline while the laptop, the coach
- * or COROS moved the session — is refused 409 `session_changed` and writes nothing. Without it the move is exactly as it was.
+ * `from`, when sent (the phone always sends it; the web may): the move is held to the row still standing as the client saw it —
+ * on the plan, still planned, at that slot — in the guarded write itself (`stillAsSeen`, beside `stillOpen`), so a move made
+ * against a stale view, kept offline while the laptop, the coach or COROS changed the session, writes nothing: removed since,
+ * 404 `not_found`; set aside (skipped, missed) or moved since, 409 `session_changed`, each with its own words; done or under
+ * way, the guard's own refusal first. Without it the move is exactly as it was.
  */
 planRoutes.post("/workouts/:id/move", async (c) => {
   const db = c.get("db");
@@ -1698,7 +1700,7 @@ planRoutes.post("/workouts/:id/move", async (c) => {
       toTime: parsed.data.toTime,
       source: "app",
       corosWritesEnabled: prefs.corosWritesEnabled,
-      ...(row ? { onlyIf: from ? and(stillOpen(row), stillAt(from))! : stillOpen(row) } : {}),
+      ...(row ? { onlyIf: from ? and(stillOpen(row), stillAsSeen(from))! : stillOpen(row) } : {}),
     });
     // Cloud-direct: the queued write executes now, not when a Mac wakes. A programme session's watch copy comes off
     // in its own request instead (ruling 3-R11, re-review 3-B NEW-1): the client drains it, so this invocation stays
@@ -1711,14 +1713,16 @@ planRoutes.post("/workouts/:id/move", async (c) => {
     const msg = e instanceof Error ? e.message : "move_failed";
     if (msg === "session_changed") {
       const lost = await refusalNow(db, userId, c.req.param("id"), today);
-      // Not done or under way now, and no longer where the client saw it: moved since, said so (not "just now. Try again").
-      if (from && lost.error === "session_changed" && !(await standsAt(db, userId, c.req.param("id"), from))) {
-        return c.json({ error: "session_changed", why: MOVED_SINCE_WORDS }, 409);
+      // Not done or under way now, and no longer as the client saw it: removed, set aside or moved since, said so (never
+      // "just now. Try again": the phone doesn't resend a refused edit).
+      if (from && lost.error === "session_changed") {
+        const seen = await seenRefusal(db, userId, c.req.param("id"), from);
+        if (seen) return c.json(seen.body, seen.status);
       }
       return c.json(lost, 409);
     }
     // Gone (never there, or hard-deleted before its move was written): 404 in words, as note Undo answers — nothing to retry.
-    if (msg === "workout_not_found") return c.json({ error: "not_found", why: "This session is no longer on your plan." }, 404);
+    if (msg === "workout_not_found") return c.json({ error: "not_found", why: GONE_WORDS }, 404);
     return c.json({ error: msg }, msg === "races_cannot_move" ? 422 : 500);
   }
 });

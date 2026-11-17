@@ -153,21 +153,52 @@ export interface SeenAt {
   time: string | null;
 }
 
-/**
- * The row still stands where the client saw it, as an SQL condition: beside `stillOpen` in a guarded write's condition, so a
- * move made against a stale view — an edit kept offline for hours, while the laptop, the coach or COROS moved the session — is
- * refused in the write itself, never an overwrite of the newer choice. "No time" is the reads' rule (`/^\d{2}:\d{2}$/`) as a
- * GLOB; every constant in it is a literal, and the date and time bind two values.
- */
+/** A move made from a stale view of a session removed since, or not on the plan at all. */
+export const GONE_WORDS = "This session is no longer on your plan.";
+/** …of a session set aside since (skipped, or missed): it stays where it is, as it is. */
+export const SET_ASIDE_WORDS = "This session was set aside since this change was made, so it stays as it is now.";
+
+/** The states a session the client saw on its plan can still be moved from (a move of an unresolved one schedules it). */
+const PLANNED_STATES = ["scheduled", "unresolved"] as const;
+
+/** The row still stands at the client's slot: its day, and its time ("no time" is the reads' rule, `/^\d{2}:\d{2}$/`, as a GLOB). */
 export function stillAt(seen: SeenAt): SQL {
   const pw = plannedWorkouts;
   const time = seen.time === null ? sql`${pw.effectiveTime} not glob '[0-9][0-9]:[0-9][0-9]'` : eq(pw.effectiveTime, seen.time);
   return and(eq(pw.effectiveDate, seen.date), time)!;
 }
 
-/** Whether the row stands where the client saw it now (one read): a lost guarded move tells "moved since" from a race. */
-export async function standsAt(db: Db, userId: string, id: string, seen: SeenAt): Promise<boolean> {
+/**
+ * THE ROW STILL STANDS AS THE CLIENT SAW IT, as an SQL condition for a guarded write, beside `stillOpen`: on the plan (not
+ * removed), still planned (not skipped or missed since), and at its slot (`stillAt`). So a move made against a stale view —
+ * an edit kept offline for hours while the laptop, the coach or COROS moved, removed or set the session aside — is refused in
+ * the write itself, never an overwrite of the newer choice, and the client is never told a move landed that run-garden
+ * doesn't show (review RG m1: the slot alone let a removed or skipped row be re-dated). Every constant is a literal but the
+ * two states, the date and the time: four binds.
+ */
+export function stillAsSeen(seen: SeenAt): SQL {
   const pw = plannedWorkouts;
-  const [row] = await db.select({ id: pw.id }).from(pw).where(and(eq(pw.id, id), eq(pw.userId, userId), stillAt(seen))).limit(1);
-  return row !== undefined;
+  return and(isNull(pw.archivedAt), inArray(pw.completionState, [...PLANNED_STATES]), stillAt(seen))!;
+}
+
+export type SeenRefusal =
+  | { status: 404; body: { error: "not_found"; why: string } }
+  | { status: 409; body: { error: "session_changed"; why: string } };
+
+/**
+ * Why a guarded move made from `seen` lost, as the row stands now (one read), when the guard's own refusals (done, under way:
+ * `refusalNow`, asked first) don't say: removed (or gone) is 404 `not_found`; set aside is 409 `session_changed`, set aside;
+ * moved is 409 `session_changed`, moved since. Null when it still stands as seen: the race was something else.
+ */
+export async function seenRefusal(db: Db, userId: string, id: string, seen: SeenAt): Promise<SeenRefusal | null> {
+  const pw = plannedWorkouts;
+  const [row] = await db
+    .select({ archivedAt: pw.archivedAt, completionState: pw.completionState, at: sql<number>`case when ${stillAt(seen)} then 1 else 0 end` })
+    .from(pw)
+    .where(and(eq(pw.id, id), eq(pw.userId, userId)))
+    .limit(1);
+  if (!row || row.archivedAt !== null) return { status: 404, body: { error: "not_found", why: GONE_WORDS } };
+  if (!(PLANNED_STATES as readonly string[]).includes(row.completionState)) return { status: 409, body: { error: "session_changed", why: SET_ASIDE_WORDS } };
+  if (!Number(row.at)) return { status: 409, body: { error: "session_changed", why: MOVED_SINCE_WORDS } };
+  return null;
 }

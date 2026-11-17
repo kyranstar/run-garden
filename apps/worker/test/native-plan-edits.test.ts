@@ -42,7 +42,7 @@ vi.mock("../src/services/session-build.js", async (importOriginal) => {
 import { sha256Hex } from "../src/auth/crypto.js";
 import type { Env } from "../src/env.js";
 import { savePreferences, loadPreferences } from "../src/services/calendar-sync.js";
-import { COMPLETED_WORDS, MOVED_SINCE_WORDS, UNDER_WAY_WORDS } from "../src/services/session-guard.js";
+import { COMPLETED_WORDS, GONE_WORDS, MOVED_SINCE_WORDS, SET_ASIDE_WORDS, UNDER_WAY_WORDS } from "../src/services/session-guard.js";
 import { slotId } from "../src/services/program-slots.js";
 import { nativeRoutes } from "../src/routes/native.js";
 import { planRoutes } from "../src/routes/plan.js";
@@ -475,6 +475,78 @@ describe("Move's from: a move made against a stale view is refused, for every ca
     const a = await move(id, { toDate: SAT, toTime: "18:15" });
     expect(a.status, a.text).toBe(200);
     expect(rowOf(id)).toMatchObject({ date: SAT, time: "18:15" });
+  });
+
+  // m1 (review RG): `from` holds the row's state too, not only its slot — a session removed or set aside since is not
+  // re-dated behind the person's back, and the phone is never told a move landed that run-garden doesn't show.
+  it("the laptop removed it meanwhile: the phone's move from its slot is 404 not_found, nothing written", async () => {
+    const removed = await w.call("DELETE", `/api/workouts/${id}`);
+    expect(removed.status, removed.text).toBe(200);
+    expect(q(`select archived_at is not null as archived from planned_workouts where id = ?`, id)).toEqual([{ archived: 1 }]);
+    const before = everything();
+    const a = await move(id, { toDate: SAT, toTime: "18:15", from: { date: THU, time: "18:00" } });
+    expect([a.status, a.json]).toEqual([404, { error: "not_found", why: GONE_WORDS }]);
+    expect(everything()).toEqual(before);
+  });
+
+  it.each([
+    ["skipped on the laptop", async () => expect((await skip(id, null)).status).toBe(200)],
+    // As reconcile writes it once the window has passed unanswered, or the athlete says it didn't happen.
+    ["missed", async () => exec(`update planned_workouts set completion_state = 'missed', resolution_date = ? where id = ?`, D, id)],
+  ])("%s meanwhile: the phone's move from its slot is 409 session_changed, set aside, nothing written", async (_name, setAside) => {
+    await setAside();
+    const state = rowOf(id).completion;
+    const before = everything();
+    const a = await move(id, { toDate: SAT, toTime: "18:15", from: { date: THU, time: "18:00" } });
+    expect([a.status, a.json]).toEqual([409, { error: "session_changed", why: SET_ASIDE_WORDS }]);
+    expect(everything()).toEqual(before);
+    expect(rowOf(id)).toMatchObject({ date: THU, time: "18:00", completion: state });
+  });
+
+  it("the web without from is unchanged: it still re-dates a skipped row, as before", async () => {
+    expect((await skip(id, null)).status).toBe(200);
+    expect((await move(id, { toDate: SAT, toTime: "18:15" }, null)).status).toBe(200);
+    expect(rowOf(id)).toMatchObject({ date: SAT, time: "18:15", completion: "skipped" });
+  });
+
+  it.each(["removed", "skipped"] as const)("held in the guarded write: the laptop's session %s between the phone's read and its write wins; nothing of the phone's lands", async (what) => {
+    let laptop: Record<string, unknown[]> = {};
+    gates.move = async () => {
+      const a = what === "removed" ? await w.call("POST", `/api/plan/workouts/${id}/remove`, { body: {} }) : await skip(id, null);
+      expect(a.status, a.text).toBe(200);
+      laptop = everything();
+    };
+    const a = await move(id, { toDate: SAT, toTime: "18:15", from: { date: THU, time: "18:00" } });
+    expect([a.status, a.json]).toEqual(what === "removed" ? [404, { error: "not_found", why: GONE_WORDS }] : [409, { error: "session_changed", why: SET_ASIDE_WORDS }]);
+    expect(everything()).toEqual(laptop);
+    expect(rowOf(id)).toMatchObject({ date: THU, time: "18:00" });
+  });
+});
+
+describe("a race the guard wins: its own words, never 'moved since' (m4)", () => {
+  let id: string;
+  beforeEach(async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    setClock(D, "09:00");
+    await world();
+    id = await workoutOn(D);
+    // The laptop moved it to 19:00 this morning: the phone's view (18:00) is stale.
+    expect((await move(id, { toDate: D, toTime: "19:00" }, null)).status).toBe(200);
+    setClock(D, "17:55");
+  });
+
+  it("started on the phone between the read and the write: session_under_way, with its words", async () => {
+    gates.move = async () => void (await phoneStarts(id));
+    const a = await move(id, { toDate: THU, toTime: "18:00", from: { date: D, time: "18:00" } });
+    expect([a.status, a.json]).toEqual([409, { error: "session_under_way", why: UNDER_WAY_WORDS }]);
+    expect(rowOf(id)).toMatchObject({ date: D, time: "19:00", content: "started" });
+  });
+
+  it("done between the read and the write (a save landing): session_completed, with its words", async () => {
+    gates.move = async () => exec(`update planned_workouts set completion_state = 'completed' where id = ?`, id);
+    const a = await move(id, { toDate: THU, toTime: "18:00", from: { date: D, time: "18:00" } });
+    expect([a.status, a.json]).toEqual([409, { error: "session_completed", why: COMPLETED_WORDS }]);
+    expect(rowOf(id)).toMatchObject({ date: D, time: "19:00", completion: "completed" });
   });
 });
 
