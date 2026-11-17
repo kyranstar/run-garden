@@ -20,7 +20,7 @@ import { rememberLocalStart, type LocalStart } from "../src/offline/local-starts
 import { enqueue } from "../src/offline/outbox.js";
 import { loadExtras, saveExtras } from "../src/player/stored.js";
 import { beginPlayer, endSession, playerData, toLiveSession } from "../src/player/run.js";
-import { SessionsInProgress } from "../src/components/sessions-in-progress.js";
+import { SessionsInProgress, sessionsInProgress } from "../src/components/sessions-in-progress.js";
 import { build, profiles, view } from "./player/fixtures.js";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -145,6 +145,20 @@ describe("Today: a session in progress on this device (ruling 2b-R16)", () => {
       await new Promise((r) => setTimeout(r, 100));
     });
     expect(host!.innerHTML).toBe("");
+  });
+});
+
+describe("the list reads the session's own record first (Q-167's liveProgress)", () => {
+  it("the step total is the recorder's when it and the stored build's differ; the build's only for a record the player can't read", async () => {
+    db = await openOfflineDb(new IDBFactory());
+    await inProgress("slot-y", YESTERDAY, "user-1");
+    // The build kept for the slot is not the one being played (3 steps where the session plays 9).
+    const kept = (await loadBuild(db, "slot-y"))!;
+    await saveBuild(db, { workoutId: "slot-y", view: kept.view, build: { ...kept.build, steps: kept.build.steps.slice(0, 3) } } as unknown as SessionDto);
+    expect(await sessionsInProgress(db, "user-1")).toEqual([{ workoutId: "slot-y", title: "Program slot-y", date: YESTERDAY, step: 3, steps: 9 }]);
+    const live = (await readLive(db, "slot-y"))!;
+    await writeLive(db, { ...live, recorder: { kind: "not-the-player" } });
+    expect(await sessionsInProgress(db, "user-1")).toEqual([{ workoutId: "slot-y", title: "Program slot-y", date: YESTERDAY, step: 3, steps: 3 }]);
   });
 });
 
