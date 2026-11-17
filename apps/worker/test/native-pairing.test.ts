@@ -132,7 +132,7 @@ describe("redeeming, from the phone (unauthenticated)", () => {
       {
         id,
         userId: w.userId,
-        scope: "training-slice-v1",
+        scope: "training-v2", // the newest scope (stage 2 DESIGN §5.1): a new pairing is minted at it
         label: "Kitchen iPhone",
         state: "pending",
         checkNumber: a.json.check,

@@ -80,16 +80,24 @@ describe("the web's own reads carry what the phone's leave out (the seeds are re
 });
 
 describe("GET /api/native/me", () => {
-  it("answers the device {userId, device: {label, expiresAt}} and nothing else", async () => {
+  it("answers the device {userId, device: {label, expiresAt, scope}} and nothing else", async () => {
     const { token } = await seedDevice(w.db, w.userId, { label: "Kitchen iPhone" });
     const [row] = await w.db.select().from(schema.nativeDevices);
     const a = await w.call("GET", "/api/native/me", { bearer: token });
     expect(a.status).toBe(200);
-    expect(a.json).toEqual({ userId: w.userId, device: { label: "Kitchen iPhone", expiresAt: row!.expiresAt } });
+    // `scope` (stage 2 DESIGN §5.1, additive): what this pairing allows, so the phone offers only that.
+    expect(a.json).toEqual({ userId: w.userId, device: { label: "Kitchen iPhone", expiresAt: row!.expiresAt, scope: "training-slice-v1" } });
     expect(a.text).not.toContain(w.email);
     expect(keysOf(a.json).filter((k) => FORBIDDEN_KEYS.includes(k))).toEqual([]);
     // The device's own read (its account joined) and its last use: no connection, restore or account read besides.
     expect(tablesOf(a.statements)).toEqual(["native_devices", "users"]);
+  });
+
+  it("names each device's own scope: a v2 pairing says training-v2, a v1 one keeps training-slice-v1", async () => {
+    const v1 = await seedDevice(w.db, w.userId);
+    const v2 = await seedDevice(w.db, w.userId, { scope: "training-v2" });
+    expect((await w.call("GET", "/api/native/me", { bearer: v1.token })).json.device.scope).toBe("training-slice-v1");
+    expect((await w.call("GET", "/api/native/me", { bearer: v2.token })).json.device.scope).toBe("training-v2");
   });
 
   it("answers a cookie with no device", async () => {

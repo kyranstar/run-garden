@@ -14,7 +14,7 @@
  *   POST /pair                      unauthenticated, {code, label} → {token, check, state: "pending", confirmBy}; every
  *                                   failure alike is 401 `pair_failed`
  *   POST /sign-out                  its device token: its own row revoked
- *   GET  /me                        {userId, device: {label, expiresAt}} (§10.4, trimmed on the server)
+ *   GET  /me                        {userId, device: {label, expiresAt, scope}} (§10.4, trimmed on the server)
  *   GET  /today                     {today, sessions}: the day's training rows only (§10.4), each saying whether the phone
  *                                   can open it (`written`) and its document's revision (`docRev`; kit v0.10)
  *
@@ -107,12 +107,14 @@ nativeRoutes.post("/devices/:id/revoke", requireUser, cookieOnly, async (c) => {
 });
 
 /**
- * The phone's account read (§10.4), in place of `/api/auth/me`: who it is signed in as, and its own label and expiry.
- * No email, connections or restore state. A cookie gets `device: null`.
+ * The phone's account read (§10.4), in place of `/api/auth/me`: who it is signed in as, and its own label, expiry and
+ * scope — what its pairing allows (stage 2 DESIGN §5.1, additive), so the phone offers only that: a `training-slice-v1`
+ * phone plays and saves; a `training-v2` one also moves, skips and puts back. No email, connections or restore state. A
+ * cookie gets `device: null`.
  */
 nativeRoutes.get("/me", requireUser, async (c) => {
   const device = c.get("device");
-  return c.json({ userId: c.get("userId"), device: device ? { label: device.label, expiresAt: device.expiresAt } : null });
+  return c.json({ userId: c.get("userId"), device: device ? { label: device.label, expiresAt: device.expiresAt, scope: device.scope } : null });
 });
 
 /** A planned time, `HH:MM`. */

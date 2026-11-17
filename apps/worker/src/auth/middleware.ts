@@ -8,7 +8,7 @@ import { restoreInProgress } from "../services/account-state.js";
 import { resolveSession, SESSION_COOKIE } from "./sessions.js";
 import { deviceSigningMessage, sha256Hex, verifyEd25519 } from "./crypto.js";
 import { nativeDevicesEnabled } from "../env.js";
-import { DEVICE_SCOPE, inDeviceScope } from "./device-scope.js";
+import { inDeviceScope, isDeviceScope, type DeviceScope } from "./device-scope.js";
 import { deviceTokenOf, findDevice, isDeviceBearer, isOwnerEmail, touchDevice } from "./native-devices.js";
 
 /** A request a paired phone made with its device token (native device sign-in): which device, as `requireUser` found it. */
@@ -16,6 +16,8 @@ export interface DeviceContext {
   id: string;
   label: string;
   expiresAt: string;
+  /** What its pairing allows (device-scope.ts): the scope it was paired at, never upgraded in place. */
+  scope: DeviceScope;
 }
 
 export interface AppContext {
@@ -103,9 +105,10 @@ export async function requireUser(c: Context<AppContext>, next: Next): Promise<v
  *  2. the kill switch (`NATIVE_DEVICES`, a secret) not exactly "1": 401 `device_access_off`, before any read;
  *  3. not one well-formed token: 401 `unauthenticated`, before any read;
  *  4. the device, by its token's SHA-256, with its account (one read): none, 401 `unauthenticated`; revoked, 401
- *     `device_revoked`; expired, 401 `device_expired`; not yet confirmed on the laptop, 401 `device_pending`; another
- *     scope, 403 `out_of_scope`; an account that is not the owner's email, 401 `unauthenticated`;
- *  5. the route and its body on the scope's list (device-scope.ts), else 403 `out_of_scope` — before the restore rule;
+ *     `device_revoked`; expired, 401 `device_expired`; not yet confirmed on the laptop, 401 `device_pending`; a scope
+ *     this Worker doesn't know, 403 `out_of_scope`; an account that is not the owner's email, 401 `unauthenticated`;
+ *  5. the route and its body on THE DEVICE'S OWN scope's list (device-scope.ts `DEVICE_SCOPES`: a v1 phone's is v1's,
+ *     a v2 phone's v2's), else 403 `out_of_scope` — before the restore rule;
  *  6. the restore rule (ruling B2), as the cookie path has it: a write while a restore runs is 423;
  *  7. last use written, at most hourly.
  *
@@ -128,16 +131,17 @@ async function requireDevice(c: Context<AppContext>, next: Next): Promise<void |
   if (device.state === "revoked") return c.json({ error: "device_revoked" }, 401);
   if (device.expiresAt <= now) return c.json({ error: "device_expired" }, 401);
   if (device.state !== "active") return c.json({ error: "device_pending" }, 401);
-  if (device.scope !== DEVICE_SCOPE) return c.json({ error: "out_of_scope" }, 403);
+  const scope = device.scope;
+  if (!isDeviceScope(scope)) return c.json({ error: "out_of_scope" }, 403);
   if (!isOwnerEmail(device.email, c.env)) return c.json({ error: "unauthenticated" }, 401);
-  if (!(await inDeviceScope(c))) return c.json({ error: "out_of_scope" }, 403);
+  if (!(await inDeviceScope(c, scope))) return c.json({ error: "out_of_scope" }, 403);
   if (MUTATING.has(c.req.method) && !openWhileRestoring(c) && (await restoreInProgress(db, device.userId))) {
     return c.json({ error: "restore_in_progress" }, 423);
   }
   await touchDevice(db, device, now);
   c.set("userId", device.userId);
   c.set("userEmail", device.email);
-  c.set("device", { id: device.id, label: device.label, expiresAt: device.expiresAt });
+  c.set("device", { id: device.id, label: device.label, expiresAt: device.expiresAt, scope });
   await next();
 }
 

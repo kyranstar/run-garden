@@ -9,7 +9,7 @@ import { nowInstant } from "@rg/domain";
 import type { Env } from "../env.js";
 import type { Db } from "../services/db.js";
 import { hmacSha256Hex, randomToken, sha256Hex } from "./crypto.js";
-import { DEVICE_SCOPE } from "./device-scope.js";
+import { NEWEST_DEVICE_SCOPE } from "./device-scope.js";
 
 /**
  * OWNER'S CHOICE, open (SLICE-CONTRACT §9 question 1): how long a confirmed device works before the owner re-pairs it
@@ -309,7 +309,8 @@ async function redeemCounted(
   await db.insert(nativeDevices).values({
     id,
     userId: owner,
-    scope: DEVICE_SCOPE,
+    // The newest scope (stage 2 DESIGN §5.1): what the owner consents to by pairing now. A device keeps it.
+    scope: NEWEST_DEVICE_SCOPE,
     label: input.label,
     state: "pending",
     checkNumber: check,

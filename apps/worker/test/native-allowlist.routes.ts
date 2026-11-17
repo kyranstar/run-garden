@@ -1,18 +1,34 @@
 /**
- * EVERY (method, path) THE WORKER'S APP MOUNTS, classified for the device scope (native-allowlist.test.ts), in mount
- * order, middleware (ALL) included. A route added to the app fails that test until it is added here; its class is
- * checked against how it behaves:
+ * EVERY (method, path) THE WORKER'S APP MOUNTS, classified for each device scope (native-allowlist.test.ts), in mount
+ * order, middleware (ALL) included. A route added to the app fails that test until it is added here; its class, under
+ * each scope, is checked against how it behaves for a device of that scope:
  *
- *  - `device`: on the slice's list (auth/device-scope.ts) — exactly the eight pairs of SLICE-CONTRACT §10.3;
- *  - `gated`: behind `requireUser`, so a device token is 403 `out_of_scope`;
+ *  - `device`: on the scope's list (auth/device-scope.ts `DEVICE_SCOPES`) — for `training-slice-v1` exactly the eight
+ *    pairs of SLICE-CONTRACT §10.3; for `training-v2` those and stage 2a's four (DESIGN §5.1, §9);
+ *  - `gated`: behind `requireUser`, so that scope's device token is 403 `out_of_scope`;
  *  - `open`: not behind `requireUser` — the device token is no credential there, and changes nothing;
  *  - `bearer`: behind its own bearer door (LifeOS, the saves extension), which the device token does not open.
  *
- * A new route that a device should reach is a new scope (a later slice), never a widened `training-slice-v1`.
+ * A route is one class for every scope, or a class per scope where they differ (`V2_DEVICE`): a scope added later must
+ * name its class for each of those, or the type fails. A new route that a device should reach is a new scope (a later
+ * stage), never a widened one.
  */
 export type RouteClass = "device" | "gated" | "open" | "bearer";
 
-export const ROUTE_CLASSES: Record<string, RouteClass> = {
+/** The device scopes, oldest first. */
+export const SCOPES = ["training-slice-v1", "training-v2"] as const;
+export type Scope = (typeof SCOPES)[number];
+
+/** A route's class: the same under every scope, or one per scope. */
+export type Classified = RouteClass | Readonly<Record<Scope, RouteClass>>;
+
+/** Stage 2a's plan edits and the watch drain: refused to a v1 device, reached by a v2 one. */
+const V2_DEVICE: Readonly<Record<Scope, RouteClass>> = { "training-slice-v1": "gated", "training-v2": "device" };
+
+/** The class of a classified route under `scope`. */
+export const classUnder = (classified: Classified, scope: Scope): RouteClass => (typeof classified === "string" ? classified : classified[scope]);
+
+export const ROUTE_CLASSES: Record<string, Classified> = {
   "ALL /*": "open",
   "ALL /api/*": "open",
   "GET /api/auth/google/start": "open",
@@ -34,9 +50,9 @@ export const ROUTE_CLASSES: Record<string, RouteClass> = {
   "POST /api/plan/race/checklist": "gated",
   "POST /api/plan/race-conflict/resolve": "gated",
   "POST /api/plan/repair-fidelity": "gated",
-  "POST /api/plan/workouts/:id/move": "gated",
-  "POST /api/plan/workouts/:id/skip": "gated",
-  "POST /api/plan/workouts/:id/unskip": "gated",
+  "POST /api/plan/workouts/:id/move": V2_DEVICE,
+  "POST /api/plan/workouts/:id/skip": V2_DEVICE,
+  "POST /api/plan/workouts/:id/unskip": V2_DEVICE,
   "POST /api/plan/workouts/:id/match": "gated",
   "POST /api/plan/workouts/:id/unmatch": "gated",
   "POST /api/plan/workouts/:id/mark-done": "gated",
@@ -176,7 +192,7 @@ export const ROUTE_CLASSES: Record<string, RouteClass> = {
   "POST /api/sessions/:workoutId/put-on-watch": "gated",
   "POST /api/sessions/:workoutId/retry-watch": "gated",
   "GET /api/sessions/:workoutId/watch-review": "gated",
-  "POST /api/sessions/watch/drain": "gated",
+  "POST /api/sessions/watch/drain": V2_DEVICE,
   "PUT /api/sessions/performed/:id": "device",
   "ALL /api/conditions/*": "gated",
   "POST /api/conditions/checks": "gated",

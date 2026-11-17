@@ -1,20 +1,33 @@
 /**
- * WHAT A DEVICE TOKEN MAY REACH: scope `training-slice-v1` (SLICE-CONTRACT revision 2 §10.3), deny by default.
+ * WHAT A DEVICE TOKEN MAY REACH, BY ITS OWN SCOPE, deny by default (SLICE-CONTRACT revision 2 §10.3; stage 2 DESIGN §5.1):
+ *
+ *  - `training-slice-v1`: the smallest workout — the phone's reads, Build `{}`, Start and the save. Kept exactly as it was.
+ *  - `training-v2` (stage 2a, "Moves in run-garden too"): v1's own entries, and run-garden's move, skip and unskip of a
+ *    planned session and the watch drain — the web's routes, guard and services, each validating as it does for the web.
  *
  * Exact (method, anchored pattern) pairs, matched against `c.req.path` (the same decoded path the router matches) and
  * `c.req.method`, for every method: HEAD is its own method here and is on no pair, so a device's HEAD is refused like any
- * other off-list request. `requireUser`'s device branch checks this before the restore rule (423), and anything off the
- * list is 403 `out_of_scope`. A pair may also hold a body rule: the request's body is read (Hono keeps it, so the handler
- * reads the same bytes) and refused 403 `out_of_scope` when it asks for more than the slice allows.
+ * other off-list request. `requireUser`'s device branch checks the device's OWN scope's list before the restore rule
+ * (423), and anything off it is 403 `out_of_scope`. A pair may also hold a body rule: the request's body is read (Hono
+ * keeps it, so the handler reads the same bytes) and refused 403 `out_of_scope` when it asks for more than the scope
+ * allows.
  *
- * Later slices get new scopes, never a widened v1. `native-allowlist.test.ts` holds every route the app mounts against
- * this list, every method, so a new route fails that test until it is classified.
+ * A new pairing is minted at the newest scope. A device keeps the scope it was paired at: there is no in-place upgrade
+ * (device management is the laptop's, and a pairing is the owner's consent to what it allows), so a v1 phone pairs again.
+ * Later stages get new scopes, never a widened one. `native-allowlist.test.ts` holds every route the app mounts against
+ * each scope's list, every method, so a new route fails that test until it is classified.
  */
 import type { Context } from "hono";
+import { isLocalDate } from "@rg/domain";
 
-export const DEVICE_SCOPE = "training-slice-v1";
+export const DEVICE_SCOPE_V1 = "training-slice-v1";
+export const DEVICE_SCOPE_V2 = "training-v2";
+export type DeviceScope = typeof DEVICE_SCOPE_V1 | typeof DEVICE_SCOPE_V2;
 
-/** True when the body, as raw text, is within the slice. */
+/** The scope a new pairing is minted at. */
+export const NEWEST_DEVICE_SCOPE: DeviceScope = DEVICE_SCOPE_V2;
+
+/** True when the body, as raw text, is within the scope. */
 type BodyRule = (raw: string) => boolean;
 
 export interface DeviceRoute {
@@ -60,11 +73,39 @@ export const deviceSaveBody: BodyRule = (raw) => {
   return true;
 };
 
+/** Skip, unskip and the drain from the phone carry nothing: no body, or `{}` (the routes read none). */
+export const emptyBody: BodyRule = (raw) => raw.trim() === "" || emptyObjectBody(raw);
+
+/** A time the phone moves a session to: a clock time, `HH:MM`. */
+const CLOCK_TIME = /^([01]\d|2[0-3]):[0-5]\d$/;
+/** A time as the device's reads give one (`/api/native/today`, the plan read): `HH:MM`, else the row has none (null). */
+const READ_TIME = /^\d{2}:\d{2}$/;
+
+/** Whether `o` has every one of `required`, and nothing outside `required` and `optional`. */
+const keysAre = (o: Record<string, unknown>, required: readonly string[], optional: readonly string[] = []): boolean =>
+  required.every((k) => Object.hasOwn(o, k)) && Object.keys(o).every((k) => required.includes(k) || optional.includes(k));
+
+/**
+ * A move from the phone is exactly `{toDate, toTime, from?}` (stage 2 DESIGN §5.3): a real local date, a clock time
+ * (R2-2: a move always sets one), and, when sent, `from: {date, time}` — where the phone last saw the session, its time as
+ * the reads gave it (`HH:MM`, or null for none). Nothing else: no key the route might read later, for the web, slips
+ * through a device. The route's own schema then validates again, as it does for the web.
+ */
+export const deviceMoveBody: BodyRule = (raw) => {
+  const p = parsed(raw);
+  if (!p.ok || !isPlainObject(p.value) || !keysAre(p.value, ["toDate", "toTime"], ["from"])) return false;
+  const { toDate, toTime, from } = p.value;
+  if (typeof toDate !== "string" || !isLocalDate(toDate) || typeof toTime !== "string" || !CLOCK_TIME.test(toTime)) return false;
+  if (!Object.hasOwn(p.value, "from")) return true;
+  if (!isPlainObject(from) || !keysAre(from, ["date", "time"])) return false;
+  return typeof from.date === "string" && isLocalDate(from.date) && (from.time === null || (typeof from.time === "string" && READ_TIME.test(from.time)));
+};
+
 /** One path segment, as Hono's `:param` matches one. */
 const SEG = "[^/]+";
 
-/** The slice, exactly. Nothing else answers a device. */
-export const DEVICE_ROUTES: readonly DeviceRoute[] = [
+/** The slice, exactly (SLICE-CONTRACT §10.3). */
+const TRAINING_SLICE_V1: readonly DeviceRoute[] = [
   { method: "GET", pattern: /^\/api\/native\/me$/ },
   { method: "GET", pattern: /^\/api\/native\/today$/ },
   { method: "POST", pattern: /^\/api\/native\/sign-out$/ },
@@ -75,14 +116,35 @@ export const DEVICE_ROUTES: readonly DeviceRoute[] = [
   { method: "PUT", pattern: new RegExp(`^/api/sessions/performed/${SEG}$`), body: deviceSaveBody },
 ];
 
-/** The pair this request is, or undefined (off the list). */
-export function deviceRouteOf(method: string, path: string): DeviceRoute | undefined {
-  return DEVICE_ROUTES.find((r) => r.method === method && r.pattern.test(path));
+/**
+ * Stage 2a (DESIGN §9): v1's own entries, then a linked workout moved, skipped or put back on run-garden's plan, and the
+ * watch drain a move or skip hands back (`watchDrain`; 404 while the watch switch is off, as for the web).
+ */
+const TRAINING_V2: readonly DeviceRoute[] = [
+  ...TRAINING_SLICE_V1,
+  { method: "POST", pattern: new RegExp(`^/api/plan/workouts/${SEG}/move$`), body: deviceMoveBody },
+  { method: "POST", pattern: new RegExp(`^/api/plan/workouts/${SEG}/skip$`), body: emptyBody },
+  { method: "POST", pattern: new RegExp(`^/api/plan/workouts/${SEG}/unskip$`), body: emptyBody },
+  { method: "POST", pattern: /^\/api\/sessions\/watch\/drain$/, body: emptyBody },
+];
+
+/** Each scope's list. Nothing else answers a device of that scope. */
+export const DEVICE_SCOPES: Readonly<Record<DeviceScope, readonly DeviceRoute[]>> = {
+  [DEVICE_SCOPE_V1]: TRAINING_SLICE_V1,
+  [DEVICE_SCOPE_V2]: TRAINING_V2,
+};
+
+/** Whether a device row's scope is one this Worker knows (any other is refused 403 `out_of_scope`). */
+export const isDeviceScope = (scope: string): scope is DeviceScope => Object.hasOwn(DEVICE_SCOPES, scope);
+
+/** The pair of `scope`'s list this request is, or undefined (off the list). */
+export function deviceRouteOf(scope: DeviceScope, method: string, path: string): DeviceRoute | undefined {
+  return DEVICE_SCOPES[scope].find((r) => r.method === method && r.pattern.test(path));
 }
 
-/** Whether this request is in the device's scope: on the list, and its body within the pair's rule. */
-export async function inDeviceScope(c: Context): Promise<boolean> {
-  const route = deviceRouteOf(c.req.method, c.req.path);
+/** Whether this request is in the device's scope: on its list, and its body within the pair's rule. */
+export async function inDeviceScope(c: Context, scope: DeviceScope): Promise<boolean> {
+  const route = deviceRouteOf(scope, c.req.method, c.req.path);
   if (!route) return false;
   if (!route.body) return true;
   return route.body(await c.req.text());
