@@ -185,6 +185,11 @@ const moveAs = (bearer, body) => call("POST", `/api/plan/workouts/${pid}/move`, 
 const moved = await moveAs(token, { toDate: d2, toTime: "07:30", from: { date: d1, time: "07:00" } });
 check("the v2 phone moves it to another day, from where it saw it: 200", [moved.status, moved.json.workoutId], [200, pid]);
 check("…and it stands there on local D1", slotOf(), { date: d2, time: "07:30", state: "scheduled" });
+// Its answer lost, the phone resends the same move (kit v0.14): 200 as the first was, and nothing new.
+const beforeResend = editTrace();
+const resent = await moveAs(token, { toDate: d2, toTime: "07:30", from: { date: d1, time: "07:00" } });
+check("the same move resent (its answer lost): 200, the first answer", [resent.status, resent.json], [200, moved.json]);
+check("…and nothing new: the row, its overrides, intents and the move audits", editTrace(), beforeResend);
 const beforeStale = editTrace();
 const stale = await moveAs(token, { toDate: d3, toTime: "18:00", from: { date: d1, time: "07:00" } });
 check("a move from the old slot (a stale view): 409 session_changed, moved since", [stale.status, stale.json], [409, { error: "session_changed", why: "This session was moved since this change was made, so it stays where it is now." }]);
@@ -204,10 +209,15 @@ const undo = await moveAs(token, { toDate: d2, toTime: "07:30", from: { date: d3
 check("…so the phone's late Undo is 409 session_changed, the laptop's choice kept", [undo.status, undo.json.error, slotOf()], [409, "session_changed", { date: d2, time: "12:00", state: "scheduled" }]);
 check("the phone skips it: 200 ok", (await call("POST", `/api/plan/workouts/${pid}/skip`, { bearer: token })).json, { ok: true });
 check("…skipped on local D1", slotOf().state, "skipped");
+const afterSkip = editTrace();
+check("the skip resent: 200 ok, and nothing new", [(await call("POST", `/api/plan/workouts/${pid}/skip`, { bearer: token })).json, editTrace()], [{ ok: true }, afterSkip]);
 check("the phone puts it back: 200 ok", (await call("POST", `/api/plan/workouts/${pid}/unskip`, { bearer: token })).json, { ok: true });
 check("…scheduled again", slotOf().state, "scheduled");
+const afterUnskip = editTrace();
+check("the unskip resent: 200 ok (not 422), and nothing new", [(await call("POST", `/api/plan/workouts/${pid}/unskip`, { bearer: token })).json, editTrace()], [{ ok: true }, afterUnskip]);
 check("the session the phone saved (section 4) is done: its move is 409 session_completed", (await call("POST", `/api/plan/workouts/${id}/move`, { bearer: token, body: { toDate: d1, toTime: "07:00", from: { date: day, time: "23:30" } } })).json.error, "session_completed");
-check("the watch drain, the switch off here: 404 not_found, as for the web", (await call("POST", "/api/sessions/watch/drain", { bearer: token, body: {} })).json, { error: "not_found" });
+check("the phone's watch drain names its session; the switch off here: 404 not_found, as for the web", (await call("POST", "/api/sessions/watch/drain", { bearer: token, body: { workoutId: pid } })).json, { error: "not_found" });
+check("…and a drain naming none is outside the phone's grammar: 403 out_of_scope", (await call("POST", "/api/sessions/watch/drain", { bearer: token, body: {} })).json, { error: "out_of_scope" });
 // A phone paired before v2 (its row written as one was then): it keeps v1, and v1 is refused the plan edits.
 const v1Token = `rgd_${createHash("sha256").update(`harness-v1-${Date.now()}`).digest("base64url")}`;
 const at = new Date().toISOString();
@@ -221,7 +231,7 @@ check("…and its move, skip, unskip and drain are 403 out_of_scope", await Prom
   moveAs(v1Token, { toDate: d3, toTime: "07:00", from: { date: d2, time: "12:00" } }),
   call("POST", `/api/plan/workouts/${pid}/skip`, { bearer: v1Token }),
   call("POST", `/api/plan/workouts/${pid}/unskip`, { bearer: v1Token }),
-  call("POST", "/api/sessions/watch/drain", { bearer: v1Token, body: {} }),
+  call("POST", "/api/sessions/watch/drain", { bearer: v1Token, body: { workoutId: pid } }),
 ]).then((all) => all.map((a) => `${a.status} ${a.json.error}`)), Array(4).fill("403 out_of_scope"));
 check("…with nothing written", editTrace(), v1Before);
 check("…while its own slice still answers", (await call("GET", "/api/native/today", { bearer: v1Token })).status, 200);
