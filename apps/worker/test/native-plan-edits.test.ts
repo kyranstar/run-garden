@@ -748,6 +748,21 @@ describe("the watch: watchDrain handed back, and the phone's drain", () => {
     expect(q(`select id, status from coros_write_jobs where workout_id <> ? order by id`, workoutId)).not.toEqual(jobsBefore);
   });
 
+  it("the phone's named drain claims only watch-copy jobs: never that session's own COROS move or coach job (r2 N17)", async () => {
+    const workoutId = await seedSlot(w.db, w.userId, DAY);
+    const earlier = new Date(Date.parse(NOON) - 3_600_000).toISOString();
+    const job = (id: string, kind: string) => ({
+      id, userId: w.userId, workoutId, kind, expectedContentFingerprint: "x", originalDate: DAY, destinationDate: TOMORROW, requestedAt: earlier, status: "queued", updatedAt: earlier,
+    });
+    // Queued ahead of any watch job, all this session's: a COROS move, an address-path delete (the lanes'), a coach write.
+    await w.db.insert(corosWriteJobs).values([job("move-job-n17", "move_scheduled_workout"), job(`${workoutId}-unpush`, "coach_delete_workout"), job("coach-job-n17", "coach_update_workout")]);
+    const jobs = () => q(`select * from coros_write_jobs where workout_id = ? order by id`, workoutId);
+    const before = jobs();
+    const d = await drain(v2, workoutId);
+    expect([d.status, d.json], d.text).toEqual([200, { ran: false, pending: 0 }]);
+    expect(jobs()).toEqual(before);
+  });
+
   it("with the watch switch off: the move hands back no watchDrain, and the drain is 404 as for the web", async () => {
     const workoutId = await seedSlot(w.db, w.userId, DAY);
     const off = { WATCH_PUSH_ENABLED: undefined };
