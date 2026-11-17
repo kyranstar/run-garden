@@ -48,7 +48,7 @@ vi.mock("../src/services/calendar-sync.js", async (importOriginal) => ({
 }));
 
 const { default: worker, mountedRoutes } = await import("../src/index.js");
-const { DEVICE_SCOPES, deviceRouteOf, deviceSaveBody, emptyObjectBody } = await import("../src/auth/device-scope.js");
+const { DEVICE_SCOPES, deviceMoveBody, deviceRouteOf, deviceSaveBody, emptyBody, emptyObjectBody } = await import("../src/auth/device-scope.js");
 
 vi.setConfig({ testTimeout: 600_000 });
 
@@ -184,6 +184,13 @@ describe("every mounted route is classified", () => {
     const v2 = DEVICE_SCOPES["training-v2"];
     expect(v2).toHaveLength(v1.length + 4);
     v1.forEach((r, i) => expect(v2[i]).toBe(r));
+    // v2's own four, as exact anchored pairs with their body rules (one path segment for the id, never more).
+    expect(v2.slice(v1.length).map((r) => [r.method, String(r.pattern), r.body ?? null])).toEqual([
+      ["POST", String(/^\/api\/plan\/workouts\/[^/]+\/move$/), deviceMoveBody],
+      ["POST", String(/^\/api\/plan\/workouts\/[^/]+\/skip$/), emptyBody],
+      ["POST", String(/^\/api\/plan\/workouts\/[^/]+\/unskip$/), emptyBody],
+      ["POST", String(/^\/api\/sessions\/watch\/drain$/), emptyBody],
+    ]);
     expect(Object.keys(DEVICE_SCOPES).sort()).toEqual([...SCOPES].sort());
   });
 });
