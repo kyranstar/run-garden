@@ -377,6 +377,24 @@ describe("the document: GET and PUT /api/workouts/:id/doc with baseRev", () => {
     expect(q(`select effective_time as t from planned_workouts where id = ?`, slot)[0].t).toBe("18:00");
   });
 
+  it("late evening (the workerd reproduction, review r2-m1): the session beside a lengthened one is never pulled back to 23:00", async () => {
+    // 23:10, the Studio session made longer; 23:30, the programme's session beside it (its own time, unpinned). Clearing
+    // the first would start the second past 23:00, the latest start: before the fix it was moved to 23:00 — earlier, and
+    // still overlapping. Now it stays where it is, and the answer says nothing moved.
+    const slot = await seedSlot(w.db, w.userId, D);
+    client().prepare(`update planned_workouts set effective_time = '23:30' where id = ?`).run(slot);
+    const made = await w.call("POST", "/api/workouts", { body: { doc: calmDoc(), date: D, time: "23:10", clientId: `fit-${newId()}` } });
+    const id = made.json.workout.id as string;
+    const doc = (await readDoc(id)).json.doc as WorkoutDoc;
+    const longer: WorkoutDoc = {
+      ...doc,
+      parts: doc.parts.map((p) => ({ ...p, items: p.items.map((i) => (i.kind === "exercise" ? { ...i, dose: { ...i.dose, sets: 6, restSec: 60 } } : i)) })),
+    };
+    const a = await editDoc(id, { doc: longer, baseRev: 1 });
+    expect([a.status, a.json.workout.time, a.json.moved], a.text).toEqual([200, "23:10", []]);
+    expect(q(`select effective_time as t from planned_workouts where id = ?`, slot)[0].t).toBe("23:30");
+  });
+
   it("a stale baseRev is 409 stale_revision with the current rev, and nothing is written", async () => {
     const id = await workoutOn(D);
     const doc = (await readDoc(id)).json.doc as WorkoutDoc;

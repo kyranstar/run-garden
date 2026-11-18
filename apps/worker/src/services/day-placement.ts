@@ -224,7 +224,8 @@ export function placeDaySessions(
         a.key.localeCompare(b.key),
     );
   for (const s of movable) {
-    let start = asks(s);
+    const asked = asks(s);
+    let start = asked;
     // Bounded by the number of things it could possibly have to clear, so a
     // pathological day can never spin here.
     for (let guard = 0; guard <= placed.length; guard++) {
@@ -233,7 +234,10 @@ export function placeDaySessions(
       if (!hit) break;
       const next = roundUpToFive(hit[1] + prefs.bufferBeforeMinutes);
       if (next > LATEST_START_MINUTES) {
-        start = LATEST_START_MINUTES;
+        // Past the latest start, the tail stays at 23:00 rather than roll into tomorrow — but never earlier than where
+        // the session asked to start (review r2-m1): today that is its own time, never before now, so a session at 23:30
+        // stays at 23:30 (still beside the other, as it was) rather than be pulled back to 23:00, or into the past.
+        start = Math.max(LATEST_START_MINUTES, asked);
         break;
       }
       start = next;

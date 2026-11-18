@@ -80,6 +80,41 @@ describe("today: nothing is placed before now", () => {
     expect(minutesOf(layout.get("other")!)).toBeGreaterThan(minutesOf("18:00"));
   });
 
+  it("late in the evening the latest-start clamp never moves a session earlier than its own time (review r2-m1, P1)", () => {
+    // The workerd reproduction: a session at 23:10 made 41 minutes long, another at 23:30 beside it. Clearing the first
+    // would start the second past 23:00, the latest start: it stays at its own 23:30 — never pulled back to 23:00.
+    const day = [s("long", "strength", 41, "23:10"), s("beside", "yoga", 30, "23:30")];
+    const layout = relaidDay(TODAY, day, prefs, at("04:23"))!;
+    expect(layout.get("long")).toBe("23:10");
+    expect(layout.get("beside")).toBe("23:30");
+  });
+
+  it("and after 23:00 it never places one before now (review r2-m1, P2)", () => {
+    // 23:15: a session at 23:05 is under way in all but name (its time has come); one at 23:20 collides with it.
+    const day = [s("passed", "strength", 30, "23:05"), s("next", "yoga", 20, "23:20")];
+    const layout = relaidDay(TODAY, day, prefs, at("23:15"))!;
+    expect([layout.get("passed"), layout.get("next")]).toEqual(["23:05", "23:20"]);
+    for (const t of layout.values()) expect(t === "23:05" || minutesOf(t) >= minutesOf("23:15"), t).toBe(true);
+  });
+
+  it("many evening sessions: none ends earlier than it asked, and none before now", () => {
+    const day = Array.from({ length: 10 }, (_, i) => s(`s${i}`, "yoga", 30, "18:00"));
+    const layout = relaidDay(TODAY, day, prefs, at("17:00"))!;
+    for (const t of layout.values()) expect(minutesOf(t), t).toBeGreaterThanOrEqual(minutesOf("18:00"));
+  });
+
+  it("untimed rows today ask for their window or now, whichever is later — never the passed morning window (review r2-m4, P4)", () => {
+    // 10:02: the weekday window (07:00) has gone, so an untimed row is placed from now, rounded up to five minutes.
+    const day = [s("untimed-a", "strength", 40, ""), s("untimed-b", "yoga", 20, "")];
+    const layout = relaidDay(TODAY, day, prefs, at("10:02"))!;
+    expect(layout).not.toBeNull();
+    expect(layout.get("untimed-a")).toBe("10:05");
+    expect(minutesOf(layout.get("untimed-b")!)).toBeGreaterThan(minutesOf("10:05"));
+    // With the window still ahead (06:00), the window is the ask, as on a day ahead.
+    const early = relaidDay(TODAY, day, prefs, at("06:00"))!;
+    expect(early.get("untimed-a")).toBe("07:00");
+  });
+
   it("deterministic: the same day and clock give the same layout, whatever order the rows came in", () => {
     const day = [s("programme", "yoga", 30, "18:00"), s("studio", "strength", 50, "17:30"), s("flow", "yoga", 15, "18:10")];
     expect(placeDaySessions(TODAY, [...day].reverse(), prefs, at("09:00"))).toEqual(placeDaySessions(TODAY, day, prefs, at("09:00")));
