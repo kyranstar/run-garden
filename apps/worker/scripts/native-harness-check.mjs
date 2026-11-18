@@ -312,6 +312,21 @@ const raced = await Promise.all([grantAs(raceId, "training-v3"), grantAs(raceId,
 check("three grants at once on local D1: one granted, two not", raced.map((a) => `${a.status} ${a.json.granted}`).sort(), ["200 false", "200 false", "200 true"]);
 check("…and exactly one audit", grantAudits() - raceAudits, 1);
 check("…the race phone at v3", (await call("GET", "/api/native/me", { bearer: raceToken })).json.device?.scope, "training-v3");
+// The laptop's step-down (review r-m4): one rung down, in place — an undo, and a rollback without Revoke.
+const reduceAs = (id, scope) => call("POST", `/api/native/devices/${id}/reduce`, { cookie: true, body: { scope } });
+const reducedAudits = () => sql("select count(*) as n from audit_events where kind = 'native_device_scope_reduced'")[0].n;
+const beforeReduce = deviceRowOf(phoneId);
+const reducedBefore = reducedAudits();
+check("the laptop steps the phone down, v3 → v2: 200 reduced", (await reduceAs(phoneId, "training-v2")).json, { ok: true, scope: "training-v2", reduced: true });
+check("…its row the same but its scope, with one audit", [deviceRowOf(phoneId), reducedAudits() - reducedBefore], [{ ...beforeReduce, scope: "training-v2" }, 1]);
+check("…and the same token is judged by v2 on its next request: the document read is 403", (await call("GET", `/api/workouts/${fid}/doc`, { bearer: token })).json, { error: "out_of_scope" });
+check("…while v2's own routes answer: /me says training-v2", (await call("GET", "/api/native/me", { bearer: token })).json.device?.scope, "training-v2");
+check("the same step-down again: reduced false, no second audit", [(await reduceAs(phoneId, "training-v2")).json, reducedAudits() - reducedBefore], [{ ok: true, scope: "training-v2", reduced: false }, 1]);
+check("never two rungs at once: v2 → … asked as v3 → v1 is 409 not_previous_scope", (await reduceAs(raceId, "training-slice-v1")).json, { error: "not_previous_scope", scope: "training-v3", previous: "training-v2" });
+const raceReduced = reducedAudits();
+const downs = await Promise.all([reduceAs(raceId, "training-v2"), reduceAs(raceId, "training-v2"), reduceAs(raceId, "training-v2")]);
+check("three step-downs at once on local D1: one reduced, two not, one audit", [downs.map((a) => `${a.status} ${a.json.reduced}`).sort(), reducedAudits() - raceReduced], [["200 false", "200 false", "200 true"], 1]);
+check("the laptop grants the phone v3 back: 200 granted, and its document read answers again", [(await grantAs(phoneId, "training-v3")).json.granted, (await call("GET", `/api/workouts/${fid}/doc`, { bearer: token })).status], [true, 200]);
 
 // 5. More races on local D1: three codes (the mint bound is 5 a window, and this check mints 5 in all), each redeemed by
 // four requests at once — one device each, never two. Each new code lifts the redeem throttles, so each race starts clean.
