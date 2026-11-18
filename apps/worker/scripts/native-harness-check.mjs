@@ -357,8 +357,11 @@ const rowsByTable = (userId) =>
   Object.fromEntries(sqlAll(userIdTables.map((name) => `select '${name}' as t, count(*) as n from "${name}" where user_id = '${userId}'`)).map(([r]) => [r.t, r.n]));
 const ownerTables = () => rowsByTable(me.json.userId);
 const ownerBefore = ownerTables();
-const qaSetup = await call("POST", "/api/qa/setup", { cookie: true, body: {} });
-check("QA: the laptop's Set up makes the account, its fixtures and a code with the run's tokens", [qaSetup.status, qaSetup.json.created, qaSetup.json.seeded, /^rgq_/.test(qaSetup.json.harnessToken ?? ""), /^[0-9a-f]{64}$/.test(qaSetup.json.planToken ?? "")], [200, true, true, true, true]);
+// The laptop's Set up, as Settings → Developer sends it: the account, its fixtures, a code with the run's tokens.
+const qaMade = await call("POST", "/api/qa/user", { cookie: true, body: {} });
+const qaSeeded = await call("POST", "/api/qa/seed", { cookie: true, body: {} });
+const qaSetup = await call("POST", "/api/qa/pairings", { cookie: true, body: {} });
+check("QA: the laptop's Set up makes the account, its fixtures and a code with the run's tokens", [qaMade.status, qaSeeded.status, qaSeeded.json.fixtures?.length, qaSetup.status, /^rgq_/.test(qaSetup.json.harnessToken ?? ""), /^[0-9a-f]{64}$/.test(qaSetup.json.planToken ?? "")], [201, 200, 5, 200, true, true]);
 const [qaRow] = sql("select id, email, google_sub as sub from users where email = 'lifeos-qa@invalid'");
 check("QA: one account at lifeos-qa@invalid, no Google identity, not the owner's", [qaRow?.email, qaRow?.sub, qaRow?.id !== me.json.userId], ["lifeos-qa@invalid", null, true]);
 const qaId = qaRow.id;
@@ -395,8 +398,15 @@ check("QA: the harness reads it done at its new time, one move audit, one perfor
 ], ["completed", "23:50", 1, [qaSaveId], ["app_session"]]);
 check("QA: …and no provider row at all", [qaState.providers.connections, qaState.providers.corosWriteJobs, qaState.providers.calendarEventLinks, qaState.providers.syncRuns], [0, 0, 0, 0]);
 const qaPlanIds = sql(`select id from planned_workouts where user_id = '${qaId}'`).map((r) => r.id);
-const qaPurged = await harnessAs("POST", "/purge", { confirm: "purge qa" });
-check("QA: the harness purges it: every table checked, zero remain", [qaPurged.status, qaPurged.json.total], [200, 0]);
+// The purge goes in steps, each one request within Workers Free's budget, until it says done.
+let qaPurged = { json: { done: false } };
+let qaSteps = 0;
+while (!qaPurged.json.done && qaSteps < 10) {
+  qaPurged = await harnessAs("POST", "/purge", { confirm: "purge qa" });
+  qaSteps += 1;
+  if (qaPurged.status !== 200) break;
+}
+check("QA: the harness purges it: every table checked, zero remain", [qaPurged.status, qaPurged.json.done, qaPurged.json.total], [200, true, 0]);
 check("QA: the harness's own zero-row check, after", [(await harnessAs("GET", "/verify")).json.total, (await harnessAs("GET", "/verify")).json.exists], [0, false]);
 const leftByUser = Object.entries(rowsByTable(qaId)).filter(([, n]) => n > 0);
 check(`QA: on the real local D1, every one of the ${userIdTables.length} tables with a user_id holds nothing of it`, leftByUser, []);

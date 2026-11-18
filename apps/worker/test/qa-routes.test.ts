@@ -57,6 +57,25 @@ const owner = (method: string, path: string, body?: unknown) => w.call(method, `
 const harness = (method: string, path: string, token: string, body?: unknown) =>
   w.call(method, `/api/qa/run${path}`, { cookie: false, headers: { Authorization: `Bearer ${token}` }, ...(body === undefined ? {} : { body }) });
 
+/** Workers Free allows 50 subrequests a request and every D1 statement is one (a batch's too): the routes keep to 45. */
+const STATEMENT_BUDGET = 45;
+
+/**
+ * The purge's steps, each one request within the budget, until `done`: their answers summed (removed per table), the last
+ * one's `remaining` and `total`, and how many steps it took.
+ */
+async function purgeAll(send: () => Promise<Awaited<ReturnType<NativeWorld["call"]>>>) {
+  const removed: Record<string, number> = {};
+  for (let steps = 1; steps <= 10; steps++) {
+    const a = await send();
+    expect(a.status, a.text).toBe(200);
+    expect(a.statements.length, `purge step ${steps}: ${a.statements.length} statements`).toBeLessThanOrEqual(STATEMENT_BUDGET);
+    for (const [name, n] of Object.entries(a.json.removed as Record<string, number>)) removed[name] = (removed[name] ?? 0) + n;
+    if (a.json.done) return { removed, remaining: a.json.remaining as Record<string, number>, total: a.json.total as number, steps };
+  }
+  throw new Error("the purge took more than 10 steps");
+}
+
 /** Create, seed and mint through the owner's routes: the minted answer and the seeded fixtures. */
 async function setUp(): Promise<{ minted: Record<string, any>; fixtures: Array<Record<string, any>> }> {
   expect((await owner("POST", "/user")).status).toBe(201);
@@ -72,7 +91,6 @@ describe("the owner's routes: the owner's cookie only", () => {
     ["GET", "/status"],
     ["POST", "/user"],
     ["POST", "/seed"],
-    ["POST", "/setup"],
     ["POST", "/pairings"],
     ["GET", "/state"],
     ["POST", "/purge", { confirm: "purge qa" }],
@@ -136,26 +154,46 @@ describe("the owner's routes: create, seed, mint, read, purge", () => {
     expect((await owner("POST", "/seed")).json).toEqual({ error: "already_seeded" });
   });
 
-  it("setup does create, seed and mint in one, and again only mints", async () => {
-    const first = await owner("POST", "/setup");
-    expect(first.status, first.text).toBe(200);
-    expect(first.json).toMatchObject({ created: true, seeded: true, code: expect.any(String), harnessToken: expect.stringMatching(/^rgq_/) });
-    const again = await owner("POST", "/setup");
-    expect(again.json).toMatchObject({ created: false, seeded: false, code: expect.any(String) });
-  });
-
   it("purge asks for its words, then removes everything and says zero; the owner's account is as it was", async () => {
     await seedFullAccount(w.db, w.userId);
     const before = await tableHashes(w.db, w.userId);
     await setUp();
     expect((await owner("POST", "/purge", {})).json).toEqual({ error: "confirmation_required" });
-    const purged = await owner("POST", "/purge", { confirm: "purge qa" });
-    expect(purged.status, purged.text).toBe(200);
-    expect(purged.json.total).toBe(0);
-    expect(purged.json.removed.planned_workouts).toBe(5);
+    const purged = await purgeAll(() => owner("POST", "/purge", { confirm: "purge qa" }));
+    expect([purged.total, purged.steps]).toEqual([0, 1]);
+    expect(purged.removed.planned_workouts).toBe(5);
+    expect(Object.values(purged.remaining).every((n) => n === 0)).toBe(true);
     expect((await owner("GET", "/status")).json.qa).toBeNull();
     expect(await tableHashes(w.db, w.userId)).toEqual(before);
     expect((await owner("POST", "/purge", { confirm: "purge qa" })).status).toBe(404);
+  });
+
+  it("a QA account with rows in every table purges in steps, each within the request budget, to zero", async () => {
+    await seedFullAccount(w.db, w.userId);
+    const before = await tableHashes(w.db, w.userId);
+    expect((await owner("POST", "/user")).status).toBe(201);
+    const qaId = (await owner("GET", "/status")).json.qa.userId as string;
+    await seedFullAccount(w.db, qaId);
+    const purged = await purgeAll(() => owner("POST", "/purge", { confirm: "purge qa" }));
+    expect(purged.steps).toBeGreaterThan(1);
+    expect(purged.total).toBe(0);
+    expect((await owner("GET", "/status")).json.qa).toBeNull();
+    expect(await tableHashes(w.db, w.userId)).toEqual(before);
+  });
+
+  it("every owner's route keeps within the request budget", async () => {
+    const answers = [
+      await owner("GET", "/status"),
+      await owner("POST", "/user"),
+      await owner("POST", "/seed"),
+      await owner("POST", "/pairings"),
+      await owner("GET", "/status"),
+      await owner("GET", "/state"),
+    ];
+    for (const a of answers) {
+      expect(a.status, a.text.slice(0, 80)).toBeLessThan(300);
+      expect(a.statements.length, a.text.slice(0, 80)).toBeLessThanOrEqual(STATEMENT_BUDGET);
+    }
   });
 });
 
@@ -168,9 +206,10 @@ describe("the harness token's door: /api/qa/run/*", () => {
     const fresh = await harness("POST", "/pairings", token);
     expect(fresh.json).toMatchObject({ code: expect.stringMatching(/^[0-9A-HJKMNP-TV-Z]{8}$/) });
     expect((await harness("POST", "/purge", token, {})).json).toEqual({ error: "confirmation_required" });
-    const purged = await harness("POST", "/purge", token, { confirm: "purge qa" });
-    expect([purged.status, purged.json.total]).toEqual([200, 0]);
+    const purged = await purgeAll(() => harness("POST", "/purge", token, { confirm: "purge qa" }));
+    expect(purged.total).toBe(0);
     const verify = await harness("GET", "/verify", token);
+    expect(verify.statements.length).toBeLessThanOrEqual(STATEMENT_BUDGET);
     expect(verify.json).toMatchObject({ exists: false, total: 0 });
     expect(Object.values(verify.json.rows as Record<string, number>).every((n) => n === 0)).toBe(true);
     for (const [method, path] of [["GET", "/state"], ["POST", "/pairings"], ["POST", "/purge"]] as const) {
@@ -291,8 +330,8 @@ describe("the phone's whole flow on the QA account, as the on-device suite runs 
     expect(state.providers).toMatchObject({ connections: 0, corosWriteJobs: 0, calendarEventLinks: 0, studioPlanPushes: 0, syncRuns: 0 });
     expect(fetched).toEqual([]);
 
-    const purged = await harness("POST", "/purge", minted.harnessToken, { confirm: "purge qa" });
-    expect([purged.status, purged.json.total]).toEqual([200, 0]);
+    const purged = await purgeAll(() => harness("POST", "/purge", minted.harnessToken, { confirm: "purge qa" }));
+    expect(purged.total).toBe(0);
     expect((await harness("GET", "/verify", minted.harnessToken)).json.total).toBe(0);
     expect((await as("GET", "/api/native/me")).status).toBe(401);
     expect(await tableHashes(w.db, w.userId)).toEqual(ownerBefore);

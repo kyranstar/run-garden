@@ -32,6 +32,29 @@ export function statusOf(data: unknown): QaStatusDto | null {
 export const harnessLine = (m: Pick<QaMintDto, "harnessToken" | "planToken" | "code">) =>
   `QA_HARNESS_TOKEN=${m.harnessToken} QA_PLAN_TOKEN=${m.planToken} QA_PAIR_CODE=${m.code} scripts/phone-qa.sh`;
 
+/** Set up: the account made, its fixtures seeded (each skipped when already done), and a pairing code — three requests. */
+export async function setUp(): Promise<QaMintDto> {
+  const already = (e: unknown, code: string) => e instanceof ApiError && e.status === 409 && (e.body as { error?: string } | null)?.error === code;
+  await api.qaCreate().catch((e: unknown) => {
+    if (!already(e, "qa_exists")) throw e;
+  });
+  await api.qaSeed().catch((e: unknown) => {
+    if (!already(e, "already_seeded")) throw e;
+  });
+  return api.qaPair();
+}
+
+/** The purge's steps (each one request within the worker's budget) until it says done: what went, summed, and the last word. */
+export async function purgeAll(): Promise<QaPurgeDto> {
+  const removed: Record<string, number> = {};
+  for (let step = 0; step < 10; step++) {
+    const answer = await api.qaPurge();
+    for (const [name, n] of Object.entries(answer.removed)) removed[name] = (removed[name] ?? 0) + n;
+    if (answer.done) return { ...answer, removed };
+  }
+  throw new Error("purge_unfinished");
+}
+
 function refusal(e: unknown): string {
   const body = e instanceof ApiError ? (e.body as { error?: string; retryAfter?: number; remaining?: Record<string, number> } | null) : null;
   if (body?.error === "too_many_codes") {
@@ -49,10 +72,10 @@ export function QaSection() {
   const [asking, setAsking] = useState(false);
   const status = useQuery({ queryKey: QA_STATUS_QUERY, queryFn: api.qaStatus, retry: false });
   const refresh = () => qc.invalidateQueries({ queryKey: QA_STATUS_QUERY });
-  const setup = useMutation({ mutationFn: api.qaSetup, onSuccess: (m) => (setPurged(null), setMinted(m)), onSettled: refresh });
+  const setup = useMutation({ mutationFn: setUp, onSuccess: (m) => (setPurged(null), setMinted(m)), onSettled: refresh });
   const pair = useMutation({ mutationFn: api.qaPair, onSuccess: (m) => setMinted(m), onSettled: refresh });
   const purge = useMutation({
-    mutationFn: api.qaPurge,
+    mutationFn: purgeAll,
     onSuccess: (p) => (setMinted(null), setPurged(p)),
     onSettled: () => (setAsking(false), refresh()),
   });

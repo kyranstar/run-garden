@@ -43,22 +43,22 @@ import {
   studioPlanPushes,
   syncIntents,
   syncRuns,
+  trainingPlans,
   users,
   workoutCompletionMatches,
 } from "@rg/database";
 import { adaptiveConfigSchema, addDays, DEFAULT_USER_PREFERENCES, newId, nowInstant, todayInZone, type UserPreferences } from "@rg/domain";
-import type { SourcePlannedWorkout } from "@rg/providers";
+import { classifyWorkout } from "@rg/scheduling";
 import type { Env } from "../env.js";
 import { QA_EMAIL, qaPossible } from "../auth/qa-identity.js";
 import { sha256Hex } from "../auth/crypto.js";
 import { HARNESS_TOKEN_MAX_MS, qaHarnessToken, qaPlanToken, qaUserIdOf } from "../auth/qa-tokens.js";
 import { PAIRING_SCOPE } from "../auth/device-scope.js";
 import { mintPairing } from "../auth/native-devices.js";
-import { ACCOUNT_TABLES, accountTable, columnBySqlName, scopeWhere, wipeAccountData } from "./account-tables.js";
+import { ACCOUNT_TABLES, accountTable, columnBySqlName, scopeWhere } from "./account-tables.js";
 import { loadPreferences, savePreferences } from "./calendar-sync.js";
 import { chunkIds, runAtomically, type Db } from "./db.js";
 import { createDocWorkout } from "./doc-workouts.js";
-import { importPlanSnapshot } from "./import-plan.js";
 import { slotId } from "./program-slots.js";
 
 export { isQaEmail, QA_EMAIL, qaPossible } from "../auth/qa-identity.js";
@@ -290,30 +290,26 @@ export async function seedQaFixtures(db: Db, env: Pick<Env, "ALLOWED_GOOGLE_EMAI
     fixtures.push({ id: row.id, title: row.title, date, time, kind: "programme_slot" });
   }
 
-  // The run: imported as a COROS plan's session is (the owner's runs come that way), with no address on any watch.
-  const sourcePlanId = `qa-plan-${userId}`;
-  const run: SourcePlannedWorkout = {
-    sourcePlanId,
-    sourceWorkoutId: `qa-run-${today}`,
-    title: `${QA_TITLE_PREFIX}Easy run`,
-    sport: "run",
-    date: today,
-    estimatedDurationSeconds: 1200,
-    stages: [],
-    contentFingerprint: `qa-run-${today}`,
-    isRestDay: false,
-  };
-  await importPlanSnapshot(
-    db,
-    { userId, plan: { sourcePlanId, name: `${QA_TITLE_PREFIX}Plan`, startDate: today, endDate: tomorrow }, workouts: [run], rangeStart: today, rangeEnd: tomorrow, source: "fixture" },
-    prefs,
-  );
-  const [runRow] = await db
-    .update(plannedWorkouts)
-    .set({ effectiveTime: t3, updatedAt: now })
-    .where(and(eq(plannedWorkouts.userId, userId), eq(plannedWorkouts.sourceWorkoutId, run.sourceWorkoutId), isNull(plannedWorkouts.archivedAt)))
-    .returning({ id: plannedWorkouts.id, title: plannedWorkouts.title });
-  if (runRow) fixtures.push({ id: runRow.id, title: runRow.title, date: today, time: t3, kind: "run" });
+  // The run: a COROS plan's session as the plan import writes one (the owner's runs come that way) — its plan row and its
+  // session row, at no address on any watch — written directly: the import's own reconciling of a whole schedule would cost
+  // this request twenty statements more (Workers Free's budget).
+  const planRowId = newId();
+  const runTitle = `${QA_TITLE_PREFIX}Easy run`;
+  const runId = newId();
+  const { category } = classifyWorkout({ title: runTitle, sport: "run", stages: [] });
+  await runAtomically(db, [
+    db.insert(trainingPlans).values({
+      id: planRowId, userId, provider: "coros", sourcePlanId: `qa-plan-${userId}`, name: `${QA_TITLE_PREFIX}Plan`, startDate: today, endDate: tomorrow,
+      status: "active", createdAt: now, updatedAt: now,
+    }),
+    db.insert(plannedWorkouts).values({
+      id: runId, userId, planId: planRowId, sourceWorkoutId: `qa-run-${today}`, title: runTitle, category, sport: "run", originalPlanDate: today,
+      lastVerifiedCorosDate: today, effectiveDate: today, effectiveTime: t3, sourceContentFingerprint: `qa-run-${today}`,
+      sourceEstimatedDurationSeconds: 1200, fallbackEstimatedDurationSeconds: 1200, calendarBlockDurationSeconds: 1200,
+      calendarSyncState: "not_created", corosSyncState: "calendar_only", completionState: "scheduled", createdAt: now, updatedAt: now,
+    }),
+  ]);
+  fixtures.push({ id: runId, title: runTitle, date: today, time: t3, kind: "run" });
 
   await doc(`${QA_TITLE_PREFIX}Core reset`, tomorrow, "07:00", "core");
   return { today, tomorrow, fixtures };
@@ -412,13 +408,21 @@ export async function qaState(db: Db, userId: string): Promise<Record<string, un
     .select({ state: nativeDevices.state, scope: nativeDevices.scope, label: nativeDevices.label, lastUsedAt: nativeDevices.lastUsedAt, expiresAt: nativeDevices.expiresAt })
     .from(nativeDevices)
     .where(eq(nativeDevices.userId, userId));
+  // The provider rows, in one statement.
+  const [p] = (await db.all(sql`select
+      (select count(*) from ${providerConnections} where ${providerConnections.userId} = ${userId}) as connections,
+      (select count(*) from ${corosWriteJobs} where ${corosWriteJobs.userId} = ${userId}) as corosWriteJobs,
+      (select count(*) from ${calendarEventLinks} where ${calendarEventLinks.workoutId} in (select id from planned_workouts where user_id = ${userId})) as calendarEventLinks,
+      (select count(*) from ${studioPlanPushes} where ${studioPlanPushes.planId} in (select id from studio_plans where user_id = ${userId})) as studioPlanPushes,
+      (select count(*) from ${syncRuns} where ${syncRuns.userId} = ${userId}) as syncRuns,
+      (select count(*) from ${syncIntents} where ${syncIntents.userId} = ${userId}) as syncIntents`)) as Array<Record<string, number>>;
   const providers = {
-    connections: await countWhere(db, providerConnections, eq(providerConnections.userId, userId)),
-    corosWriteJobs: await countWhere(db, corosWriteJobs, eq(corosWriteJobs.userId, userId)),
-    calendarEventLinks: ids.length === 0 ? 0 : await countIn(db, calendarEventLinks, "workout_id", ids),
-    studioPlanPushes: await countWhere(db, studioPlanPushes, sql`${studioPlanPushes.planId} in (select id from studio_plans where user_id = ${userId})`),
-    syncRuns: await countWhere(db, syncRuns, eq(syncRuns.userId, userId)),
-    syncIntents: await countWhere(db, syncIntents, eq(syncIntents.userId, userId)),
+    connections: Number(p?.connections ?? 0),
+    corosWriteJobs: Number(p?.corosWriteJobs ?? 0),
+    calendarEventLinks: Number(p?.calendarEventLinks ?? 0),
+    studioPlanPushes: Number(p?.studioPlanPushes ?? 0),
+    syncRuns: Number(p?.syncRuns ?? 0),
+    syncIntents: Number(p?.syncIntents ?? 0),
   };
   return {
     userId,
@@ -437,94 +441,146 @@ export async function qaState(db: Db, userId: string): Promise<Record<string, un
   };
 }
 
-/** Rows of `table` where `where` holds. */
-async function countWhere(db: Db, table: SQLiteTable, where: SQL | undefined): Promise<number> {
-  const [row] = (await db.select({ n: count() }).from(table).where(where)) as Array<{ n: number }>;
-  return row?.n ?? 0;
+/**
+ * Counts in a few statements, not one a table (Workers Free allows 50 subrequests a request, and every D1 statement is
+ * one: account-restore.ts's final audit G21). Each statement is `COUNTS_PER_STATEMENT` scalar subqueries, each binding the
+ * account once — or, for a child counted by its parent's recorded ids, one JSON array of them (`json_each`), whatever
+ * their number — well under D1's 100 bound parameters.
+ */
+const COUNTS_PER_STATEMENT = 40;
+
+/** One count: its name, and the subquery that counts it. */
+type Count = { name: string; query: SQL };
+
+async function runCounts(db: Db, counts: readonly Count[]): Promise<Record<string, number>> {
+  const out: Record<string, number> = {};
+  for (let i = 0; i < counts.length; i += COUNTS_PER_STATEMENT) {
+    const chunk = counts.slice(i, i + COUNTS_PER_STATEMENT);
+    const columns = sql.join(chunk.map((c, j) => sql`(${c.query}) as ${sql.raw(`c${j}`)}`), sql`, `);
+    const [row] = (await db.all(sql`select ${columns}`)) as Array<Record<string, unknown>>;
+    chunk.forEach((c, j) => (out[c.name] = Number(row?.[`c${j}`] ?? 0)));
+  }
+  return out;
 }
 
-/** Rows of `table` whose `column` (an SQL name) is one of `ids`, chunked under D1's bind ceiling. */
-async function countIn(db: Db, table: SQLiteTable, column: string, ids: readonly string[]): Promise<number> {
-  let n = 0;
-  for (const chunk of chunkIds([...ids])) n += await countWhere(db, table, inArray(columnBySqlName(table, column), chunk));
-  return n;
-}
+const countOf = (table: SQLiteTable, where: SQL): SQL => sql`select count(*) from ${table} where ${where}`;
 
 /** The sign-in tables the registry leaves to delete-all (account-tables.ts `signIn`), and `account_state`: by the account. */
-const signInCounts = (db: Db, userId: string) => [
-  ["sessions", () => countWhere(db, sessions, eq(sessions.userId, userId))],
-  ["native_devices", () => countWhere(db, nativeDevices, eq(nativeDevices.userId, userId))],
-  ["native_pairings", () => countWhere(db, nativePairings, eq(nativePairings.userId, userId))],
-  ["native_pair_limits", () => countWhere(db, nativePairLimits, eq(nativePairLimits.key, `mint:${userId}`))],
-  ["account_state", () => countWhere(db, accountState, eq(accountState.userId, userId))],
-] as const;
+const signInCounts = (userId: string): Count[] => [
+  { name: "sessions", query: countOf(sessions, eq(sessions.userId, userId)) },
+  { name: "native_devices", query: countOf(nativeDevices, eq(nativeDevices.userId, userId)) },
+  { name: "native_pairings", query: countOf(nativePairings, eq(nativePairings.userId, userId)) },
+  { name: "native_pair_limits", query: countOf(nativePairLimits, eq(nativePairLimits.key, `mint:${userId}`)) },
+  { name: "account_state", query: countOf(accountState, eq(accountState.userId, userId)) },
+];
 
 /**
  * Every table's rows for the account: each `identity`, `user` and `child` table of the registry (a child by `parentIds`
  * when given — the ids its parent table held for the account before a wipe — else through its parent as it is now), and
- * the sign-in tables. Non-zero entries only, unless `all`.
+ * the sign-in tables. Non-zero entries only, unless `all`. A few statements (`COUNTS_PER_STATEMENT`).
  */
 export async function qaRowCounts(
   db: Db,
   userId: string,
   opts: { parentIds?: ReadonlyMap<string, readonly string[]>; all?: boolean } = {},
 ): Promise<Record<string, number>> {
-  const out: Record<string, number> = {};
+  const counts: Count[] = [];
   for (const entry of ACCOUNT_TABLES) {
     const scope = entry.scope;
     if (scope.kind === "excluded") continue;
-    let n: number;
-    if (scope.kind === "child" && opts.parentIds) {
-      const ids = opts.parentIds.get(entry.name) ?? [];
-      n = ids.length === 0 ? 0 : await countIn(db, entry.table, scope.column, ids);
-    } else {
-      n = await countWhere(db, entry.table, scopeWhere(entry, userId));
-    }
-    if (n > 0 || opts.all) out[entry.name] = n;
+    const where =
+      scope.kind === "child" && opts.parentIds
+        ? sql`${columnBySqlName(entry.table, scope.column)} in (select value from json_each(${JSON.stringify(opts.parentIds.get(entry.name) ?? [])}))`
+        : scopeWhere(entry, userId);
+    counts.push({ name: entry.name, query: countOf(entry.table, where) });
   }
-  for (const [name, read] of signInCounts(db, userId)) {
-    const n = await read();
-    if (n > 0 || opts.all) out[name] = n;
-  }
-  return out;
-}
-
-/** For each child table of the registry, the ids its parent holds for the account now (what the child is checked by). */
-async function parentIdsOf(db: Db, userId: string): Promise<Map<string, string[]>> {
-  const out = new Map<string, string[]>();
-  const cache = new Map<string, string[]>();
-  for (const entry of ACCOUNT_TABLES) {
-    if (entry.scope.kind !== "child") continue;
-    const parent = accountTable(entry.scope.parent);
-    const key = `${parent.name}.${entry.scope.parentKey ?? "id"}`;
-    if (!cache.has(key)) {
-      const col = columnBySqlName(parent.table, entry.scope.parentKey ?? "id");
-      const rows = (await db.select({ id: col }).from(parent.table).where(scopeWhere(parent, userId))) as Array<{ id: string }>;
-      cache.set(key, rows.map((r) => r.id));
-    }
-    out.set(entry.name, cache.get(key)!);
-  }
-  return out;
+  counts.push(...signInCounts(userId));
+  const all = await runCounts(db, counts);
+  return opts.all ? all : Object.fromEntries(Object.entries(all).filter(([, n]) => n > 0));
 }
 
 /**
- * EVERYTHING THE QA ACCOUNT OWNS, GONE, AND CHECKED. The target's row is read again first (the QA address, never the
- * owner's). Then the registry's own wipe (every `user` and `child` table, children first, one D1 batch), then one batch for
- * its `account_state`, sessions, paired phones, pairing code, mint counter and `users` row — nothing global (no orphan
- * sweep, no `oauth_states` clear, no redeem counter). Then every table is counted again for the id, children by the ids
- * their parents held before the wipe: any row left is `QaPurgeIncompleteError` with the tables named. Answers what was
- * removed, per table, and the (all zero) counts after.
+ * For each child table of the registry, the ids its parent holds for the account now (what the child is checked by after
+ * the wipe) — one statement: each parent's ids as one JSON array.
  */
-export async function purgeQa(db: Db, env: Pick<Env, "ALLOWED_GOOGLE_EMAIL">, target: QaTarget): Promise<{
+async function parentIdsOf(db: Db, userId: string): Promise<Map<string, string[]>> {
+  const parents = new Map<string, { table: SQLiteTable; key: string; where: SQL }>();
+  for (const entry of ACCOUNT_TABLES) {
+    if (entry.scope.kind !== "child") continue;
+    const parent = accountTable(entry.scope.parent);
+    const key = entry.scope.parentKey ?? "id";
+    parents.set(`${parent.name}.${key}`, { table: parent.table, key, where: scopeWhere(parent, userId) });
+  }
+  const names = [...parents.keys()];
+  const columns = sql.join(
+    names.map((name, j) => {
+      const p = parents.get(name)!;
+      return sql`(select json_group_array(${columnBySqlName(p.table, p.key)}) from ${p.table} where ${p.where}) as ${sql.raw(`p${j}`)}`;
+    }),
+    sql`, `,
+  );
+  const [row] = (await db.all(sql`select ${columns}`)) as Array<Record<string, unknown>>;
+  const byParent = new Map(names.map((name, j) => [name, JSON.parse(String(row?.[`p${j}`] ?? "[]")) as string[]]));
+  const out = new Map<string, string[]>();
+  for (const entry of ACCOUNT_TABLES) {
+    if (entry.scope.kind !== "child") continue;
+    out.set(entry.name, byParent.get(`${accountTable(entry.scope.parent).name}.${entry.scope.parentKey ?? "id"}`) ?? []);
+  }
+  return out;
+}
+
+/** Table deletes one purge step makes at most: with its reads and the last step's sign-in batch, ≤ 45 statements a request. */
+export const PURGE_DELETES_PER_STEP = 28;
+
+/** One step's answer: what it removed, and — once `done` — every table counted again (all zero) and their total. */
+export interface QaPurgeStep {
+  done: boolean;
   removed: Record<string, number>;
+  /** Once done: every table, counted for the account after; before: the tables still holding rows. */
   remaining: Record<string, number>;
   total: number;
-}> {
+}
+
+/**
+ * EVERYTHING THE QA ACCOUNT OWNS, GONE, AND CHECKED — one bounded step a request (Workers Free counts every D1 statement,
+ * a batch's included, against 50 a request; account-restore.ts G21), repeated until `done`. The target's row is read again
+ * first (the QA address, never the owner's). Each step counts every registry table for the account (a few statements),
+ * then deletes up to `PURGE_DELETES_PER_STEP` of the tables still holding rows in one batch, CHILDREN FIRST — the registry's
+ * own wipe order (account-tables.ts `wipeAccountData`), kept across steps: a parent's rows go only in a step whose batch
+ * already holds every child of it still holding rows, so no child is ever left without the parent that reaches it.
+ *
+ * The step that empties the last table also deletes, in one batch, the account's `account_state`, sessions, paired phones,
+ * pairing code, mint counter and `users` row — nothing global (no orphan sweep, no `oauth_states` clear, no redeem
+ * counter) — and counts every table again for the id, children by the ids their parents held at that step's start: any
+ * row left is `QaPurgeIncompleteError`, the tables named. A step never deletes a row of another account: every delete is
+ * the registry's own scope for this id.
+ */
+export async function purgeQaStep(db: Db, env: Pick<Env, "ALLOWED_GOOGLE_EMAIL">, target: QaTarget): Promise<QaPurgeStep> {
   await assertQaRow(db, env, target);
   const userId = target.userId;
   const parentIds = await parentIdsOf(db, userId);
-  const removed = await qaRowCounts(db, userId, { parentIds });
-  await wipeAccountData(db, userId, { keep: [] });
+  const before = await qaRowCounts(db, userId, { all: true });
+  const holding = ACCOUNT_TABLES.filter((t) => (t.scope.kind === "user" || t.scope.kind === "child") && (before[t.name] ?? 0) > 0).sort(
+    (a, b) => b.order - a.order,
+  );
+  const step: typeof holding = [];
+  for (const t of holding) {
+    if (step.length >= PURGE_DELETES_PER_STEP) break;
+    // A parent only with every child of it that still holds rows already in this batch (descending order puts them first).
+    const children = holding.filter((c) => c.scope.kind === "child" && c.scope.parent === t.name);
+    if (!children.every((c) => step.includes(c))) break;
+    step.push(t);
+  }
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  if (step.length > 0) await runAtomically(db, step.map((t) => db.delete(t.table as any).where(scopeWhere(t, userId))));
+  const removed = Object.fromEntries(step.map((t) => [t.name, before[t.name] ?? 0]));
+  if (step.length < holding.length) {
+    const left = Object.fromEntries(holding.filter((t) => !step.includes(t)).map((t) => [t.name, before[t.name] ?? 0]));
+    return { done: false, removed, remaining: left, total: Object.values(left).reduce((a, b) => a + b, 0) };
+  }
+  for (const name of ["users", "account_state", "sessions", "native_devices", "native_pairings", "native_pair_limits"]) {
+    if ((before[name] ?? 0) > 0) removed[name] = before[name]!;
+  }
   await runAtomically(db, [
     db.delete(accountState).where(eq(accountState.userId, userId)),
     db.delete(sessions).where(eq(sessions.userId, userId)),
@@ -537,5 +593,16 @@ export async function purgeQa(db: Db, env: Pick<Env, "ALLOWED_GOOGLE_EMAIL">, ta
   const remaining = await qaRowCounts(db, userId, { parentIds, all: true });
   const left = Object.fromEntries(Object.entries(remaining).filter(([, n]) => n > 0));
   if (Object.keys(left).length > 0) throw new QaPurgeIncompleteError(left);
-  return { removed, remaining, total: Object.values(remaining).reduce((a, b) => a + b, 0) };
+  return { done: true, removed, remaining, total: 0 };
+}
+
+/** Every step of the purge, in one call (tests, and a host with no per-request statement budget): the steps' sum. */
+export async function purgeQa(db: Db, env: Pick<Env, "ALLOWED_GOOGLE_EMAIL">, target: QaTarget): Promise<QaPurgeStep> {
+  const removed: Record<string, number> = {};
+  for (let i = 0; i < 20; i++) {
+    const step = await purgeQaStep(db, env, target);
+    for (const [name, n] of Object.entries(step.removed)) removed[name] = (removed[name] ?? 0) + n;
+    if (step.done) return { ...step, removed };
+  }
+  throw new QaPurgeIncompleteError({ steps: 20 });
 }

@@ -325,7 +325,6 @@ export const ROUTE_CLASSES: Record<string, Classified> = {
   "GET /api/qa/status": "gated",
   "POST /api/qa/user": "gated",
   "POST /api/qa/seed": "gated",
-  "POST /api/qa/setup": "gated",
   "POST /api/qa/pairings": "gated",
   "GET /api/qa/state": "gated",
   "POST /api/qa/purge": "gated",

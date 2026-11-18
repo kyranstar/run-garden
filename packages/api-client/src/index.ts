@@ -375,12 +375,14 @@ export interface QaMintDto {
   harnessToken: string;
   harnessExpiresAt: string;
   accountTag: string;
-  created?: boolean;
-  seeded?: boolean;
 }
 
-/** The checked purge: what went, per table, and what is left (all zero). */
+/**
+ * One step of the checked purge (each within the worker's per-request budget): what it removed, per table; until `done`, the
+ * tables still holding rows; once done, every table counted again (all zero) and their total.
+ */
 export interface QaPurgeDto {
+  done: boolean;
   removed: Record<string, number>;
   remaining: Record<string, number>;
   total: number;
@@ -3107,11 +3109,13 @@ export const api = {
   nativeRevokeAll: () => post<{ ok: true; revoked: number }>("/api/native/devices/revoke-all", {}),
   /** Settings → Developer → LifeOS QA: the QA account as it stands (404 for anyone but the owner). */
   qaStatus: () => get<QaStatusDto>("/api/qa/status"),
-  /** The QA account made if there is none, its fixtures seeded if it has none, and a pairing code with the run's tokens. */
-  qaSetup: () => post<QaMintDto>("/api/qa/setup", {}),
+  /** Makes the QA account (409 `qa_exists` when there is one). */
+  qaCreate: () => post<{ qa: { userId: string; accountTag: string } }>("/api/qa/user", {}),
+  /** Seeds its fixtures for today and tomorrow (409 `already_seeded` unless it has none). */
+  qaSeed: () => post<{ today: string; tomorrow: string; fixtures: Array<{ id: string; title: string; date: string; time: string; kind: string }> }>("/api/qa/seed", {}),
   /** A fresh pairing code for the QA account (5 minutes), with the run's tokens. */
   qaPair: () => post<QaMintDto>("/api/qa/pairings", {}),
-  /** Everything the QA account owns, gone, and every table checked zero. */
+  /** One step of the purge: everything the QA account owns, gone, and every table checked zero — ask again until `done`. */
   qaPurge: () => post<QaPurgeDto>("/api/qa/purge", { confirm: "purge qa" }),
   calendars: () => get<{ calendars: Array<{ id: string; summary: string; primary?: boolean }> }>("/api/calendar/calendars"),
   chooseCalendar: (opts: { calendarId?: string; createNew?: boolean }) => post<{ ok: true; calendarId: string }>("/api/calendar/choose", opts),

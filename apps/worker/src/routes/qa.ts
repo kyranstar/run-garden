@@ -6,10 +6,12 @@
  *   GET  /status      {qa: {userId, accountTag, createdAt} | null, today, rows, devices, plan}: what Settings → Developer shows
  *   POST /user        the QA account made (201), or 409 `qa_exists`
  *   POST /seed        its fixtures for today and tomorrow, or 404 `no_qa_account` / 409 `already_seeded`
- *   POST /setup       /user, /seed (each only if not done) and /pairings in one: Settings → Developer's one button
  *   POST /pairings    a pairing code for the QA account, with the run's plan and harness tokens (429 `too_many_codes`)
  *   GET  /state       what the QA account holds (ids, states, kinds, counts — no detail text)
- *   POST /purge       {confirm: "purge qa"}: everything it owns, gone and checked zero (500 `purge_incomplete` names the rest)
+ *   POST /purge       {confirm: "purge qa"}: one bounded step of the purge (≤ 45 statements a request) — `{done: false,
+ *                     removed, remaining}` until the step that empties the last table, its sign-ins and its user row, and
+ *                     checks every table zero: `{done: true, removed, remaining (all 0), total: 0}` (500 `purge_incomplete`
+ *                     names the rest). Ask again while `done` is false
  *
  * The harness token's own door (`Authorization: Bearer rgq_…`, auth/qa-tokens.ts) — never a cookie, never a device token:
  *   GET  /run/state, POST /run/pairings, POST /run/purge {confirm}: as above, for the QA account the token names, while that
@@ -32,7 +34,7 @@ import {
   accountTag,
   createQaUser,
   mintQaPairing,
-  purgeQa,
+  purgeQaStep,
   QaAlreadySeededError,
   QaExistsError,
   QaGuardError,
@@ -95,7 +97,8 @@ async function purgeAnswer(c: Context, target: QaTarget): Promise<Response> {
   const body = (await c.req.json().catch(() => null)) as { confirm?: unknown } | null;
   if (body?.confirm !== CONFIRM) return c.json({ error: "confirmation_required" }, 400);
   try {
-    return c.json(await purgeQa(c.get("db"), c.env, target));
+    // One bounded step (≤ 45 statements: Workers Free counts each); the caller asks again until `done`.
+    return c.json(await purgeQaStep(c.get("db"), c.env, target));
   } catch (e) {
     if (e instanceof QaPurgeIncompleteError) return c.json({ error: "purge_incomplete", remaining: e.remaining }, 500);
     if (e instanceof QaGuardError) return c.json({ error: "not_found" }, 404);
@@ -151,34 +154,6 @@ qaRoutes.post("/seed", ...owner, async (c) => {
     if (e instanceof QaAlreadySeededError) return c.json({ error: "already_seeded" }, 409);
     throw e;
   }
-});
-
-qaRoutes.post("/setup", ...owner, async (c) => {
-  const db = c.get("db");
-  let target = await ownersTarget(c);
-  if (target instanceof Response) return target;
-  const created = !target;
-  if (!target) {
-    try {
-      target = await createQaUser(db, c.env, c.get("userId"));
-    } catch (e) {
-      if (!(e instanceof QaExistsError)) throw e;
-      target = await ownersTarget(c);
-      if (target instanceof Response) return target;
-      if (!target) return noAccount(c);
-    }
-  }
-  let seeded = false;
-  try {
-    await seedQaFixtures(db, c.env, target);
-    seeded = true;
-  } catch (e) {
-    if (!(e instanceof QaAlreadySeededError)) throw e;
-  }
-  const minted = await mintQaPairing(db, c.env, target, nowInstant());
-  c.header("Cache-Control", "no-store");
-  if ("refused" in minted) return c.json({ error: "too_many_codes", retryAfter: minted.retryAfterSeconds, created, seeded }, 429);
-  return c.json({ created, seeded, ...minted });
 });
 
 qaRoutes.post("/pairings", ...owner, async (c) => {

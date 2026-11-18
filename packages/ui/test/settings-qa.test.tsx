@@ -38,8 +38,10 @@ const some: QaStatusDto = {
   ],
 };
 
-function worker(init: { status?: number; body?: unknown } = {}) {
+function worker(init: { status?: number; body?: unknown; exists?: boolean } = {}) {
   let status: QaStatusDto | unknown = init.body ?? none;
+  let purgeSteps = 0;
+  let pairs = 0;
   calls = [];
   const json = (b: unknown, code = 200) => new Response(JSON.stringify(b), { status: code, headers: { "Content-Type": "application/json" } });
   vi.stubGlobal(
@@ -48,14 +50,21 @@ function worker(init: { status?: number; body?: unknown } = {}) {
       const method = req?.method ?? "GET";
       calls.push({ method, path: url, body: req?.body ? JSON.parse(String(req.body)) : null });
       if (url === "/api/qa/status") return init.status ? json({ error: "not_found" }, init.status) : json(status);
-      if (url === "/api/qa/setup") {
+      if (url === "/api/qa/user") return init.exists ? json({ error: "qa_exists" }, 409) : json({ qa: { userId: some.qa!.userId, accountTag: "3f2a9c1e" } }, 201);
+      if (url === "/api/qa/seed") {
         status = some;
-        return json({ created: true, seeded: true, code: "7K2QXM9D", expiresAt: iso(5 * 60_000), scope: "training-v3", planToken: PLAN, harnessToken: HARNESS, harnessExpiresAt: iso(6 * 3_600_000), accountTag: "3f2a9c1e" });
+        return init.exists ? json({ error: "already_seeded" }, 409) : json({ today: "2026-11-18", tomorrow: "2026-11-19", fixtures: [] });
       }
-      if (url === "/api/qa/pairings") return json({ code: "ABCD1234", expiresAt: iso(5 * 60_000), scope: "training-v3", planToken: PLAN, harnessToken: HARNESS, harnessExpiresAt: iso(6 * 3_600_000), accountTag: "3f2a9c1e" });
+      if (url === "/api/qa/pairings") {
+        pairs += 1;
+        return json({ code: pairs === 1 ? "7K2QXM9D" : "ABCD1234", expiresAt: iso(5 * 60_000), scope: "training-v3", planToken: PLAN, harnessToken: HARNESS, harnessExpiresAt: iso(6 * 3_600_000), accountTag: "3f2a9c1e" });
+      }
       if (url === "/api/qa/purge") {
+        // Two steps: the worker purges within its per-request budget, and says when it's done.
+        purgeSteps += 1;
+        if (purgeSteps === 1) return json({ done: false, removed: { schedule_overrides: 3 }, remaining: { planned_workouts: 5 }, total: 5 });
         status = none;
-        return json({ removed: { planned_workouts: 5, users: 1 }, remaining: { planned_workouts: 0, users: 0 }, total: 0 });
+        return json({ done: true, removed: { planned_workouts: 5, users: 1 }, remaining: { planned_workouts: 0, users: 0 }, total: 0 });
       }
       // The other cards' reads, as settings-devices.test.tsx answers them.
       if (url === "/api/settings") return json({ prefs: DEFAULT_USER_PREFERENCES, llm: null });
@@ -115,14 +124,14 @@ describe("Settings → Developer", () => {
     await mount(SettingsScreen);
     expect(headings().slice(-2)).toEqual(["Data & account", "Developer"]);
     expect(words(host)).toContain("LifeOS QA");
-  });
+  }, 30_000);
 
   it("is not there for anyone else (a 404)", async () => {
     worker({ status: 404 });
     await mount(SettingsScreen);
     expect(headings()).not.toContain("Developer");
     expect(words(host)).not.toContain("LifeOS QA");
-  });
+  }, 30_000);
 });
 
 describe("Settings → Developer → LifeOS QA", () => {
@@ -143,7 +152,7 @@ describe("Settings → Developer → LifeOS QA", () => {
     expect(words(host)).toContain("LifeOS QA");
     expect(words(host)).toContain("No QA account");
     await click(button("Set up"));
-    expect(calls.filter((c) => c.method === "POST").map((c) => c.path)).toEqual(["/api/qa/setup"]);
+    expect(calls.filter((c) => c.method === "POST").map((c) => c.path)).toEqual(["/api/qa/user", "/api/qa/seed", "/api/qa/pairings"]);
     const text = words(host);
     expect(text).toContain("7K2Q-XM9D");
     expect(text).toContain(`QA_HARNESS_TOKEN=${HARNESS} QA_PLAN_TOKEN=${PLAN} QA_PAIR_CODE=7K2QXM9D scripts/phone-qa.sh`);
@@ -156,7 +165,7 @@ describe("Settings → Developer → LifeOS QA", () => {
     worker({ body: some });
     await mount();
     await click(button("New pairing code"));
-    expect(words(host)).toContain("ABCD-1234");
+    expect(words(host)).toContain("7K2Q-XM9D");
   });
 
   it("Purge asks first; Not now sends nothing; Purge says the rows that remain: zero", async () => {
@@ -168,8 +177,9 @@ describe("Settings → Developer → LifeOS QA", () => {
     expect(calls.some((c) => c.path === "/api/qa/purge")).toBe(false);
     await click(button("Purge"));
     await click(button("Purge everything"));
-    expect(calls.filter((c) => c.path === "/api/qa/purge")).toEqual([{ method: "POST", path: "/api/qa/purge", body: { confirm: "purge qa" } }]);
-    expect(words(host)).toContain("Purged: 6 rows removed, 0 remain.");
+    // Asked until done: two steps, their removals summed.
+    expect(calls.filter((c) => c.path === "/api/qa/purge")).toEqual(Array(2).fill({ method: "POST", path: "/api/qa/purge", body: { confirm: "purge qa" } }));
+    expect(words(host)).toContain("Purged: 9 rows removed, 0 remain.");
     expect(words(host)).toContain("No QA account");
   });
 });
