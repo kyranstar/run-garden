@@ -409,6 +409,14 @@ describe("Settings → Devices", () => {
   });
 
   it("the pairing code says what a phone paired now can do, from the worker's answer", async () => {
+    // A new pairing is the newest scope (the worker's PAIRING_SCOPE): the code says all of what that allows.
+    worker({ pairScope: "training-v3" });
+    await mount();
+    await click(button("Pair a phone"));
+    expect(words(host)).toContain("A phone paired now can play, save, move and fit workouts, and record your feedback.");
+    // And whatever a worker names, the line follows it (an older worker's v2 code says v2's).
+    act(() => root?.unmount());
+    host?.remove();
     worker({ pairScope: "training-v2" });
     await mount();
     await click(button("Pair a phone"));

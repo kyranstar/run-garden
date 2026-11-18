@@ -35,12 +35,13 @@ export type DeviceScope = typeof DEVICE_SCOPE_V1 | typeof DEVICE_SCOPE_V2 | type
 export const NEWEST_DEVICE_SCOPE: DeviceScope = DEVICE_SCOPE_V3;
 
 /**
- * THE SCOPE A NEW PAIRING IS MINTED AT: still v2, deliberately (stage 2b RG-NOTES §3.5). The phone build card 3 installs
- * reads any scope but exactly `training-v2` as v1 — no plan edits, "pair again", and its kept plan edits dropped — so
- * minting v3 before the phone knows v3 would break that phone, and pairing again would loop. v3 is reached by the
- * laptop's grant. Once the v3-aware phone build is the one installed, this becomes `NEWEST_DEVICE_SCOPE`.
+ * THE SCOPE A NEW PAIRING IS MINTED AT: the newest, v3 (stage 2b RG-NOTES §3.5, §8): one pairing gets everything, and a
+ * phone paired again after its 30-day expiry needs no grant each time. The laptop's code says what it allows. It rests on
+ * the release precondition: this Worker ships only once the installed LifeOS is at or after `12e86ca8`, which reads
+ * scopes as ordered (v3 includes v2), so a fresh v3 pairing on a build without 2b's screens still edits the plan.
+ * (LifeOS `7f1388aa` read any scope but exactly `training-v2` as v1.) The laptop's step-down narrows a pairing in place.
  */
-export const PAIRING_SCOPE: DeviceScope = DEVICE_SCOPE_V2;
+export const PAIRING_SCOPE: DeviceScope = NEWEST_DEVICE_SCOPE;
 
 /**
  * The scope the laptop's grant moves a device to from each (kit v0.15): the next named one, one step a grant; null at the

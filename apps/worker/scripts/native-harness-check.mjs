@@ -79,8 +79,8 @@ check("the laptop lists the pending phone with the phone's check number", !!pend
 check("Confirm: 200", (await call("POST", `/api/native/devices/${pending.id}/confirm`, { cookie: true, body: { check: won.check } })).status, 200);
 const me = await call("GET", "/api/native/me", { bearer: token });
 check("active: /api/native/me is {userId, device}", Object.keys(me.json).sort(), ["device", "userId"]);
-// Stage 2a: a new pairing is minted at the newest scope, and /me says so (DESIGN §5.1).
-check("…and its device is training-v2: {label, expiresAt, scope}", [Object.keys(me.json.device ?? {}).sort(), me.json.device?.scope], [["expiresAt", "label", "scope"], "training-v2"]);
+// A new pairing is minted at the newest scope (stage 2b RG-NOTES §3.5, §8: training-v3), and /me says so.
+check("…and its device is training-v3: {label, expiresAt, scope}", [Object.keys(me.json.device ?? {}).sort(), me.json.device?.scope], [["expiresAt", "label", "scope"], "training-v3"]);
 
 // 3. Off the slice: refused.
 for (const [method, path] of [["GET", "/api/plan/today"], ["GET", "/api/auth/me"], ["POST", "/api/native/pairings"], ["GET", "/api/native/devices"], ["POST", "/api/settings/delete-all"]]) {
@@ -124,7 +124,7 @@ const save = {
   checks: [], review: {},
 };
 const exercise = save.entries[0].exerciseId;
-check("a save carrying a graduation: 403 out_of_scope", (await call("PUT", `/api/sessions/performed/${performedId}`, { bearer: token, body: { ...save, review: { graduations: [{ family: "hinge", to: exercise }] } } })).json, { error: "out_of_scope" });
+check("a save that is not the app's own (a watch review's source): 403 out_of_scope", (await call("PUT", `/api/sessions/performed/${performedId}`, { bearer: token, body: { ...save, source: "watch_review" } })).json, { error: "out_of_scope" });
 const raw = JSON.stringify(save);
 const first = await call("PUT", `/api/sessions/performed/${performedId}`, { bearer: token, raw });
 check("the save: saved, matched", [first.json.status, first.json.matched], ["saved", true]);
@@ -165,7 +165,7 @@ if (outline) {
   }
 }
 
-// 4c. Stage 2a on local D1 (DESIGN §9, "Moves in run-garden too"): the v2 phone moves, skips and puts back a session the
+// 4c. Stage 2a on local D1 (DESIGN §9, "Moves in run-garden too"): the phone (v3 holds v2's plan edits) moves, skips and puts back a session the
 // laptop made; a move made against a stale view (Move's `from`) is refused 409 session_changed with nothing written; two
 // moves from the same slot at once, interleaved by workerd on the local D1, land one and refuse the other; a v1 phone is
 // still refused.
@@ -183,7 +183,7 @@ const editTrace = () =>
 const slotOf = () => sql(`select effective_date as date, effective_time as time, completion_state as state from planned_workouts where id = '${pid}'`)[0];
 const moveAs = (bearer, body) => call("POST", `/api/plan/workouts/${pid}/move`, bearer ? { bearer, body } : { cookie: true, body });
 const moved = await moveAs(token, { toDate: d2, toTime: "07:30", from: { date: d1, time: "07:00" } });
-check("the v2 phone moves it to another day, from where it saw it: 200", [moved.status, moved.json.workoutId], [200, pid]);
+check("the phone moves it to another day, from where it saw it: 200", [moved.status, moved.json.workoutId], [200, pid]);
 check("…and it stands there on local D1", slotOf(), { date: d2, time: "07:30", state: "scheduled" });
 // Its answer lost, the phone resends the same move (kit v0.14): 200 as the first was, and nothing new.
 const beforeResend = editTrace();
@@ -246,6 +246,9 @@ const deviceRowOf = (id) => sql(`select id, user_id, label, state, check_number,
 const fitted = await call("POST", "/api/workouts", { cookie: true, body: { doc: { ...doc, title: "Harness fit" }, date: day, time: "23:50", clientId: `harness-fit-${Date.now()}` } });
 check("the laptop makes another of today's sessions", fitted.status < 300, true);
 const fid = fitted.json.workout.id;
+// Paired at v3 (the newest), the phone starts here a rung down, as a phone paired before 2b's release is: the laptop's
+// step-down, in place, then the grant back.
+check("the phone paired at v3 is stepped down to v2 on the laptop, in place", (await call("POST", `/api/native/devices/${phoneId}/reduce`, { cookie: true, body: { scope: "training-v2" } })).json, { ok: true, scope: "training-v2", reduced: true });
 const listedPhone = (await call("GET", "/api/native/devices", { cookie: true })).json.devices.find((d) => d.id === phoneId);
 check("the laptop lists the phone at v2, with v3 to grant", [listedPhone?.scope, listedPhone?.nextScope], ["training-v2", "training-v3"]);
 check("under v2, the phone's document read is 403 out_of_scope", (await call("GET", `/api/workouts/${fid}/doc`, { bearer: token })).json, { error: "out_of_scope" });

@@ -180,12 +180,17 @@ describe("a grant moves an active device to its next scope, in place", () => {
     });
   });
 
-  it("a new pairing's code says what a phone paired now can do: the mint answers the scope a redeem writes (still v2)", async () => {
+  it("a new pairing's code says what a phone paired now can do: the mint answers the scope a redeem writes (the newest, v3)", async () => {
     const minted = await w.call("POST", "/api/native/pairings", { body: {} });
-    expect([minted.status, minted.json.scope]).toEqual([200, V2]);
+    expect([minted.status, minted.json.scope]).toEqual([200, V3]);
     const paired = await w.call("POST", "/api/native/pair", { body: { code: minted.json.code, label: "Fresh phone" }, cookie: false });
     expect(paired.status, paired.text).toBe(200);
-    expect(q(`select scope from native_devices where label = 'Fresh phone'`)).toEqual([{ scope: V2 }]);
+    expect(q(`select scope from native_devices where label = 'Fresh phone'`)).toEqual([{ scope: V3 }]);
+    // Nothing to grant it at the top; the laptop can step it down in place.
+    const id = q(`select id from native_devices where label = 'Fresh phone'`)[0].id as string;
+    expect((await w.call("POST", `/api/native/devices/${id}/confirm`, { body: { check: paired.json.check } })).status).toBe(200);
+    const listed = (await w.call("GET", "/api/native/devices")).json.devices.find((d: { id: string }) => d.id === id);
+    expect([listed.scope, listed.nextScope, listed.previousScope]).toEqual([V3, null, V2]);
   });
 });
 

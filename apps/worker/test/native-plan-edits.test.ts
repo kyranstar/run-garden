@@ -264,11 +264,12 @@ describe("a v1 phone is refused them, and keeps v1", () => {
     expect(rowOf(id)).toMatchObject({ date: THU, time: "18:00", completion: "scheduled" });
   });
 
-  it("a new pairing is minted at v2; the v1 phone stays v1, refused as before (no in-place upgrade)", async () => {
+  it("a new pairing is minted at the newest scope (v3, which holds v2's moves); the v1 phone stays v1, refused as before", async () => {
     const { code } = (await w.call("POST", "/api/native/pairings", { body: {} })).json;
     const { token, check } = (await w.call("POST", "/api/native/pair", { cookie: false, body: { code, label: "New phone" } })).json;
     expect((await w.call("POST", `/api/native/devices/${await sha256Hex(token)}/confirm`, { body: { check } })).status).toBe(200);
-    expect((await w.call("GET", "/api/native/me", { bearer: token })).json.device.scope).toBe(V2);
+    // A new pairing no longer upgrades or touches the v1 phone; only the laptop's grant moves a phone up (stage 2b).
+    expect((await w.call("GET", "/api/native/me", { bearer: token })).json.device.scope).toBe("training-v3");
     expect((await w.call("GET", "/api/native/me", { bearer: v1 })).json.device.scope).toBe(V1);
     const id = await workoutOn(THU);
     expect((await move(id, { toDate: FRI, toTime: "07:00" }, v1)).status).toBe(403);
