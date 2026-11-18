@@ -365,6 +365,13 @@ describe("Settings → Devices", () => {
     expect([...rowOf("Old phone").querySelectorAll("button")].map(words)).toEqual(["Allow fitting and feedback", "Revoke"]);
   });
 
+  it("the laptop never offers v2 → v1, even from a worker that lists it: it has no words for that step, so no button", async () => {
+    worker({ devices: [active({ label: "Running phone", scope: "training-v2", previousScope: "training-slice-v1" })] });
+    await mount();
+    expect([...rowOf("Running phone").querySelectorAll("button")].map(words)).toEqual(["Allow fitting and feedback", "Revoke"]);
+    expect(words(rowOf("Running phone"))).not.toContain("Stop");
+  });
+
   it("no grant at the top, while pending, or with device sign-in off — but the v3 step-down still answers with sign-in off", async () => {
     worker({ devices: [active({ label: "New phone", scope: "training-v3", nextScope: null }), pending()] });
     await mount();
