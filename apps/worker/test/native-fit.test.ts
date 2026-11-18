@@ -299,6 +299,13 @@ describe("the document: GET and PUT /api/workouts/:id/doc with baseRev", () => {
     const built = await build(slot, {});
     expect((await readDoc(id)).json.locations).toEqual([{ id: flat, name: "Flat" }, { id: gym, name: "Gym" }, { id: hotel, name: "Hotel" }]);
     expect((await readDoc(id)).json.locations).toEqual(built.json.choices.locations);
+    // The profile's own default place (another than the one marked default) comes first, and the rest as they were made.
+    client()
+      .prepare(`insert into athlete_profiles (id, user_id, preferences, updated_at) values (?, ?, ?, ?) on conflict(id) do update set preferences = excluded.preferences`)
+      .run(w.userId, w.userId, JSON.stringify({ defaultPlaceId: hotel }), nowInstant());
+    const rebuilt = await build(slot, { overrides: { minutes: 25 } });
+    expect((await readDoc(id)).json.locations).toEqual([{ id: hotel, name: "Hotel" }, { id: gym, name: "Gym" }, { id: flat, name: "Flat" }]);
+    expect((await readDoc(id)).json.locations).toEqual(rebuilt.json.choices.locations);
     // Not for me, as it stands now: what the phone filters a document's swap lists with, as the web's item sheet does.
     expect((await readDoc(id)).json.excluded).toEqual([]);
     client().prepare(`insert into exercise_prefs (id, user_id, exercise_id, rating, excluded, pinned, updated_at) values (?, ?, 'deadBug', null, 1, 0, ?), (?, ?, 'bridge', 1, 0, 0, ?), (?, ?, 'birdDog', -1, 1, 0, ?)`)
