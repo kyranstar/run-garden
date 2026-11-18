@@ -8,6 +8,8 @@
 #   bash apps/worker/scripts/native-harness.sh code      # mint a pairing code (the laptop's Pair), print it
 #   bash apps/worker/scripts/native-harness.sh pending   # the pending phones, with their check numbers
 #   bash apps/worker/scripts/native-harness.sh confirm   # confirm the newest pending phone (the laptop's Confirm)
+#   bash apps/worker/scripts/native-harness.sh grant     # grant the newest active phone its next scope (the laptop's
+#                                                        # Settings → Devices button; v2 → v3), in place
 #   bash apps/worker/scripts/native-harness.sh check     # the whole flow, scripted (native-harness-check.mjs)
 #   bash apps/worker/scripts/native-harness.sh sql "select …"   # a read of the LOCAL D1
 #   bash apps/worker/scripts/native-harness.sh down      # stop it and delete its state
@@ -95,6 +97,14 @@ case "${1:-}" in
     curl -fsS -b "$JAR" -X POST -H 'Content-Type: application/json' -d "{\"check\":\"$check\"}" "$BASE/api/native/devices/$id/confirm"
     echo
     ;;
+  grant)
+    list="$(curl -fsS -b "$JAR" "$BASE/api/native/devices")"
+    pick="$(node -e 'const p=JSON.parse(process.argv[1]).devices.filter(d=>d.state==="active"&&d.nextScope).at(-1);if(!p)process.exit(3);process.stdout.write(`${p.id} ${p.scope} ${p.nextScope} ${p.label}`)' "$list")" || { echo "no active phone with a next scope" >&2; exit 1; }
+    read -r id from to label <<<"$pick"
+    echo "granting \"$label\" $to (from $from), in place"
+    curl -sS -b "$JAR" -X POST -H 'Content-Type: application/json' -d "{\"scope\":\"$to\"}" "$BASE/api/native/devices/$id/grant"
+    echo
+    ;;
   check)
     node "$WORKER/scripts/native-harness-check.mjs" "$BASE" "$JAR" "$STATE"
     ;;
@@ -108,7 +118,7 @@ case "${1:-}" in
     echo "native harness down"
     ;;
   *)
-    sed -n '2,25p' "$0"
+    sed -n '2,27p' "$0"
     exit 2
     ;;
 esac

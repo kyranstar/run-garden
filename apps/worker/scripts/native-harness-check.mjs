@@ -236,6 +236,83 @@ check("…and its move, skip, unskip and drain are 403 out_of_scope", await Prom
 check("…with nothing written", editTrace(), v1Before);
 check("…while its own slice still answers", (await call("GET", "/api/native/today", { bearer: v1Token })).status, 200);
 
+// 4d. Stage 2b on local D1 (kit v0.15, "Fit it to the day"): the laptop grants the v2 phone training-v3 in place; the same
+// token, refused a v3 route a moment before, reaches it at once; Make it fit (Build's choices, a document edit by its
+// revision), the review's Not for me applied once; the grant's refusals; two grants at once on workerd land once.
+const phoneId = createHash("sha256").update(token).digest("hex");
+const grantAs = (id, scope) => call("POST", `/api/native/devices/${id}/grant`, { cookie: true, body: { scope } });
+const grantAudits = () => sql("select count(*) as n from audit_events where kind = 'native_device_scope_granted'")[0].n;
+const deviceRowOf = (id) => sql(`select id, user_id, label, state, check_number, created_at, expires_at, confirmed_at, revoked_at, check_tries, scope from native_devices where id = '${id}'`)[0];
+const fitted = await call("POST", "/api/workouts", { cookie: true, body: { doc: { ...doc, title: "Harness fit" }, date: day, time: "23:50", clientId: `harness-fit-${Date.now()}` } });
+check("the laptop makes another of today's sessions", fitted.status < 300, true);
+const fid = fitted.json.workout.id;
+const listedPhone = (await call("GET", "/api/native/devices", { cookie: true })).json.devices.find((d) => d.id === phoneId);
+check("the laptop lists the phone at v2, with v3 to grant", [listedPhone?.scope, listedPhone?.nextScope], ["training-v2", "training-v3"]);
+check("under v2, the phone's document read is 403 out_of_scope", (await call("GET", `/api/workouts/${fid}/doc`, { bearer: token })).json, { error: "out_of_scope" });
+check("…and Build with a choice is 403 out_of_scope", (await call("POST", `/api/sessions/${fid}/build`, { bearer: token, body: { checks: {} } })).json, { error: "out_of_scope" });
+check("…and a v1 phone can't skip a step: v1 → v3 is 409 not_next_scope", (await grantAs(createHash("sha256").update(v1Token).digest("hex"), "training-v3")).json, { error: "not_next_scope", scope: "training-slice-v1", next: "training-v2" });
+const rowBefore = deviceRowOf(phoneId);
+const auditsBefore = grantAudits();
+check("the laptop grants the phone v3: 200 granted", (await grantAs(phoneId, "training-v3")).json, { ok: true, scope: "training-v3", granted: true });
+check("…its row the same but its scope (token, account, label, state, expiry)", deviceRowOf(phoneId), { ...rowBefore, scope: "training-v3" });
+check("…with one audit", grantAudits() - auditsBefore, 1);
+check("the same grant again: 200 granted false, and no second audit", [(await grantAs(phoneId, "training-v3")).json, grantAudits() - auditsBefore], [{ ok: true, scope: "training-v3", granted: false }, 1]);
+check("never a downgrade: v3 → v2 is 409 not_next_scope", (await grantAs(phoneId, "training-v2")).json, { error: "not_next_scope", scope: "training-v3", next: null });
+check("the same token, on its next request: /me says training-v3", (await call("GET", "/api/native/me", { bearer: token })).json.device?.scope, "training-v3");
+const docRead = await call("GET", `/api/workouts/${fid}/doc`, { bearer: token });
+check("…and its document read, refused a moment ago, answers: 200 at revision 1", [docRead.status, docRead.json.rev, docRead.json.origin], [200, 1, "studio"]);
+const oneMove = { ...docRead.json.doc, parts: [{ ...docRead.json.doc.parts[0], items: docRead.json.doc.parts[0].items.slice(0, 1) }] };
+const edited = await call("PUT", `/api/workouts/${fid}/doc`, { bearer: token, body: { doc: oneMove, baseRev: 1 } });
+check("Make it fit, a document: a move removed, by its revision: 200 at revision 2", [edited.status, edited.json.rev], [200, 2]);
+const docTrace = () => sql(`select (select workout_doc_rev || ' ' || updated_at from planned_workouts where id = '${fid}') as row, (select count(*) from workout_doc_revisions where workout_id = '${fid}') as revisions`)[0];
+const beforeStaleEdit = docTrace();
+check("an edit from the old revision: 409 stale_revision with the current one", (await call("PUT", `/api/workouts/${fid}/doc`, { bearer: token, body: { doc: docRead.json.doc, baseRev: 1 } })).json, { error: "stale_revision", rev: 2 });
+check("…and nothing written", docTrace(), beforeStaleEdit);
+check("a document edit outside the phone's grammar: 403 out_of_scope", (await call("PUT", `/api/workouts/${fid}/doc`, { bearer: token, body: { doc: oneMove, baseRev: 2, force: true } })).json, { error: "out_of_scope" });
+const fitBuild = await call("POST", `/api/sessions/${fid}/build`, { bearer: token, body: { checks: {} } });
+check("Build after the edit, with the body check: 200, playing revision 2", [fitBuild.status, fitBuild.json.build?.fromDoc?.rev], [200, 2]);
+check("Build with a mode (not the phone's to choose): 403 out_of_scope", (await call("POST", `/api/sessions/${fid}/build`, { bearer: token, body: { overrides: { mode: "build" } } })).json, { error: "out_of_scope" });
+// An engine slot: the laptop starts an adaptive programme; the phone fits its first session's length.
+const programme = await call("POST", "/api/programs", { cookie: true, body: { name: "Harness strength", config: {} } });
+check("the laptop starts an adaptive programme", programme.status, 201);
+const [slot] = sql(
+  `select w.id, w.effective_date as date from planned_workouts w where w.plan_id = '${programme.json.program?.id}' and w.archived_at is null and w.effective_date >= '${day}' order by w.effective_date, w.id limit 1`,
+);
+check("…which places a session", !!slot, true);
+if (slot) {
+  const fit = await call("POST", `/api/sessions/${slot.id}/build`, { bearer: token, body: { overrides: { minutes: 20 } } });
+  check(`Make it fit, an engine slot (${slot.date === day ? "today" : "a preview"}): Build with 20 minutes: 200, 20 minutes`, [fit.status, fit.json.build?.minutes], [200, 20]);
+  check("…and 5 minutes, outside the route's schema: 422 invalid_build", (await call("POST", `/api/sessions/${slot.id}/build`, { bearer: token, body: { overrides: { minutes: 5 } } })).json.error, "invalid_build");
+}
+// The review's Not for me, from the phone, once.
+const fb = fitBuild.json.build;
+check("Start the fitted session: 200", (await call("POST", `/api/sessions/${fid}/start`, { bearer: token, body: { buildId: fb.buildId } })).status, 200);
+const feedbackSave = {
+  ...save, id: `harness-fit-${fid}`, workoutId: fid, buildId: fb.buildId, localDate: fb.date, plannedSeconds: fb.plannedSeconds ?? 1800, minutes: fb.minutes ?? 30,
+  stepsTotal: (fb.steps ?? []).length || 1, stepsDone: (fb.steps ?? []).length || 1,
+  movesDone: (fb.items ?? []).map((i) => ({ exerciseId: i.exerciseId, seconds: 120, ...(i.slotKey ? { slotKey: i.slotKey } : {}) })),
+  entries: [{ exerciseId: "bridge", implement: null, format: "straight", perSide: false, sets: [{ setIndex: 0, reps: 12, seconds: null, load: null }] }],
+  review: { excluded: { bridge: true } },
+};
+const feedbackRaw = JSON.stringify(feedbackSave);
+check("the save with the review's Not for me: saved", (await call("PUT", `/api/sessions/performed/${feedbackSave.id}`, { bearer: token, raw: feedbackRaw })).json.status, "saved");
+const prefsAfter = sql("select exercise_id as id, excluded, updated_at as at from exercise_prefs where excluded = 1");
+check("…Not for me recorded", prefsAfter.map((r) => r.id), ["bridge"]);
+check("the same save again (its answer lost): same_payload", (await call("PUT", `/api/sessions/performed/${feedbackSave.id}`, { bearer: token, raw: feedbackRaw })).json, { status: "same_payload" });
+check("…and the preference not written again", sql("select exercise_id as id, excluded, updated_at as at from exercise_prefs where excluded = 1"), prefsAfter);
+// Two grants at once on workerd, for a phone of v2 (its row written as a pairing writes one): one lands, with one audit.
+const raceToken = `rgd_${createHash("sha256").update(`harness-grant-race-${Date.now()}`).digest("base64url")}`;
+const raceId = createHash("sha256").update(raceToken).digest("hex");
+sql(
+  `insert into native_devices (id, user_id, scope, label, state, check_number, created_at, expires_at, confirmed_at, check_tries) values ` +
+    `('${raceId}', '${me.json.userId}', 'training-v2', 'Harness race phone', 'active', '0000', '${at}', '${new Date(Date.now() + 86_400_000).toISOString()}', '${at}', 0)`,
+);
+const raceAudits = grantAudits();
+const raced = await Promise.all([grantAs(raceId, "training-v3"), grantAs(raceId, "training-v3"), grantAs(raceId, "training-v3")]);
+check("three grants at once on local D1: one granted, two not", raced.map((a) => `${a.status} ${a.json.granted}`).sort(), ["200 false", "200 false", "200 true"]);
+check("…and exactly one audit", grantAudits() - raceAudits, 1);
+check("…the race phone at v3", (await call("GET", "/api/native/me", { bearer: raceToken })).json.device?.scope, "training-v3");
+
 // 5. More races on local D1: three codes (the mint bound is 5 a window, and this check mints 5 in all), each redeemed by
 // four requests at once — one device each, never two. Each new code lifts the redeem throttles, so each race starts clean.
 const trials = [];
@@ -299,6 +376,7 @@ check("a sixth code in the window: 429 too_many_codes, retryAfter 600", [sixth.s
 // 7. Revoke all: the phone is stopped at once.
 check("Revoke all", (await call("POST", "/api/native/devices/revoke-all", { cookie: true, body: {} })).json.ok, true);
 check("revoked: 401 device_revoked", (await call("GET", "/api/native/me", { bearer: token })).json, { error: "device_revoked" });
+check("…and a grant never brings a revoked phone back: 409 device_revoked", [(await grantAs(raceId, "training-v3")).json, deviceRowOf(raceId).state], [{ error: "device_revoked" }, "revoked"]);
 
 console.log(`\n${passed} passed, ${failed.length} failed`);
 if (failed.length) {
