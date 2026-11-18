@@ -14,7 +14,11 @@
  */
 import { describe, expect, it } from "vitest";
 import { DEFAULT_SCHEDULING_PREFERENCES, type SchedulingPreferences } from "@rg/domain";
+import { EXERCISES } from "@rg/exercise-library";
+import { deriveDoc } from "@rg/workout";
 import { localClock, placeDaySessions, relaidDay, type PlaceableSession } from "../src/services/day-placement.js";
+import { placedTimes } from "../src/services/design-placement.js";
+import { calmDoc } from "./doc-workout-fixture.js";
 
 const prefs: SchedulingPreferences = { ...DEFAULT_SCHEDULING_PREFERENCES, timezone: "America/Los_Angeles" };
 const TODAY = "2026-11-18"; // a Wednesday: the weekday window is 07:00
@@ -53,6 +57,14 @@ describe("today: nothing is placed before now", () => {
     expect(minutesOf(layout.get("filler")!)).toBeGreaterThan(minutesOf("12:10"));
   });
 
+  it("sessions whose time has come stay where they are even when they overlap each other: nothing is moved into the past", () => {
+    // Two sessions this morning, overlapping, neither done: their times have come, and they are the athlete's to sort out.
+    const day = [s("early", "strength", 45, "07:00"), s("filler", "yoga", 20, "07:10"), s("evening", "yoga", 30, "18:00")];
+    const layout = relaidDay(TODAY, day, prefs, at("09:00"))!;
+    expect(layout).not.toBeNull();
+    expect([layout.get("early"), layout.get("filler"), layout.get("evening")]).toEqual(["07:00", "07:10", "18:00"]);
+  });
+
   it("a session that keeps its time never moves earlier, even with the whole morning free", () => {
     const day = [s("a", "strength", 45, "19:00"), s("b", "strength", 45, "19:15")];
     const layout = relaidDay(TODAY, day, prefs, at("09:00"))!;
@@ -78,6 +90,26 @@ describe("a day ahead is laid out as it always was", () => {
     const day = [s("programme", "yoga", 30, "18:00"), s("studio", "strength", 50, "17:30")];
     expect(relaidDay(AHEAD, day, prefs, at("09:00"))).toEqual(relaidDay(AHEAD, day, prefs));
     expect(relaidDay(AHEAD, day, prefs, at("09:00"))!.get("studio")).toBe("07:00");
+  });
+});
+
+describe("the coach designer's card lays today out by the same clock as the write (so the two never disagree)", () => {
+  it("a revision that lengthens today's Studio session into the evening: the card's time is later, never the morning window", async () => {
+    const base = calmDoc();
+    const doc = { ...base, parts: base.parts.map((p) => ({ ...p, items: p.items.map((i) => (i.kind === "exercise" ? { ...i, dose: { ...i.dose, sets: 10, restSec: 90 } } : i)) })) };
+    const rows = [
+      { id: "studio", date: TODAY, time: "17:30", category: "yoga", source: null, fallback: 1200, block: 1200, state: "scheduled", pinned: 0 },
+      { id: "programme", date: TODAY, time: "18:00", category: "strength", source: null, fallback: 2700, block: 2700, state: "scheduled", pinned: 0 },
+    ];
+    const ops = [{ kind: "doc_workout", by: { runId: "op-1" }, target: { kind: "revise", workoutId: "studio", baseRev: 1 }, date: TODAY, doc }];
+    const now = new Date("2026-11-18T17:00:00.000Z"); // 09:00 in Los Angeles
+    const placed = await placedTimes("u-1", "proposal-1", ops, rows, { now, today: TODAY, prefs });
+    const time = placed.get("op-1")!;
+    expect(time >= "17:30", time).toBe(true);
+    // And it is the very layout the write's pass makes on the same clock.
+    const derived = deriveDoc(doc, EXERCISES);
+    const written = relaidDay(TODAY, [s("studio", derived.category, derived.estimatedMinutes, "17:30"), s("programme", "strength", 45, "18:00")], prefs, localClock(now, prefs.timezone))!;
+    expect(time).toBe(written.get("studio"));
   });
 });
 

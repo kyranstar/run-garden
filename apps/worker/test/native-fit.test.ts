@@ -322,6 +322,25 @@ describe("the document: GET and PUT /api/workouts/:id/doc with baseRev", () => {
     expect([again.status, again.json.moved]).toEqual([200, []]);
   });
 
+  it("when it's the edited session that gives way, its own new time is in `workout`, and `moved` lists only the others", async () => {
+    // The evening's programme session is the heavier one here (strength, an hour); the Studio session's time is its own,
+    // not the athlete's pick (no time_change), so a longer version of it is the one that moves — later, after the hour.
+    const slot = await seedSlot(w.db, w.userId, D);
+    client().prepare(`update planned_workouts set category = 'strength', sport = 'strength', fallback_estimated_duration_seconds = 3600 where id = ?`).run(slot);
+    const made = await w.call("POST", "/api/workouts", { body: { doc: calmDoc(), date: D, time: "17:30", clientId: `fit-${newId()}` } });
+    const id = made.json.workout.id as string;
+    client().prepare(`delete from schedule_overrides where workout_id = ? and kind = 'time_change'`).run(id);
+    const doc = (await readDoc(id)).json.doc as WorkoutDoc;
+    const longer: WorkoutDoc = {
+      ...doc,
+      parts: doc.parts.map((p) => ({ ...p, items: p.items.map((i) => (i.kind === "exercise" ? { ...i, dose: { ...i.dose, sets: 10, restSec: 90 } } : i)) })),
+    };
+    const a = await editDoc(id, { doc: longer, baseRev: 1 });
+    expect([a.status, a.json.moved], a.text).toEqual([200, []]);
+    expect(a.json.workout.time > "18:00", a.json.workout.time).toBe(true);
+    expect(q(`select effective_time as t from planned_workouts where id = ?`, slot)[0].t).toBe("18:00");
+  });
+
   it("a stale baseRev is 409 stale_revision with the current rev, and nothing is written", async () => {
     const id = await workoutOn(D);
     const doc = (await readDoc(id)).json.doc as WorkoutDoc;
