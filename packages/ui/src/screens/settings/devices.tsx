@@ -51,7 +51,7 @@ export const CAN: Readonly<Record<string, string>> = {
  * before anything is sent.
  */
 export const GRANTS: Readonly<Record<string, { button: string; line: string }>> = {
-  "training-v2": { button: "Allow moving workouts", line: "It will also be able to move, skip and put back workouts on your plan. You can stop it here any time." },
+  "training-v2": { button: "Allow moving workouts", line: "It will also be able to move, skip and put back workouts on your plan. To stop that, revoke it here." },
   "training-v3": {
     button: "Allow fitting and feedback",
     line: "It will also be able to fit a workout to the day (its time, place and moves) and record Not for me and harder-move switches. You can stop it here any time.",

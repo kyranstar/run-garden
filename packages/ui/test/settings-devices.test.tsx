@@ -353,7 +353,7 @@ describe("Settings → Devices", () => {
     await mount();
     expect([...rowOf("Old phone").querySelectorAll("button")].map(words)).toEqual(["Allow moving workouts", "Revoke"]);
     await click(button("Allow moving workouts", rowOf("Old phone")));
-    expect(words(rowOf("Old phone"))).toContain("It will also be able to move, skip and put back workouts on your plan. You can stop it here any time.");
+    expect(words(rowOf("Old phone"))).toContain("It will also be able to move, skip and put back workouts on your plan. To stop that, revoke it here.");
     await click(button("Not now", rowOf("Old phone")));
     expect(words(rowOf("Old phone"))).not.toContain("It will also");
     expect(button("Allow moving workouts", rowOf("Old phone"))).toBeTruthy();
