@@ -316,6 +316,7 @@ export const ROUTE_CLASSES: Record<string, Classified> = {
   "POST /api/native/devices/:id/confirm": "gated",
   "POST /api/native/devices/:id/revoke": "gated",
   "POST /api/native/devices/:id/grant": "gated",
+  "POST /api/native/devices/:id/reduce": "gated",
   "GET /api/native/me": "device",
   "GET /api/native/today": "device",
   "POST /api/native/sign-out": "device",

@@ -52,6 +52,16 @@ export const NEXT_DEVICE_SCOPE: Readonly<Record<DeviceScope, DeviceScope | null>
   [DEVICE_SCOPE_V3]: null,
 };
 
+/**
+ * The scope the laptop's step-down moves a device back to from each (review r-m4: an undo of a grant, a rollback without
+ * a Revoke): the one below, one step at a time; null at the bottom.
+ */
+export const PREVIOUS_DEVICE_SCOPE: Readonly<Record<DeviceScope, DeviceScope | null>> = {
+  [DEVICE_SCOPE_V1]: null,
+  [DEVICE_SCOPE_V2]: DEVICE_SCOPE_V1,
+  [DEVICE_SCOPE_V3]: DEVICE_SCOPE_V2,
+};
+
 /** True when the body, as raw text, is within the scope. */
 type BodyRule = (raw: string) => boolean;
 

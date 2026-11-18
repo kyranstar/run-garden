@@ -9,7 +9,7 @@ import { newId, nowInstant } from "@rg/domain";
 import type { Env } from "../env.js";
 import { runAtomicallyClaim, type Db } from "../services/db.js";
 import { hmacSha256Hex, randomToken, sha256Hex } from "./crypto.js";
-import { isDeviceScope, NEXT_DEVICE_SCOPE, PAIRING_SCOPE, type DeviceScope } from "./device-scope.js";
+import { isDeviceScope, NEXT_DEVICE_SCOPE, PAIRING_SCOPE, PREVIOUS_DEVICE_SCOPE, type DeviceScope } from "./device-scope.js";
 
 /**
  * OWNER'S CHOICE, open (SLICE-CONTRACT §9 question 1): how long a confirmed device works before the owner re-pairs it
@@ -382,10 +382,14 @@ export interface DeviceListItem {
   scope: string;
   /** The scope the laptop can grant it now (`grantNextScope`): its next, while it is active; null at the top, or pending. */
   nextScope: DeviceScope | null;
+  /** The scope the laptop can step it back to now (`reduceScope`): the one below, while it is active; null at the bottom, or pending. */
+  previousScope: DeviceScope | null;
 }
 
 /** The next scope of a device row's scope, null for the top or a scope this Worker doesn't know. */
 const nextOf = (scope: string): DeviceScope | null => (isDeviceScope(scope) ? NEXT_DEVICE_SCOPE[scope] : null);
+/** The scope below a device row's scope, null for the bottom or a scope this Worker doesn't know. */
+const previousOf = (scope: string): DeviceScope | null => (isDeviceScope(scope) ? PREVIOUS_DEVICE_SCOPE[scope] : null);
 
 /** Settings → Devices: the account's pending and active devices, live; never a revoked or expired one. */
 export async function listDevices(db: Db, userId: string, now: string): Promise<DeviceListItem[]> {
@@ -407,37 +411,59 @@ export async function listDevices(db: Db, userId: string, now: string): Promise<
     expiresSoon: r.state === "active" && r.expiresAt <= warnFrom,
     scope: r.scope,
     nextScope: r.state === "active" ? nextOf(r.scope) : null,
+    previousScope: r.state === "active" ? previousOf(r.scope) : null,
   }));
 }
 
 /** The audit a grant writes (kit v0.15): which device, from which scope to which. */
 export const SCOPE_GRANTED_KIND = "native_device_scope_granted";
+/** The audit a step-down writes (review r-m4): which device, from which scope to which. */
+export const SCOPE_REDUCED_KIND = "native_device_scope_reduced";
+
+type StateRefusal = { ok: false; error: "not_found" | "device_revoked" | "device_expired" | "device_pending" };
 
 export type GrantOutcome =
   | { ok: true; scope: DeviceScope; granted: boolean }
-  | { ok: false; error: "not_found" | "device_revoked" | "device_expired" | "device_pending" }
+  | StateRefusal
   | { ok: false; error: "not_next_scope"; scope: string; next: DeviceScope | null };
 
+export type ReduceOutcome =
+  | { ok: true; scope: DeviceScope; reduced: boolean }
+  | StateRefusal
+  | { ok: false; error: "not_previous_scope"; scope: string; previous: DeviceScope | null };
+
+/** One step along the ladder, either way: where it goes from a scope, and the audit it writes. */
+interface Step {
+  toward: (scope: string) => DeviceScope | null;
+  kind: string;
+}
+
 /**
- * THE LAPTOP'S GRANT OF A DEVICE'S NEXT SCOPE, IN PLACE (the lead's v0.15 ruling): one ACTIVE, unexpired device of the
- * account moved from its scope to `to`, which must be exactly its next (`NEXT_DEVICE_SCOPE`: v1 → v2 → v3, one step a
- * grant). Explicit — the laptop names the scope it grants — and idempotent: a device already at `to` answers
- * `granted: false` and nothing is written.
+ * ONE GUARDED STEP OF A DEVICE'S SCOPE, the grant's and the step-down's alike: one ACTIVE, unexpired device of the account
+ * moved from its scope to `to`, which must be exactly the scope one step along (`step.toward`). Explicit — the laptop names
+ * the scope — and idempotent: a device already at `to` answers `changed: false` and nothing is written.
  *
  * WHAT IT KEEPS: the row's id (its token's hash, so the token works unchanged), its account, label, state, expiry (never
  * extended), confirmation, last use and tries — every column but `scope`. It touches nothing of the phone's saves. It never
- * re-enables anything that's off: a revoked or expired device is refused, and the route is 404 while device sign-in is off.
+ * re-enables anything that's off: a revoked or expired device is refused.
  *
- * ONE TRANSACTION, decided in it: the audit (`SCOPE_GRANTED_KIND`, `{deviceId, label, from, to}`) and the row's scope are
- * written only while the row is still the account's, active, unexpired and at `from` as the statements run — the audit
- * first, gated on that, then the claim, gated the same way — so a grant lands with its one audit or not at all, and two
- * at once land once. A miss is then decided again from the row as it now stands (a grant that landed meanwhile is the
- * idempotent answer).
+ * ONE TRANSACTION, decided in it: the audit (`step.kind`, `{deviceId, label, from, to}`) and the row's scope are written
+ * only while the row is still the account's, active, unexpired and at `from` as the statements run — the audit first,
+ * gated on that, then the claim, gated the same way — so a step lands with its one audit or not at all, and two at once
+ * land once. A miss is then decided again from the row as it now stands (a step that landed meanwhile is the idempotent
+ * answer; a step the other way leaves this one not the next).
  *
  * WHEN IT TAKES EFFECT: on the device's next request. `requireUser`'s device branch reads the row's scope on every
  * request, so a request already past it runs under the scope it read; the next one is judged by `to`.
  */
-export async function grantNextScope(db: Db, userId: string, id: string, to: string, now: string): Promise<GrantOutcome> {
+async function stepScope(
+  db: Db,
+  userId: string,
+  id: string,
+  to: string,
+  now: string,
+  step: Step,
+): Promise<{ ok: true; scope: DeviceScope; changed: boolean } | StateRefusal | { ok: false; error: "not_one_step"; scope: string; toward: DeviceScope | null }> {
   const d = nativeDevices;
   for (let attempt = 0; attempt < 3; attempt++) {
     const [row] = await db
@@ -450,19 +476,44 @@ export async function grantNextScope(db: Db, userId: string, id: string, to: str
     if (row.expiresAt <= now) return { ok: false, error: "device_expired" };
     if (row.state !== "active") return { ok: false, error: "device_pending" };
     const from = row.scope;
-    if (from === to && isDeviceScope(from)) return { ok: true, scope: from, granted: false };
-    const next = nextOf(from);
-    if (next === null || next !== to) return { ok: false, error: "not_next_scope", scope: from, next };
+    if (from === to && isDeviceScope(from)) return { ok: true, scope: from, changed: false };
+    const toward = step.toward(from);
+    if (toward === null || toward !== to) return { ok: false, error: "not_one_step", scope: from, toward };
     const still = and(eq(d.id, id), eq(d.userId, userId), eq(d.state, "active"), gt(d.expiresAt, now), eq(d.scope, from));
-    const detail = JSON.stringify({ deviceId: id, label: row.label, from, to: next });
+    const detail = JSON.stringify({ deviceId: id, label: row.label, from, to: toward });
     const claimed = await runAtomicallyClaim(db, [
-      db.insert(auditEvents).select(sql`SELECT ${newId()}, ${userId}, ${SCOPE_GRANTED_KIND}, ${detail}, ${now} WHERE EXISTS (SELECT 1 FROM ${d} WHERE ${still})`),
-      db.update(d).set({ scope: next }).where(still).returning({ id: d.id }),
+      db.insert(auditEvents).select(sql`SELECT ${newId()}, ${userId}, ${step.kind}, ${detail}, ${now} WHERE EXISTS (SELECT 1 FROM ${d} WHERE ${still})`),
+      db.update(d).set({ scope: toward }).where(still).returning({ id: d.id }),
     ]);
-    if (claimed > 0) return { ok: true, scope: next, granted: true };
+    if (claimed > 0) return { ok: true, scope: toward, changed: true };
   }
-  // The row kept changing under the grant: nothing was granted, and the laptop's list will say what it is now.
-  throw new Error("grant_contended");
+  // The row kept changing under the step: nothing was changed, and the laptop's list will say what it is now.
+  throw new Error("scope_step_contended");
+}
+
+/**
+ * THE LAPTOP'S GRANT OF A DEVICE'S NEXT SCOPE, IN PLACE (the lead's v0.15 ruling): `stepScope` up the ladder
+ * (`NEXT_DEVICE_SCOPE`: v1 → v2 → v3, one step a grant; never a skip or a downgrade), auditing `SCOPE_GRANTED_KIND`. The
+ * route is 404 while device sign-in is off: nothing widens a device then.
+ */
+export async function grantNextScope(db: Db, userId: string, id: string, to: string, now: string): Promise<GrantOutcome> {
+  const r = await stepScope(db, userId, id, to, now, { toward: nextOf, kind: SCOPE_GRANTED_KIND });
+  if (r.ok) return { ok: true, scope: r.scope, granted: r.changed };
+  if (r.error === "not_one_step") return { ok: false, error: "not_next_scope", scope: r.scope, next: r.toward };
+  return r;
+}
+
+/**
+ * THE LAPTOP'S STEP-DOWN, IN PLACE (stage 2b review r-m4): `stepScope` down the ladder (`PREVIOUS_DEVICE_SCOPE`: v3 → v2
+ * → v1, one step at a time), auditing `SCOPE_REDUCED_KIND` — an undo of a grant, and a rollback that needs no Revoke: the
+ * phone keeps its pairing, token and expiry, and on its next request is judged by the lower scope. It answers while device
+ * sign-in is off, as Revoke does: narrowing a device never widens one.
+ */
+export async function reduceScope(db: Db, userId: string, id: string, to: string, now: string): Promise<ReduceOutcome> {
+  const r = await stepScope(db, userId, id, to, now, { toward: previousOf, kind: SCOPE_REDUCED_KIND });
+  if (r.ok) return { ok: true, scope: r.scope, reduced: r.changed };
+  if (r.error === "not_one_step") return { ok: false, error: "not_previous_scope", scope: r.scope, previous: r.toward };
+  return r;
 }
 
 /** Why a device was revoked. `check_failed` is set by `confirmDevice` itself, in the statement that counts the try. */

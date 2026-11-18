@@ -253,7 +253,7 @@ describe("confirming on the laptop", () => {
     expect(list.json).toEqual({
       enabled: true,
       // Its scope as stored, and no grant offered while it is pending (kit v0.15).
-      devices: [{ id, label: "Kitchen iPhone", state: "pending", check, createdAt: nowInstant(), confirmedAt: null, lastUsedAt: null, expiresAt: later(10 * MIN), expiresSoon: false, scope: "training-v2", nextScope: null }],
+      devices: [{ id, label: "Kitchen iPhone", state: "pending", check, createdAt: nowInstant(), confirmedAt: null, lastUsedAt: null, expiresAt: later(10 * MIN), expiresSoon: false, scope: "training-v2", nextScope: null, previousScope: null }],
     });
     vi.setSystemTime(new Date(Date.now() + 2 * MIN));
     const a = await w.call("POST", `/api/native/devices/${id}/confirm`, { body: { check } });

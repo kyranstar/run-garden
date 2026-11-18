@@ -10,6 +10,9 @@
  *  - Each phone says what it can do, in plain words (its scope; kit v0.15). An active phone with a next scope has one
  *    button for it, which first says in one line what that adds; Allow grants it in place — the same phone, token and
  *    expiry — and Not now puts the question away. Only while device sign-in is on.
+ *  - The step-down (review r-m4): an active phone above the bottom has one button to stop what its last grant allowed,
+ *    which first says in one line what stops and that it stays paired; Stop steps it down in place. Like Revoke, it
+ *    answers whatever the switch: narrowing a phone never widens one.
  *  - Revoke all: every phone at once.
  *
  * The card shows nothing while the switch is off and no phone is paired, or when the list can't be read. With the switch
@@ -43,12 +46,24 @@ export const CAN: Readonly<Record<string, string>> = {
   "training-v3": "play, save, move and fit workouts, and record your feedback",
 };
 
-/** The grant to each next scope: its button, and the one line that says what it adds before anything is sent. */
-export const GRANTS: Readonly<Record<string, { button: string; adds: string }>> = {
-  "training-v2": { button: "Allow moving workouts", adds: "It will also be able to move, skip and put back workouts on your plan." },
+/**
+ * The grant to each next scope: its button, and the one line that says what it adds — and that it can be stopped here —
+ * before anything is sent.
+ */
+export const GRANTS: Readonly<Record<string, { button: string; line: string }>> = {
+  "training-v2": { button: "Allow moving workouts", line: "It will also be able to move, skip and put back workouts on your plan. You can stop it here any time." },
   "training-v3": {
     button: "Allow fitting and feedback",
-    adds: "It will also be able to fit a workout to the day (its time, place and moves) and record Not for me and harder-move switches.",
+    line: "It will also be able to fit a workout to the day (its time, place and moves) and record Not for me and harder-move switches. You can stop it here any time.",
+  },
+};
+
+/** The step-down from each scope (review r-m4): its button, and the one line that says what stops before anything is sent. */
+export const STEP_DOWNS: Readonly<Record<string, { button: string; line: string }>> = {
+  "training-v2": { button: "Stop moving workouts", line: "It will no longer move, skip or put back workouts on your plan. It stays paired." },
+  "training-v3": {
+    button: "Stop fitting and feedback",
+    line: "It will no longer fit workouts to the day or record Not for me and harder-move switches. It stays paired.",
   },
 };
 
@@ -74,10 +89,13 @@ function confirmRefusal(e: unknown): string {
   return "Couldn't confirm the phone. Try again.";
 }
 
-function grantRefusal(e: unknown): string {
+/** Why a grant or a step-down was refused, in words that say what to do (review r-m6: never "try again" when it can't work). */
+function scopeRefusal(e: unknown): string {
   const body = e instanceof ApiError ? (e.body as { error?: string } | null) : null;
-  // The phone moved on meanwhile (another tab granted it, or this list was old): the list, read again, shows it as it is.
-  if (body?.error === "not_next_scope") return "That phone's access changed meanwhile. Here it is as it stands now.";
+  // The phone moved on meanwhile (another tab changed it, or this list was old): the list, read again, shows it as it is.
+  if (body?.error === "not_next_scope" || body?.error === "not_previous_scope") return "That phone's access changed meanwhile. Here it is as it stands now.";
+  if (body?.error === "device_revoked" || body?.error === "device_expired") return "That phone was revoked or has expired: pair it again.";
+  if (e instanceof ApiError && e.status === 404) return "Device sign-in is off, or that phone is no longer paired.";
   return "Couldn't change what that phone can do. Try again.";
 }
 
@@ -94,8 +112,8 @@ function pairRefusal(e: unknown): string {
 export function DevicesSection({ timezone }: { timezone?: string | null } = {}) {
   const qc = useQueryClient();
   const [minted, setMinted] = useState<{ code: string; expiresAt: string; scope?: string } | null>(null);
-  /** The phone whose grant is being asked about (its one line showing), if any. */
-  const [asking, setAsking] = useState<string | null>(null);
+  /** The phone whose grant or step-down is being asked about (its one line showing), if any. */
+  const [asking, setAsking] = useState<{ id: string; step: "grant" | "reduce" } | null>(null);
   const list = useQuery({
     queryKey: NATIVE_DEVICES_QUERY,
     queryFn: api.nativeDevices,
@@ -111,21 +129,22 @@ export function DevicesSection({ timezone }: { timezone?: string | null } = {}) 
   });
   const revoke = useMutation({ mutationFn: (id: string) => api.nativeRevoke(id), onSettled: refresh });
   const revokeAll = useMutation({ mutationFn: api.nativeRevokeAll, onSettled: refresh });
-  const grant = useMutation({
-    mutationFn: (d: { id: string; scope: string }) => api.nativeGrant(d.id, d.scope),
-    onSettled: () => {
-      setAsking(null);
-      return refresh();
-    },
-  });
+  const settled = () => {
+    setAsking(null);
+    return refresh();
+  };
+  const grant = useMutation({ mutationFn: (d: { id: string; scope: string }) => api.nativeGrant(d.id, d.scope), onSettled: settled });
+  const reduce = useMutation({ mutationFn: (d: { id: string; scope: string }) => api.nativeReduce(d.id, d.scope), onSettled: settled });
 
   const data = list.data;
   if (!data || !Array.isArray(data.devices) || typeof data.enabled !== "boolean") return null;
   if (!data.enabled && data.devices.length === 0) return null;
   const expired = minted !== null && Date.parse(minted.expiresAt) <= Date.now();
-  const busy = revoke.isPending || revokeAll.isPending || confirm.isPending || grant.isPending;
+  const busy = revoke.isPending || revokeAll.isPending || confirm.isPending || grant.isPending || reduce.isPending;
   /** The grant an active phone can be given now: only while device sign-in is on, and only one this laptop has words for. */
   const grantOf = (d: NativeDeviceDto) => (data.enabled && d.state === "active" && d.nextScope ? (GRANTS[d.nextScope] ?? null) : null);
+  /** The step-down an active phone can be given now, whatever the switch (it never widens a phone). */
+  const stepDownOf = (d: NativeDeviceDto) => (d.state === "active" && d.previousScope ? (STEP_DOWNS[d.scope] ?? null) : null);
   const pairedCan = minted?.scope ? CAN[minted.scope] : undefined;
 
   return (
@@ -155,24 +174,33 @@ export function DevicesSection({ timezone }: { timezone?: string | null } = {}) 
           );
         }
         const next = grantOf(d);
-        const askingHere = asking === d.id && next !== null;
+        const down = stepDownOf(d);
+        /** The question this row is asking, if any: its one line, and what its first button sends. */
+        const question =
+          asking?.id !== d.id
+            ? null
+            : asking.step === "grant" && next
+              ? { line: next.line, yes: "Allow", send: () => (reduce.reset(), grant.mutate({ id: d.id, scope: d.nextScope! })) }
+              : asking.step === "reduce" && down
+                ? { line: down.line, yes: "Stop", send: () => (grant.reset(), reduce.mutate({ id: d.id, scope: d.previousScope! })) }
+                : null;
         return (
           <div key={d.id} className="setting-row">
             <span className="place-row-main">
               <b>{d.label}</b>
-              {can ? <small>Can {can}</small> : null}
+              {can ? <small>Can {can}.</small> : null}
               <small>
                 {d.lastUsedAt ? `Last used ${relativeTime(d.lastUsedAt)}` : "Never used"} · {expiresIn(daysLeft(d.expiresAt, timezone))}
               </small>
               {/* 7 calendar days or fewer: the phone warns too. */}
               {daysLeft(d.expiresAt, timezone) <= WARN_DAYS ? <small>Pair it again before then: Pair a phone, here.</small> : null}
-              {askingHere ? <small>{next.adds}</small> : null}
+              {question ? <small>{question.line}</small> : null}
             </span>
             <span className="setting-row-end">
-              {askingHere ? (
+              {question ? (
                 <>
-                  <button type="button" className="btn btn-small btn-primary" disabled={busy} onClick={() => grant.mutate({ id: d.id, scope: d.nextScope! })}>
-                    Allow
+                  <button type="button" className="btn btn-small btn-primary" disabled={busy} onClick={question.send}>
+                    {question.yes}
                   </button>
                   <button type="button" className="btn btn-small" disabled={busy} onClick={() => setAsking(null)}>
                     Not now
@@ -181,8 +209,13 @@ export function DevicesSection({ timezone }: { timezone?: string | null } = {}) 
               ) : (
                 <>
                   {next ? (
-                    <button type="button" className="btn btn-small" disabled={busy} onClick={() => setAsking(d.id)}>
+                    <button type="button" className="btn btn-small" disabled={busy} onClick={() => setAsking({ id: d.id, step: "grant" })}>
                       {next.button}
+                    </button>
+                  ) : null}
+                  {down ? (
+                    <button type="button" className="btn btn-small" disabled={busy} onClick={() => setAsking({ id: d.id, step: "reduce" })}>
+                      {down.button}
                     </button>
                   ) : null}
                   <button type="button" className="btn btn-small" disabled={busy} onClick={() => revoke.mutate(d.id)}>
@@ -195,7 +228,8 @@ export function DevicesSection({ timezone }: { timezone?: string | null } = {}) 
         );
       })}
       {confirm.isError ? <Banner kind="warn">{confirmRefusal(confirm.error)}</Banner> : null}
-      {grant.isError ? <Banner kind="warn">{grantRefusal(grant.error)}</Banner> : null}
+      {grant.isError ? <Banner kind="warn">{scopeRefusal(grant.error)}</Banner> : null}
+      {reduce.isError ? <Banner kind="warn">{scopeRefusal(reduce.error)}</Banner> : null}
       {minted ? (
         <div className="stack">
           {expired ? (

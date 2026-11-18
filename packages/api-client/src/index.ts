@@ -346,6 +346,8 @@ export interface NativeDeviceDto {
   scope: string;
   /** The scope Settings can grant it now (its next, while active), else null. */
   nextScope: string | null;
+  /** The scope Settings can step it back to now (the one below, while active), else null. */
+  previousScope: string | null;
 }
 
 export interface NativeDevicesResponse {
@@ -3062,6 +3064,13 @@ export const api = {
    */
   nativeGrant: (id: string, scope: string) =>
     post<{ ok: true; scope: string; granted: boolean }>(`/api/native/devices/${encodeURIComponent(id)}/grant`, { scope }),
+  /**
+   * Step an active phone one scope down, in place (its token, expiry and saves kept), naming the scope it goes to: a resend
+   * is `reduced: false`. 409 `not_previous_scope` {scope, previous}; 409 `device_revoked`, `device_expired`, `device_pending`.
+   * Answers with device sign-in off too.
+   */
+  nativeReduce: (id: string, scope: string) =>
+    post<{ ok: true; scope: string; reduced: boolean }>(`/api/native/devices/${encodeURIComponent(id)}/reduce`, { scope }),
   nativeRevokeAll: () => post<{ ok: true; revoked: number }>("/api/native/devices/revoke-all", {}),
   calendars: () => get<{ calendars: Array<{ id: string; summary: string; primary?: boolean }> }>("/api/calendar/calendars"),
   chooseCalendar: (opts: { calendarId?: string; createNew?: boolean }) => post<{ ok: true; calendarId: string }>("/api/calendar/choose", opts),

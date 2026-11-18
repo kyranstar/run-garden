@@ -12,6 +12,10 @@
  *                                   granted} — `granted: false` when it holds it already; 409 `device_revoked`,
  *                                   `device_expired`, `device_pending`, or `not_next_scope` {scope, next}; 400
  *                                   `invalid_grant`; 404 for a device that isn't the account's
+ *   POST /devices/:id/reduce        {scope} → that ACTIVE device moved one scope down, in place (review r-m4: an undo, a
+ *                                   rollback without Revoke): {ok, scope, reduced}; 409 the device's state, or
+ *                                   `not_previous_scope` {scope, previous}; 400 `invalid_reduce`; 404 as the grant. It
+ *                                   answers while device sign-in is off, as Revoke does
  *   POST /devices/revoke-all        every device of the account revoked (the instant kill)
  *
  * The phone:
@@ -23,8 +27,8 @@
  *                                   can open it (`written`) and its document's revision (`docRev`; kit v0.10)
  *
  * The kill switch (`NATIVE_DEVICES`, a secret): unless it is "1", minting, redeeming, confirming and granting are 404 —
- * the device list and revocation answer either way, so the owner can always see and stop a device, and nothing widens one
- * while device sign-in is off.
+ * the device list, revocation and the step-down answer either way, so the owner can always see, narrow and stop a device,
+ * and nothing widens one while device sign-in is off.
  *
  * Rate controls (auth/native-devices.ts, kit v0.5): redeeming is bounded per client and in all (past a bound, the same
  * 401 `pair_failed`, never evaluated); minting is bounded per account (429 `too_many_codes` with `retryAfter` seconds);
@@ -47,6 +51,7 @@ import {
   listDevices,
   mintPairing,
   redeemPairing,
+  reduceScope,
   revokeAllDevices,
   revokeDevice,
 } from "../auth/native-devices.js";
@@ -120,15 +125,36 @@ nativeRoutes.post("/devices/:id/revoke", requireUser, cookieOnly, async (c) => {
  * `grantNextScope`). Cookie only, and only while device sign-in is on.
  */
 nativeRoutes.post("/devices/:id/grant", pairingOn, requireUser, cookieOnly, async (c) => {
-  const body = (await c.req.json().catch(() => null)) as unknown;
-  const scope = typeof body === "object" && body !== null && !Array.isArray(body) && Object.keys(body).length === 1 ? (body as { scope?: unknown }).scope : undefined;
-  if (typeof scope !== "string") return c.json({ error: "invalid_grant" }, 400);
+  const scope = scopeNamed(await c.req.json().catch(() => null));
+  if (scope === null) return c.json({ error: "invalid_grant" }, 400);
   const outcome = await grantNextScope(c.get("db"), c.get("userId"), c.req.param("id"), scope, nowInstant());
   if (outcome.ok) return c.json({ ok: true, scope: outcome.scope, granted: outcome.granted });
   if (outcome.error === "not_found") return c.json({ error: "not_found" }, 404);
   if (outcome.error === "not_next_scope") return c.json({ error: outcome.error, scope: outcome.scope, next: outcome.next }, 409);
   return c.json({ error: outcome.error }, 409);
 });
+
+/**
+ * The laptop's step-down (review r-m4): Settings → Devices moves one active phone of the account one scope down, named in
+ * the body — `{scope}` and nothing else (auth/native-devices.ts `reduceScope`). Cookie only. Not behind the switch: like
+ * Revoke, the owner can always narrow a phone, and narrowing never widens one.
+ */
+nativeRoutes.post("/devices/:id/reduce", requireUser, cookieOnly, async (c) => {
+  const scope = scopeNamed(await c.req.json().catch(() => null));
+  if (scope === null) return c.json({ error: "invalid_reduce" }, 400);
+  const outcome = await reduceScope(c.get("db"), c.get("userId"), c.req.param("id"), scope, nowInstant());
+  if (outcome.ok) return c.json({ ok: true, scope: outcome.scope, reduced: outcome.reduced });
+  if (outcome.error === "not_found") return c.json({ error: "not_found" }, 404);
+  if (outcome.error === "not_previous_scope") return c.json({ error: outcome.error, scope: outcome.scope, previous: outcome.previous }, 409);
+  return c.json({ error: outcome.error }, 409);
+});
+
+/** The scope a grant or a step-down names: a body of exactly `{scope: <string>}`, else null. */
+function scopeNamed(body: unknown): string | null {
+  if (typeof body !== "object" || body === null || Array.isArray(body) || Object.keys(body).length !== 1) return null;
+  const scope = (body as { scope?: unknown }).scope;
+  return typeof scope === "string" ? scope : null;
+}
 
 /**
  * The phone's account read (§10.4), in place of `/api/auth/me`: who it is signed in as, and its own label, expiry and
