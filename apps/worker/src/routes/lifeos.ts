@@ -5,7 +5,8 @@
  * - Auth is `Authorization: Bearer <token>`, its SHA-256 compared in constant time with the Worker secret
  *   `LIFEOS_TOKEN_SHA256`. The token is made on the owner's Mac and lives only there and on the phone; Cloudflare
  *   holds its hash. Without the secret the endpoint doesn't exist (404); a wrong or missing token is 401.
- * - The plan is the owner's (`ALLOWED_GOOGLE_EMAIL`) only. GET only; nothing is written; no cookie is read.
+ * - The plan is the owner's (`ALLOWED_GOOGLE_EMAIL`) — or, with the LifeOS QA account's plan token (auth/qa-tokens.ts), the QA
+ *   account's, for LifeOS QA on the phone (the phone QA harness). GET only; nothing is written; no cookie is read.
  */
 import { Hono } from "hono";
 import { and, eq, gte, inArray, isNull, lte } from "drizzle-orm";
@@ -25,7 +26,7 @@ const TIME = /^\d{2}:\d{2}$/;
 export const LIFEOS_MAX_DAYS = 31;
 
 /** The bearer door (auth/token.ts): 404 without the secret, 401 on a bad token, 503 during a restore. */
-export const requireLifeosToken = bearerGuard((env) => env.LIFEOS_TOKEN_SHA256);
+export const requireLifeosToken = bearerGuard((env) => env.LIFEOS_TOKEN_SHA256, { qaPlan: true });
 
 export interface LifeosSession {
   id: string;

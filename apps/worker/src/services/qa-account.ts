@@ -50,8 +50,8 @@ import { adaptiveConfigSchema, addDays, DEFAULT_USER_PREFERENCES, newId, nowInst
 import type { SourcePlannedWorkout } from "@rg/providers";
 import type { Env } from "../env.js";
 import { QA_EMAIL, qaPossible } from "../auth/qa-identity.js";
-import { hmacSha256Hex, sha256Hex } from "../auth/crypto.js";
-import { sameHex } from "../auth/token.js";
+import { sha256Hex } from "../auth/crypto.js";
+import { HARNESS_TOKEN_MAX_MS, qaHarnessToken, qaPlanToken, qaUserIdOf } from "../auth/qa-tokens.js";
 import { PAIRING_SCOPE } from "../auth/device-scope.js";
 import { mintPairing } from "../auth/native-devices.js";
 import { ACCOUNT_TABLES, accountTable, columnBySqlName, scopeWhere, wipeAccountData } from "./account-tables.js";
@@ -62,6 +62,14 @@ import { importPlanSnapshot } from "./import-plan.js";
 import { slotId } from "./program-slots.js";
 
 export { isQaEmail, QA_EMAIL, qaPossible } from "../auth/qa-identity.js";
+export {
+  HARNESS_TOKEN_MAX_MS,
+  qaHarnessToken,
+  qaPlanToken,
+  qaPlanTokenAccount,
+  qaUserIdOf,
+  verifyHarnessToken,
+} from "../auth/qa-tokens.js";
 /** Its name, where an account's name shows. */
 export const QA_NAME = "LifeOS QA";
 /** Every fixture's title starts so: a screenshot or a snapshot can't be taken for the owner's plan. */
@@ -99,12 +107,6 @@ declare const QA_BRAND: unique symbol;
 /** The QA account, as only `resolveQaTarget` and `createQaUser` name it. */
 export type QaTarget = { readonly userId: string; readonly [QA_BRAND]: true };
 const brand = (userId: string): QaTarget => ({ userId }) as QaTarget;
-
-/** The QA account's id, or null when there is none. One read. */
-export async function qaUserIdOf(db: Db): Promise<string | null> {
-  const [row] = await db.select({ id: users.id }).from(users).where(eq(users.email, QA_EMAIL)).limit(1);
-  return row?.id ?? null;
-}
 
 /** The account is the QA account (one read). False wherever the QA account can't exist. */
 export async function isQaAccount(db: Db, env: Pick<Env, "ALLOWED_GOOGLE_EMAIL"> | undefined, userId: string): Promise<boolean> {
@@ -318,42 +320,6 @@ export async function seedQaFixtures(db: Db, env: Pick<Env, "ALLOWED_GOOGLE_EMAI
 }
 
 // ── Pairing and the run's tokens ─────────────────────────────────────────────────────────────────────────────
-
-/** The longest a harness token lives (a run is minutes; a build and an install, a few more). */
-export const HARNESS_TOKEN_MAX_MS = 6 * 3_600_000;
-const PLAN_LABEL = "run-garden lifeos qa plan token v1";
-const HARNESS_LABEL = "run-garden lifeos qa harness token v1";
-const HARNESS_TOKEN = /^rgq_([0-9a-f-]{36})_(\d{10})_([0-9a-f]{64})$/;
-
-/** The QA account's plan token: 64 hex, the shape LifeOS's plan connection takes; read only, its plan only. */
-export const qaPlanToken = (env: Pick<Env, "SESSION_SECRET">, qaUserId: string): Promise<string> =>
-  hmacSha256Hex(env.SESSION_SECRET, `${PLAN_LABEL}\n${qaUserId}`);
-
-/** The harness token for `qaUserId`, good until `expiresAtMs` (whole seconds). */
-export async function qaHarnessToken(env: Pick<Env, "SESSION_SECRET">, qaUserId: string, expiresAtMs: number): Promise<string> {
-  const exp = Math.floor(expiresAtMs / 1000);
-  return `rgq_${qaUserId}_${exp}_${await hmacSha256Hex(env.SESSION_SECRET, `${HARNESS_LABEL}\n${qaUserId}\n${exp}`)}`;
-}
-
-/** A well-formed, live, genuine harness token's account id, or null. Says nothing about whether that account still exists. */
-export async function verifyHarnessToken(env: Pick<Env, "SESSION_SECRET" | "ALLOWED_GOOGLE_EMAIL">, token: string, nowMs: number = Date.now()): Promise<string | null> {
-  if (!qaPossible(env)) return null;
-  const m = HARNESS_TOKEN.exec(token);
-  if (!m) return null;
-  const [, userId, expText, mac] = m as unknown as [string, string, string, string];
-  const exp = Number(expText) * 1000;
-  if (!(exp > nowMs) || exp > nowMs + HARNESS_TOKEN_MAX_MS + 60_000) return null;
-  const expected = await hmacSha256Hex(env.SESSION_SECRET, `${HARNESS_LABEL}\n${userId}\n${expText}`);
-  return sameHex(mac, expected) ? userId : null;
-}
-
-/** The account a plan token reads: the QA account's id when `token` is its plan token, else null. Reads only when it could be. */
-export async function qaPlanTokenAccount(db: Db, env: Pick<Env, "SESSION_SECRET" | "ALLOWED_GOOGLE_EMAIL">, token: string): Promise<string | null> {
-  if (!qaPossible(env) || !/^[0-9a-f]{64}$/.test(token)) return null;
-  const qaId = await qaUserIdOf(db);
-  if (!qaId) return null;
-  return sameHex(token, await qaPlanToken(env, qaId)) ? qaId : null;
-}
 
 /** The first 8 hex of SHA-256(userId): how the phone's state snapshot and the panel name an account without its id. */
 export const accountTag = async (userId: string): Promise<string> => (await sha256Hex(userId)).slice(0, 8);
