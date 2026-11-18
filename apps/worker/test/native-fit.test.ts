@@ -298,6 +298,30 @@ describe("the document: GET and PUT /api/workouts/:id/doc with baseRev", () => {
     expect([rebuilt.status, rebuilt.json.build.fromDoc.rev]).toEqual([200, 2]);
   });
 
+  it("a longer document re-times the day's other session: the answer says so (`moved`), and never to a time before now (review r-m2)", async () => {
+    // RV-D4: 09:00 today; the programme's session at 18:00 (its own time, unpinned) and a Studio session at 17:30.
+    const slot = await seedSlot(w.db, w.userId, D);
+    const made = await w.call("POST", "/api/workouts", { body: { doc: calmDoc(), date: D, time: "17:30", clientId: `fit-${newId()}` } });
+    const id = made.json.workout.id as string;
+    const doc = (await readDoc(id)).json.doc as WorkoutDoc;
+    // Make it fit, the other way: the same moves, far more of them — about 50 minutes.
+    const longer: WorkoutDoc = {
+      ...doc,
+      parts: doc.parts.map((p) => ({ ...p, items: p.items.map((i) => (i.kind === "exercise" ? { ...i, dose: { ...i.dose, sets: 10, restSec: 90 } } : i)) })),
+    };
+    const a = await editDoc(id, { doc: longer, baseRev: 1 });
+    expect([a.status, a.json.rev], a.text).toEqual([200, 2]);
+    expect(a.json.workout.time).toBe("17:30");
+    // The other session moved — later, after this one, and said so; not to the morning window, eleven hours gone.
+    expect(a.json.moved).toEqual([{ workoutId: slot, title: "Mobility", from: "18:00", to: expect.any(String) }]);
+    const to = a.json.moved[0].to as string;
+    expect(to > "18:00", to).toBe(true);
+    expect(q(`select effective_time as t from planned_workouts where id = ?`, slot)[0].t).toBe(to);
+    // An edit that changes nothing else on the day says nothing moved.
+    const again = await editDoc(id, { doc: { ...longer, title: "Hips and back, long" }, baseRev: 2 });
+    expect([again.status, again.json.moved]).toEqual([200, []]);
+  });
+
   it("a stale baseRev is 409 stale_revision with the current rev, and nothing is written", async () => {
     const id = await workoutOn(D);
     const doc = (await readDoc(id)).json.doc as WorkoutDoc;

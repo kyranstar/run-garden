@@ -1211,6 +1211,8 @@ export interface ReviseDocWorkoutResponse {
   rev: number | null;
   watchHasOlder: boolean;
   warnings: DocIssueDto[];
+  /** Every other session of that day re-timed for the new length (never to a time before now): what to say moved. */
+  moved?: Array<{ workoutId: string; title: string; from: string; to: string }>;
 }
 
 /** A move the day kept out of a document workout, and the alternate that stands in for it in today's build. */

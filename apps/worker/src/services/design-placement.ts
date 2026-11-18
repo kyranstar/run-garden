@@ -20,7 +20,7 @@ import { sql, type SQL } from "drizzle-orm";
 import type { SchedulingPreferences } from "@rg/domain";
 import { EXERCISES, type ExerciseRecord } from "@rg/exercise-library";
 import { deriveDoc } from "@rg/workout";
-import { relaidDay, type PlaceableSession } from "./day-placement.js";
+import { localClock, relaidDay, type PlaceableSession } from "./day-placement.js";
 import { approveTimeOf } from "./design-time.js";
 import type { DocWorkoutOp } from "./design-tools/propose.js";
 import { keyedRowId } from "./doc-workouts.js";
@@ -115,11 +115,12 @@ export async function placedTimes(
       session: { key: r.id, category: r.category, workoutSeconds: r.source ?? r.fallback ?? 45 * 60, currentTime: r.time, pinned: r.pinned === 1 || r.pinned === true },
     });
   }
-  /** Lay `date` out again when it collides (and is today or later), as the pass after a write does. */
+  /** Lay `date` out again when it collides (and is today or later), as the pass after a write does — with its clock. */
+  const clock = localClock(at.now, at.prefs.timezone);
   const pass = (date: string) => {
     if (date < at.today) return;
     const day = [...sims.values()].filter((s) => s.date === date);
-    const layout = relaidDay(date, day.map((s) => s.session), at.prefs);
+    const layout = relaidDay(date, day.map((s) => s.session), at.prefs, clock);
     if (!layout) return;
     for (const s of day) s.session.currentTime = layout.get(s.session.key) ?? s.session.currentTime;
   };

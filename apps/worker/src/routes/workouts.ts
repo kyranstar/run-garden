@@ -11,7 +11,8 @@
  *                                offline, recorded now — with `startNow` and `clientId`, dated today or up to a week
  *                                back, the day's gate skipped; else 422 `played_offline_refused` with `why` (key, date,
  *                                source)
- *   PUT  /api/workouts/:id/doc   {doc, baseRev} → {workout, rev, watchHasOlder, warnings}: its next revision
+ *   PUT  /api/workouts/:id/doc   {doc, baseRev} → {workout, rev, watchHasOlder, warnings, moved}: its next revision; `moved`,
+ *                                the day's other sessions a new length re-timed ({workoutId, title, from, to}; never before now)
  *   DELETE /api/workouts/:id     → {ok}: a Studio or template workout never started removed, its calendar event and its
  *                                unsent watch work with it; 409 `not_removable` with its `reason` (not_studio, started,
  *                                done, sending)

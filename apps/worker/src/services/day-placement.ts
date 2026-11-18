@@ -33,8 +33,19 @@
  *     earlier that has since lost a session: keeping a filler at 08:55 once the
  *     run beside it is gone is untidy, whereas re-shuffling every day of the
  *     window for tidiness is churn.
+ *
+ *  4. TODAY, NOTHING IS PLACED BEFORE NOW (stage 2b review r-m2). With the clock
+ *     (`DayClock`), today's layout starts from the times the sessions hold, not
+ *     their window times: the athlete's day is planned around them and their
+ *     events are booked. A session whose time has already come stays where it is
+ *     (the athlete's to move); every other one keeps its time unless it collides,
+ *     and then moves LATER, behind what is placed. Rule 1 still decides which one
+ *     keeps its time. Before this, a session planned for 18:00 could be laid out
+ *     at 07:00 when it was already 09:00 — a time gone, and the day's plan torn
+ *     up for one longer session. A day ahead is laid out by rules 1–3 alone.
  */
 
+import { DateTime } from "luxon";
 import { and, eq, inArray, isNull, ne, or } from "drizzle-orm";
 import { plannedWorkouts, scheduleOverrides } from "@rg/database";
 import { isWeekend, type SchedulingPreferences } from "@rg/domain";
@@ -99,6 +110,21 @@ export interface PlaceableSession {
   pinned: boolean;
 }
 
+/** The athlete's own day and the minute it is now there (rule 4): what today's layout is judged against. */
+export interface DayClock {
+  today: string;
+  minutes: number;
+}
+
+/** `now`, on the account's clock: its date and its minutes past midnight. */
+export function localClock(now: string | Date, timezone: string): DayClock {
+  const t = (typeof now === "string" ? DateTime.fromISO(now, { zone: "utc" }) : DateTime.fromJSDate(now)).setZone(timezone);
+  return { today: t.toISODate()!, minutes: t.hour * 60 + t.minute };
+}
+
+/** A time of day a row holds (`HH:MM`); anything else is a row with none. */
+const CLOCK_TIME = /^([01]\d|2[0-3]):[0-5]\d$/;
+
 function toMinutes(time: string): number {
   const [h, m] = time.split(":");
   return (Number(h) || 0) * 60 + (Number(m) || 0);
@@ -156,17 +182,33 @@ export function dayCollides(sessions: PlaceableSession[], prefs: SchedulingPrefe
  * takes the earliest five-minute start at or after its own window time that
  * clears everything already placed — so the day's anchor gets the window time it
  * asked for and the fillers queue up behind it.
+ *
+ * TODAY, with `clock` (rule 4): a session whose time has already come is reserved
+ * where it is, like a pinned one; every other one asks for the time it holds (an
+ * untimed one, its window time or now, whichever is later), so a session only ever
+ * moves later — never to a time before now.
  */
 export function placeDaySessions(
   date: string,
   sessions: PlaceableSession[],
   prefs: SchedulingPreferences,
+  clock?: DayClock,
 ): Map<string, string> {
   const placed: Array<[number, number]> = [];
   const out = new Map<string, string>();
+  const today = clock !== undefined && date === clock.today ? clock : null;
+  /** Today, a session whose time has come: it stands where it is. */
+  const passed = (s: PlaceableSession) => today !== null && CLOCK_TIME.test(s.currentTime) && toMinutes(s.currentTime) < today.minutes;
+  const reserved = (s: PlaceableSession) => s.pinned || passed(s);
+  /** Where a movable session asks to start: its window time on a day ahead; today, the time it holds, never before now. */
+  const asks = (s: PlaceableSession): number => {
+    const window = toMinutes(windowTimeFor({ category: s.category, date }, prefs));
+    if (today === null) return window;
+    return CLOCK_TIME.test(s.currentTime) ? toMinutes(s.currentTime) : Math.max(window, roundUpToFive(today.minutes));
+  };
 
   const pinned = [...sessions]
-    .filter((s) => s.pinned)
+    .filter(reserved)
     .sort((a, b) => toMinutes(a.currentTime) - toMinutes(b.currentTime) || a.key.localeCompare(b.key));
   for (const s of pinned) {
     placed.push(footprint(toMinutes(s.currentTime), s.workoutSeconds, prefs));
@@ -174,7 +216,7 @@ export function placeDaySessions(
   }
 
   const movable = [...sessions]
-    .filter((s) => !s.pinned)
+    .filter((s) => !reserved(s))
     .sort(
       (a, b) =>
         (SESSION_RANK[a.category] ?? 8) - (SESSION_RANK[b.category] ?? 8) ||
@@ -182,7 +224,7 @@ export function placeDaySessions(
         a.key.localeCompare(b.key),
     );
   for (const s of movable) {
-    let start = toMinutes(windowTimeFor({ category: s.category, date }, prefs));
+    let start = asks(s);
     // Bounded by the number of things it could possibly have to clear, so a
     // pathological day can never spin here.
     for (let guard = 0; guard <= placed.length; guard++) {
@@ -207,11 +249,11 @@ export function placeDaySessions(
  * THE ONE RULE for a day's times after a change to it: when the day's sessions, at the times they hold now, collide,
  * the whole day is laid out again (`placeDaySessions`); else it stands (null). `separateDayCollisions` writes what this
  * decides, and the coach designer's card reads its suggestions' times from it before an approve writes them (design-
- * time.ts `placedTimes`, fix wave 3B, B-I1) — so the two never disagree.
+ * time.ts `placedTimes`, fix wave 3B, B-I1) — so the two never disagree. Both pass the clock (rule 4).
  */
-export function relaidDay(date: string, sessions: PlaceableSession[], prefs: SchedulingPreferences): Map<string, string> | null {
+export function relaidDay(date: string, sessions: PlaceableSession[], prefs: SchedulingPreferences, clock?: DayClock): Map<string, string> | null {
   if (sessions.length < 2 || !dayCollides(sessions, prefs)) return null;
-  return placeDaySessions(date, sessions, prefs);
+  return placeDaySessions(date, sessions, prefs, clock);
 }
 
 /** One row this pass moved (or would move), for stats and for tests. */
@@ -303,6 +345,8 @@ export async function separateDayCollisions(
     byDate.set(r.effectiveDate, list);
   }
 
+  // Rule 4: today's layout never places a session before now, on the account's own clock.
+  const clock = localClock(opts.now, prefs.timezone);
   const retimed: RetimedRow[] = [];
   for (const date of [...byDate.keys()].sort()) {
     const dayRows = byDate.get(date)!;
@@ -313,7 +357,7 @@ export async function separateDayCollisions(
       currentTime: r.effectiveTime,
       pinned: pinnedIds.has(r.id) || r.contentState === "started",
     }));
-    const placement = relaidDay(date, sessions, prefs);
+    const placement = relaidDay(date, sessions, prefs, clock);
     if (!placement) continue;
     const dayRetimed: RetimedRow[] = [];
     const writes: AtomicStatement[] = [];

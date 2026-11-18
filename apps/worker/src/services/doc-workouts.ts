@@ -816,9 +816,10 @@ async function heldCopyName(
 
 /**
  * `PUT /api/workouts/:id/doc`: a new revision of a workout's document, adopting a watch-shaped row (see the header).
- * `calendarChanged`: its title, category or booked length moved — what its event shows. Throws
- * `DocWorkoutNotFoundError`, `NotEditableError`, `PastDateError`, `StaleRevisionError`, `DocInvalidError`,
- * `RunUnsupportedError`, `RestoreInProgressError`.
+ * `calendarChanged`: its title, category or booked length moved — what its event shows. `moved`: every OTHER session of
+ * that day the collision pass re-timed for the new length (stage 2b review r-m2), so a client can say so; this one's own
+ * new time is in `workout`. Throws `DocWorkoutNotFoundError`, `NotEditableError`, `PastDateError`, `StaleRevisionError`,
+ * `DocInvalidError`, `RunUnsupportedError`, `RestoreInProgressError`.
  */
 export async function reviseDocWorkout(
   db: Db,
@@ -827,7 +828,14 @@ export async function reviseDocWorkout(
   input: { doc: unknown; baseRev: number },
   ctx: DocWorkoutCtx,
   source: DocWriteSource = {},
-): Promise<{ workout: DocWorkoutDto; rev: number | null; watchHasOlder: boolean; warnings: DocIssue[]; calendarChanged: boolean }> {
+): Promise<{
+  workout: DocWorkoutDto;
+  rev: number | null;
+  watchHasOlder: boolean;
+  warnings: DocIssue[];
+  moved: Array<{ workoutId: string; title: string; from: string; to: string }>;
+  calendarChanged: boolean;
+}> {
   const pw = plannedWorkouts;
   const [row] = await db
     .select({
@@ -976,7 +984,8 @@ export async function reviseDocWorkout(
     await enqueueUnpushIfOurs(db, userId, after, ctx.now, ctx.prefs, { sent, addressPath: false });
     await markMirrorOwed(db, userId, workoutId, ctx.now);
   }
-  return { workout, rev, watchHasOlder, warnings, calendarChanged };
+  const others = moved.filter((m) => m.workoutId !== workoutId).map(({ workoutId: id, title, from, to }) => ({ workoutId: id, title, from, to }));
+  return { workout, rev, watchHasOlder, warnings, moved: others, calendarChanged };
 }
 
 /**
