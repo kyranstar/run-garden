@@ -13,7 +13,10 @@ import { fixtureCorosCompletedThreshold, normalizeCorosActivity } from "@rg/prov
 import type { Db } from "../src/services/db.js";
 import { ingestActivities } from "../src/services/completion.js";
 import { advanceGarden, buildDayInput, ensureGarden, loadGarden } from "../src/services/garden-sync.js";
-import { makeTestDb, makeTestUser, pinMiddayToday } from "./helpers.js";
+import { activityRoutes } from "../src/routes/misc.js";
+import { createSession, SESSION_COOKIE } from "../src/auth/sessions.js";
+import { makeTestDb, makeTestUser, mountRoutes, pinMiddayToday } from "./helpers.js";
+import { makeEnv } from "./watch-sets-fixture.js";
 
 let db: Db;
 let userId: string;
@@ -136,5 +139,37 @@ describe("an unplanned COROS run", () => {
       await db.select().from(schema.gardenEvents).where(eq(schema.gardenEvents.userId, userId))
     ).filter((e) => e.kind === "run_completed");
     expect(runEvents.map((e) => e.date).sort()).toEqual([plannedDay, unplannedDay]);
+  });
+});
+
+// The owner, 2026-11-18: "i still dont see my … 7 mile runs … in run garden". The activity feed listed the run, but said
+// nothing of what it was: an extra session is marked as one, by the garden's own rule (an unmatched run, lift or yoga
+// session the garden sees).
+describe("the activity feed", () => {
+  it("marks an unplanned run as an extra, and a run that completed the plan as the plan's", async () => {
+    const plannedDay = addDays(genesis, 8);
+    const workoutId = await plannedRun(plannedDay);
+    expect((await corosRun(plannedDay, "coros-planned-1")).completions).toBe(1);
+    await corosRun(addDays(genesis, 12), "coros-unplanned-3");
+    await db.insert(schema.activities).values({
+      id: "hike",
+      userId,
+      startTime: `${addDays(genesis, 13)}T16:00:00Z`,
+      startTimeLocal: `${addDays(genesis, 13)}T09:00:00`,
+      sport: "hike",
+      durationSeconds: 7200,
+      createdAt: nowInstant(),
+      updatedAt: nowInstant(),
+    });
+    const cookie = `${SESSION_COOKIE}=${await createSession(db, userId)}`;
+    const res = await mountRoutes(db, "/api/activities", activityRoutes).request("/api/activities", { headers: { Cookie: cookie } }, makeEnv());
+    const { activities } = (await res.json()) as {
+      activities: Array<{ date: string; sport: string; extra?: boolean; matched: { workoutId: string } | null }>;
+    };
+    expect(activities.map((a) => [a.date, a.sport, a.extra, a.matched?.workoutId ?? null])).toEqual([
+      [addDays(genesis, 13), "hike", false, null],
+      [addDays(genesis, 12), "run", true, null],
+      [plannedDay, "run", false, workoutId],
+    ]);
   });
 });

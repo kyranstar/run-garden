@@ -109,6 +109,20 @@ export function gardenSees(a: { source: string; startTime: string; startTimeLoca
   return a.source !== "app" || (a.startTimeLocal ?? a.startTime).slice(0, 10) >= APP_SESSION_EPOCH;
 }
 
+/**
+ * Is this activity an extra session — a run, lift or yoga session that completed no planned workout, which the garden
+ * counts on its own day (`buildDayInput`'s unplanned sessions)? The Plan's days and the activity feed show it as one.
+ */
+export function isExtraSession(a: {
+  source: string;
+  sport: string;
+  startTime: string;
+  startTimeLocal: string | null;
+  completionMatchId: string | null;
+}): a is typeof a & { sport: "run" | "strength" | "yoga" } {
+  return a.completionMatchId === null && (a.sport === "run" || a.sport === "strength" || a.sport === "yoga") && gardenSees(a);
+}
+
 /** `gardenSees` as SQL, for the reads that stop at their first row in the database. Three binds. */
 export function gardenSeesSql(): SQL {
   return and(
@@ -1405,6 +1419,21 @@ export async function replayPending(db: Db, userId: string): Promise<boolean> {
     .where(eq(accountState.userId, userId))
     .limit(1);
   return (row?.from ?? null) !== null;
+}
+
+/**
+ * Is a walk of this garden left unfinished: a replay on record (`replayPending`), or a version rebuild still under way —
+ * the durable garden older than this code's SIMULATION_VERSION (advanceGarden's own test, on the snapshot's version)?
+ * Either one, any walker finishes. Two indexed reads at most.
+ */
+export async function gardenWalkPending(db: Db, userId: string): Promise<boolean> {
+  if (await replayPending(db, userId)) return true;
+  const [row] = await db
+    .select({ version: sql<number>`coalesce(json_extract(${gardenState.snapshot}, '$.version'), 1)` })
+    .from(gardenState)
+    .where(eq(gardenState.userId, userId))
+    .limit(1);
+  return row !== undefined && Number(row.version) < SIMULATION_VERSION;
 }
 
 /**

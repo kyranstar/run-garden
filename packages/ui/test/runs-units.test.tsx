@@ -98,6 +98,13 @@ describe("RunsScreen units", () => {
     expect(renderShape("km")).toContain("5:10 /km"); // lap 1, 310 s/km
     expect(renderShape("mi")).not.toContain("/km");
   });
+
+  // The owner, 2026-11-18: an off-plan run "is not on run garden". The feed listed it, unmarked.
+  it("an extra session says so on its row; a plan's session and one the server does not call extra do not", () => {
+    expect(renderRuns("mi", { extra: true })).toContain('<span class="fw-bit">Extra</span>');
+    expect(renderRuns("mi", { extra: false })).not.toContain(">Extra<");
+    expect(renderRuns("mi")).not.toContain(">Extra<");
+  });
 });
 
 /**

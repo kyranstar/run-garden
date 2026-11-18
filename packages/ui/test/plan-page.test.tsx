@@ -187,6 +187,46 @@ describe("WeekView", () => {
     expect(weekRangeLabel("2026-08-10")).toBe("Aug 10–16");
     expect(weekRangeLabel("2026-08-31")).toBe("Aug 31 – Sep 6");
   });
+
+  // The owner, 2026-11-18: "i still dont see my … 7 mile runs … in run garden" — a run that matched no plan was on no day.
+  it("a day shows the run it held off the plan, marked as an extra, with its distance and time — and keeps the day open on a phone", () => {
+    const base = weekFixture();
+    const days = base.days.map((d, i) =>
+      i === 5
+        ? { ...d, extras: [{ id: "a1", sport: "run" as const, title: "Morning Run", durationSeconds: 4536, distanceMeters: 11372 }] }
+        : i === 3
+          ? { ...d, extras: [{ id: "a2", sport: "strength" as const, title: "Strength", durationSeconds: 1800, distanceMeters: null }] }
+          : d,
+    );
+    const html = render(
+      createElement(WeekView, {
+        week: weekFixture({ days }),
+        today: "2026-08-17",
+        ghostsByDate: new Map(),
+        jumpWeeks: [],
+        onPick: noop,
+        onOpenWorkout: noop,
+        onGhostTap: noop,
+        onStep: noop,
+        onBrief: noop,
+        units: "mi",
+      }),
+    );
+    const saturday = html.slice(html.indexOf('data-date="2026-08-15"'), html.indexOf('data-date="2026-08-16"'));
+    expect(saturday).toContain("Extra run");
+    expect(saturday).toContain("7.1 mi");
+    expect(saturday).toContain("76 min");
+    expect(saturday).toContain('title="Morning Run"');
+    expect(saturday).toContain("cat-easy");
+    // The day is not an empty one (a phone folds those away).
+    expect(html).toMatch(/plan-week-day has-items" data-date="2026-08-15"/);
+    const thursday = html.slice(html.indexOf('data-date="2026-08-13"'), html.indexOf('data-date="2026-08-14"'));
+    expect(thursday).toContain("Extra strength");
+    expect(thursday).toContain("30 min");
+    expect(thursday).not.toContain(" mi<");
+    // An extra is no plan row: it opens no workout sheet.
+    expect(saturday).not.toContain("data-workout=");
+  });
 });
 
 /**

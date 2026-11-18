@@ -431,6 +431,8 @@ export interface ActivityDto {
   performed?: PerformedSummaryDto | null;
   /** The planned workout this run completed, or null if it was unplanned. */
   matched: { workoutId: string; title: string; category: string; date: string } | null;
+  /** A run, lift or yoga session that completed no planned workout, which the garden counts as an extra one. */
+  extra?: boolean;
 }
 
 /** What a performed session was, as the Activity feed shows it (worker: services/logged-sets.ts). */
@@ -1298,10 +1300,22 @@ export interface WorkoutDocParityReport {
   next: string | null;
 }
 
+/** A session done on a day off the plan: a run, lift or yoga session that completed no planned workout (the garden's
+ * extra session). Metric on the wire. */
+export interface ExtraSessionDto {
+  id: string;
+  sport: "run" | "strength" | "yoga";
+  /** The activity's name in words (an opaque watch code reads as its sport). */
+  title: string;
+  durationSeconds: number;
+  distanceMeters: number | null;
+}
+
 /** One pickable week + the brief's facts (rework spec §4). */
 export interface PlanWeekResponse {
   weekStart: string;
-  days: Array<{ date: string; workouts: WorkoutDto[] }>;
+  /** `extras`: the day's sessions off the plan (absent from payloads before 2026-11-18). */
+  days: Array<{ date: string; workouts: WorkoutDto[]; extras?: ExtraSessionDto[] }>;
   plannedSeconds: number;
   doneCount: number;
   sessionCount: number;

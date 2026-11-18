@@ -1104,6 +1104,7 @@ export function PlanScreen() {
             onBrief={() => setBriefOpen(true)}
             {...weekPlan(namingPlans, week.data.weekStart, week.data, lines)}
             race={race}
+            units={units}
           />
         )}
         {/* The thread coach's pending suggestions and its question, in the page (no window, no chat box). */}

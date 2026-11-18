@@ -11,7 +11,7 @@ import { ingestDailyHealth, upsertAthleteZones } from "./health-ingest.js";
 import { importPlanSnapshot } from "./import-plan.js";
 import { isRuntimeLimit, isStorageError } from "./runtime-limit.js";
 import { loadPreferences } from "./calendar-sync.js";
-import { advanceGarden, firstDayToReplay, recordReplayFrom, replayPending, resimulateFrom } from "./garden-sync.js";
+import { advanceGarden, firstDayToReplay, gardenWalkPending, recordReplayFrom, resimulateFrom } from "./garden-sync.js";
 import { REQUEST_REPLAY_MAX_DAYS, SWEEP_REPLAY_MAX_DAYS } from "./cron-limits.js";
 import { enqueueCoachReads, processCoachReads } from "./coach-reads.js";
 import { claimUserLock, releaseUserLock } from "./locks.js";
@@ -365,8 +365,9 @@ export async function corosSweepAccount(
   let garden = result?.garden ?? null;
   if (result) {
     // A replay an earlier invocation left on record (capped, or killed) walks on here too, capped like the read's
-    // own: the hourly is not the only run that finishes it.
-    if (garden === null && (await replayPending(db, userId))) {
+    // own: the hourly is not the only run that finishes it. So does a version rebuild still under way (v7, 2026-11-18:
+    // the hourly alone rebuilt the live garden at three days an hour, its other heavy steps waiting behind it).
+    if (garden === null && (await gardenWalkPending(db, userId))) {
       const step = await advanceGarden(db, userId, prefs, new Date(), {
         maxResimDays: SWEEP_REPLAY_MAX_DAYS,
         maxWalkDays: SWEEP_REPLAY_MAX_DAYS,

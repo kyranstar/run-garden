@@ -527,6 +527,8 @@ export function feedRowBits(a: ActivityDto, units: Units): string[] {
   const p = a.performed ?? null;
   return [
     isAdventureSport(a.sport) ? sportLabel(a.sport) : null,
+    // A session off the plan, which the garden counts on its own (the server's `extra`).
+    a.extra ? "Extra" : null,
     formatMinutes(a.durationSeconds),
     a.distanceMeters ? formatDistance(a.distanceMeters, units) : null,
     a.avgPaceSecPerKm ? formatPace(a.avgPaceSecPerKm, units) : null,

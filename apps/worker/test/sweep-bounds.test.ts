@@ -20,6 +20,7 @@ import { halfHourly, hourly } from "../src/index.js";
 import { REQUEST_REPLAY_MAX_DAYS, SWEEP_REPLAY_MAX_DAYS } from "../src/services/cron-limits.js";
 import { corosReadNow } from "../src/services/coros-read.js";
 import { advanceGarden, loadGarden, resimulateFrom } from "../src/services/garden-sync.js";
+import { SIMULATION_VERSION } from "@rg/garden-engine";
 import { closeStrandedSyncRuns } from "../src/services/reconcile-daily.js";
 import { AUTO_READ_RESERVE_MICROS } from "../src/services/coach-reads.js";
 import { makeTestDb } from "./helpers.js";
@@ -295,6 +296,38 @@ describe("the sweep's work is bounded per invocation", () => {
     expect(stats.coachReads).toBe(1);
     expect(acct.fetches.llm - llm).toBeLessThanOrEqual(2); // its call, and at most one repair
     expect(await queued()).toBe(backlog - 1);
+  });
+
+  // SIMULATION_VERSION 7 (2026-11-17) rebuilt the live garden from genesis at the hourly's three days a run: a day and a
+  // half, the hourly's other heavy steps waiting behind it, and the garden's log and timeline holding only the days
+  // rebuilt so far. A rebuild left unfinished is a walk left unfinished, as a replay on record is: the sweep walks it on.
+  it("a version rebuild left unfinished walks on in the sweep too, capped like a replay", { timeout: 60_000 }, async () => {
+    const db = makeTestDb({ boundVariableCap: 100 });
+    const acct = await seedRealisticAccount(db, { newActivities: false, gardenBehindDays: 2, corosBaseMonday: lastMonday() });
+    vi.stubGlobal("fetch", acct.fetchImpl);
+    await halfHourly(db, acct.env); // the sweep that ingests the mock's activities
+    await advanceGarden(db, acct.userId, acct.prefs); // the replay it left on record, finished
+    expect(await replayMarker(db, acct.userId)).toBeNull();
+    acct.coros.state.activities = []; // nothing new on the watch: this sweep's read ingests nothing
+    // The deploy of a new version: every durable garden row still carries the previous one.
+    const [state] = await db.select().from(schema.gardenState).where(eq(schema.gardenState.userId, acct.userId));
+    await db
+      .update(schema.gardenState)
+      .set({ snapshot: { ...(state!.snapshot as Record<string, unknown>), version: SIMULATION_VERSION - 1 }, simulationVersion: SIMULATION_VERSION - 1 })
+      .where(eq(schema.gardenState.userId, acct.userId));
+    await db.update(schema.gardenSnapshots).set({ simulationVersion: SIMULATION_VERSION - 1 }).where(eq(schema.gardenSnapshots.userId, acct.userId));
+
+    await halfHourly(db, acct.env);
+    const latest = corosRunsSync(db, acct.userId).sort((a, b) => (a.startedAt < b.startedAt ? -1 : a.startedAt > b.startedAt ? 1 : 0)).at(-1)!;
+    const stats = latest.stats as { ingested: number; garden: { simulatedDays: number; resimPending: boolean } | null };
+    expect(stats.ingested).toBe(0);
+    expect(stats.garden?.simulatedDays).toBe(SWEEP_REPLAY_MAX_DAYS);
+    expect(stats.garden?.resimPending).toBe(true);
+    const cursor = await db.select().from(schema.gardenSnapshots).where(eq(schema.gardenSnapshots.userId, acct.userId));
+    expect(cursor.filter((s) => s.simulationVersion === SIMULATION_VERSION)).toHaveLength(1);
+    // The rendered garden is untouched until the rebuild lands, as the hourly's rebuild leaves it.
+    const [after] = await db.select().from(schema.gardenState).where(eq(schema.gardenState.userId, acct.userId));
+    expect(after!.simulationVersion).toBe(SIMULATION_VERSION - 1);
   });
 
   it("a read that runs the six-hourly full schedule import replays at most the sweep's cap; one that does not, at most a request's (part 4)", { timeout: 60_000 }, async () => {

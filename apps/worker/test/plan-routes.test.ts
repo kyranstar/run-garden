@@ -686,6 +686,48 @@ describe("GET /week — brief facts (2026-08-11 rework §4)", () => {
     expect(body.adventureDays).toBe(0);
   });
 
+  // The owner, 2026-11-18: "i still dont see my … 7 mile runs … in run garden". A COROS run that matched no planned
+  // workout was in the activities table and the garden, but on no day of the Plan: each day listed its plan rows only.
+  it("shows a run, lift or yoga session that matched no plan on its day, as an extra — never a matched, imported or adventure one", async () => {
+    const monday = mondayOf(-1);
+    const tuesday = addDays(monday, 1);
+    const planned = await seedWeekWorkout(tuesday, { state: "completed" });
+    const act = async (id: string, date: string, time: string, fields: Partial<typeof activities.$inferInsert> = {}) => {
+      await db.insert(activities).values({
+        id,
+        userId,
+        startTime: `${date}T${time}:00Z`,
+        startTimeLocal: `${date}T${time}:00`,
+        sport: "run",
+        durationSeconds: 4536,
+        distanceMeters: 11372,
+        createdAt: nowInstant(),
+        updatedAt: nowInstant(),
+        ...fields,
+      });
+    };
+    // The unplanned COROS run (on Saturday, past local midnight in UTC: it is the local day that counts).
+    await act("extra-run", addDays(monday, 5), "23:40", { title: "Morning Run", startTime: `${addDays(monday, 6)}T07:40:00Z` });
+    await act("extra-lift", addDays(monday, 3), "18:00", { sport: "strength", distanceMeters: null, durationSeconds: 1800, title: "T1004" });
+    // Not extras: the run that completed Tuesday's slot, an imported one, a hike, and one from another week.
+    await act("matched-run", tuesday, "07:30", { completionMatchId: "m-1" });
+    await db.insert(workoutCompletionMatches).values({ id: "m-1", workoutId: planned, activityId: "matched-run", confidence: 1, method: "coros_plan_link", matchedAt: nowInstant() });
+    await act("imported-run", addDays(monday, 2), "07:00", { source: "import" });
+    await act("hike", addDays(monday, 4), "09:00", { sport: "hike" });
+    await act("other-week", addDays(monday, 7), "07:00");
+
+    const body = (await (await get(`/api/plan/week?start=${monday}`)).json()) as {
+      days: Array<{ date: string; extras?: Array<Record<string, unknown>> }>;
+    };
+    const extras = body.days.flatMap((d) => (d.extras ?? []).map((e) => ({ date: d.date, ...e })));
+    expect(extras).toEqual([
+      { date: addDays(monday, 3), id: "extra-lift", sport: "strength", title: "Strength", durationSeconds: 1800, distanceMeters: null },
+      { date: addDays(monday, 5), id: "extra-run", sport: "run", title: "Morning Run", durationSeconds: 4536, distanceMeters: 11372 },
+    ]);
+    // Every day says its extras, an empty list for none.
+    for (const d of body.days) expect(Array.isArray(d.extras)).toBe(true);
+  });
+
   it("counts the weeks of the BLOCK, not of a bucket of one-offs that overlaps it", async () => {
     // Production, 2026-08-17: approving one coach proposal minted a
     // single-day "Coach one-offs" plan row, and an unordered `.find()` let it

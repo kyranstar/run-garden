@@ -1588,6 +1588,15 @@ a.note {
 .cal-card.asks {
   border-color: color-mix(in srgb, var(--warn) 45%, var(--border));
 }
+/* A session done off the plan (week-view ExtraCell): done, and no plan row — it opens nothing, so it doesn't lift. */
+.cal-extra {
+  cursor: default;
+}
+.cal-extra:hover {
+  transform: none;
+  box-shadow: none;
+  border-color: color-mix(in srgb, var(--green) 22%, var(--border));
+}
 .cal-rest {
   background: transparent;
   border-style: dashed;

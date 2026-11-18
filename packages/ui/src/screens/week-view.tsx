@@ -1,7 +1,7 @@
 import { useRef, useState } from "react";
-import type { CoachPlanDto, PlanWeekResponse, RaceHubResponse, WorkoutDto } from "@rg/api-client";
+import type { CoachPlanDto, ExtraSessionDto, PlanWeekResponse, RaceHubResponse, WorkoutDto } from "@rg/api-client";
 import { addDays, humanizeWorkoutTitle, linesOf, phaseWeekOf, startOfIsoWeek, weekNaming, type LineBlock, type TrainingLine } from "@rg/domain";
-import { dayOfMonth, formatMinutes, monthTitle } from "../components.js";
+import { dayOfMonth, formatDistance, formatMinutes, monthTitle, type Units } from "../components.js";
 import { IconAlert, IconCheck, IconClock } from "../icons.js";
 import type { PendingGhost } from "./coach-panel.js";
 
@@ -83,6 +83,32 @@ export function WorkoutCell({
         {completion === "missed" ? <span className="cal-note">missed</span> : null}
       </span>
     </button>
+  );
+}
+
+const EXTRA_LABEL: Record<ExtraSessionDto["sport"], string> = {
+  run: "Extra run",
+  strength: "Extra strength",
+  yoga: "Extra yoga",
+};
+
+/**
+ * A session done off the plan, on its day (the owner, 2026-11-18: a 7-mile COROS run that matched no plan row was on
+ * no day): done, with its distance and time, its name on hover. It is no plan row, so it opens no workout sheet.
+ */
+export function ExtraCell({ e, units }: { e: ExtraSessionDto; units: Units }) {
+  return (
+    <div className="cal-card done cal-extra" data-activity={e.id} title={e.title}>
+      <i className={`cal-card-edge cat-${e.sport === "run" ? "easy" : e.sport}`} aria-hidden />
+      <span className="cal-card-title">{EXTRA_LABEL[e.sport]}</span>
+      <span className="cal-card-meta">
+        {e.distanceMeters ? <span>{formatDistance(e.distanceMeters, units)}</span> : null}
+        <span>{formatMinutes(e.durationSeconds)}</span>
+        <span className="cal-glyph ok" title="Done">
+          <IconCheck size={11} />
+        </span>
+      </span>
+    </div>
   );
 }
 
@@ -299,6 +325,8 @@ export function WeekView({
   onStep,
   /** True while the shown week is the previous one, kept during the fetch. */
   loading = false,
+  /** The athlete's units, for an extra session's distance. */
+  units = "km",
 }: {
   week: PlanWeekResponse;
   today: string;
@@ -320,6 +348,7 @@ export function WeekView({
   /** The race's countdown, on the line. */
   race?: WeekRace | null;
   loading?: boolean;
+  units?: Units;
 }) {
   const thisMonday = startOfIsoWeek(today);
   const offCurrent = week.weekStart !== thisMonday;
@@ -415,11 +444,12 @@ export function WeekView({
       <div className="plan-week-grid">
         {week.days.map((day, i) => {
           const ghosts = ghostsByDate.get(day.date) ?? [];
+          const extras = day.extras ?? [];
           const isToday = day.date === today;
           const classes = [
             "plan-week-day",
             isToday ? "is-today" : "",
-            day.workouts.length > 0 ? "has-items" : "",
+            day.workouts.length > 0 || extras.length > 0 ? "has-items" : "",
             ghosts.length > 0 ? "has-ghosts" : "",
           ]
             .filter(Boolean)
@@ -433,6 +463,9 @@ export function WeekView({
               <div className="plan-week-items">
                 {day.workouts.map((w) => (
                   <WorkoutCell key={w.id} w={w} today={today} onOpen={() => onOpenWorkout(w.id)} />
+                ))}
+                {extras.map((e) => (
+                  <ExtraCell key={e.id} e={e} units={units} />
                 ))}
                 {ghosts.map((g, gi) => (
                   <button

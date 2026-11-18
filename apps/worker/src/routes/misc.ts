@@ -107,7 +107,7 @@ import {
   repairTimestamps,
   rowToNormalized,
 } from "../services/completion.js";
-import { gardenSeesSql, REQUEST_GARDEN_STEP, resimulateFrom } from "../services/garden-sync.js";
+import { gardenSeesSql, isExtraSession, REQUEST_GARDEN_STEP, resimulateFrom } from "../services/garden-sync.js";
 import { findGardenHoles } from "../services/garden-holes.js";
 import { performedByActivity } from "../services/logged-sets.js";
 import { loadProgress } from "../services/progress.js";
@@ -332,6 +332,8 @@ activityRoutes.get("/", async (c) => {
               date: wo.effectiveDate,
             }
           : null,
+        // A session off the plan, which the garden counts on its own (garden-sync's rule): the feed says so.
+        extra: isExtraSession(a),
       };
     }),
   });
