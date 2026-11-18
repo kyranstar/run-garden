@@ -520,6 +520,9 @@ sessionRoutes.put("/performed/:id", async (c) => {
       prefs,
       watchReviews: watchPushEnabled(c.env),
       refuseUnwritten: byDevice(c),
+      // A device's graduation applies only when the session's own sets earn it (stage 2b; only a v3 device's save can
+      // carry one at all: device-scope.ts). The web's applies what its review sends, as before.
+      graduationsEarned: byDevice(c),
     });
     if (outcome.status === "conflict") return c.json({ error: "conflict" }, 409);
     if (outcome.status === "slot_done") return c.json({ error: "slot_done" }, 409);

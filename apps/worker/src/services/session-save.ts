@@ -74,7 +74,7 @@ import {
 } from "@rg/domain";
 import type { ExerciseRecord } from "@rg/exercise-library";
 import { ORPHAN_ADOPTION_FLOOR, scoreAgainstStoredRow } from "@rg/providers";
-import { Blocks } from "@rg/session-engine";
+import { Blocks, Graduation, Hist, historyFromPerformed } from "@rg/session-engine";
 import { deriveDoc, makeLibraryIndex } from "@rg/workout";
 import type { ZodIssue } from "zod";
 import { sha256Hex } from "../auth/crypto.js";
@@ -89,6 +89,7 @@ import { claimUserLock, releaseUserLock } from "./locks.js";
 import { courseOf } from "./course-sessions.js";
 import { engineDataFor, NotWrittenError, sentBuildIdOf, SessionNotFoundError, UNSTARTED_AT_PATH } from "./session-build.js";
 import { sessionAnswerStatements } from "./session-answers.js";
+import { loadGraduationSessions } from "./session-review-basis.js";
 import { saveWatchReview } from "./session-watch-review.js";
 import { PENDING_HASH, removeWatchSessionStatements, WATCH_SOURCE } from "./watch-sets.js";
 import { reopenedDocColumns } from "./workout-doc-store.js";
@@ -129,6 +130,14 @@ export interface SaveCtx {
    * is answered, so a session already saved still answers `same_payload`. Absent (the web's), the save is as it was.
    */
   refuseUnwritten?: boolean | undefined;
+  /**
+   * A device's save (stage 2b, kit v0.15: "progression … a partial session's completed flag is insufficient"): an accepted
+   * graduation applies only when the session's OWN recorded sets earn it — one of the offers the review itself computes
+   * (`Graduation.offers`), re-derived here from the block, the stored history and the save's done sets. Any other is
+   * skipped (`graduation_skipped`), and the rest of the save lands. The `completed` flag counts for nothing. Absent (the
+   * web's), the save applies what its review sends, as it did.
+   */
+  graduationsEarned?: boolean | undefined;
 }
 
 type SlotRow = typeof plannedWorkouts.$inferSelect;
@@ -382,9 +391,31 @@ export async function prefStatements(db: Db, userId: string, p: PerformedSession
 }
 
 /**
+ * The graduations this session's own recorded sets earn (`SaveCtx.graduationsEarned`): the review's own offers, as the
+ * player computes them at the review (packages/ui `reviewFacts`: `Graduation.offers` over the review basis) — the block,
+ * the stored history of the lifts asked about (`loadGraduationSessions`, the basis's own read) and this save's done sets as
+ * the session (`historyFromPerformed`), judged with the session's place, in the basis's engine data. Only done sets are
+ * history, so a lift the session never reached, or stopped short of the top of its range, earns nothing whatever
+ * `completed` says.
+ */
+async function earnedGraduations(
+  db: Db,
+  userId: string,
+  block: NonNullable<Awaited<ReturnType<typeof loadProgramState>>>,
+  p: PerformedSessionWire,
+  context: Awaited<ReturnType<typeof loadEngineContext>>,
+  lifts: readonly string[],
+): Promise<Array<{ family: string; to: string }>> {
+  const data = engineDataFor(context.activeProfiles, [], context.library);
+  const sessions = await loadGraduationSessions(db, userId, data, lifts, Hist.TRIM.progressionEntries);
+  return Graduation.offers(data, { block, sessions, locations: [context.location], settings: { unit: context.unit } }, historyFromPerformed(p));
+}
+
+/**
  * Accepted graduations on the program's block — only the block the session belonged to, and only where its lift is not
  * already the one asked for (a retried save never doubles a rotation). The candidates are judged with the session's
- * place's gear, as the review offered them. Read and decided now; the block's update runs with the rest of the save.
+ * place's gear, as the review offered them. A device's (`earnedOnly`) apply only where the session's own sets earn them
+ * (`earnedGraduations`); any other is skipped. Read and decided now; the block's update runs with the rest of the save.
  */
 async function graduationStatements(
   db: Db,
@@ -392,15 +423,24 @@ async function graduationStatements(
   slot: SlotRow,
   p: PerformedSessionWire,
   now: string,
+  earnedOnly = false,
 ): Promise<{ applied: boolean; statements: AtomicStatement[] }> {
   if (p.review.graduations.length === 0) return { applied: true, statements: [] };
   let block = await loadProgramState(db, slot.planId);
   if (!block || (p.blockRef !== null && block.id !== p.blockRef)) return { applied: false, statements: [] };
-  const pending = p.review.graduations.filter((g) => block!.core[g.family] !== g.to);
+  let pending = p.review.graduations.filter((g) => block!.core[g.family] !== g.to);
   if (pending.length === 0) return { applied: true, statements: [] };
   const context = await loadEngineContext(db, userId, slot.planId, p.locationId ? { locationId: p.locationId } : {});
   const data = engineDataFor(context.activeProfiles, context.careProfiles, context.library);
   let applied = true;
+  if (earnedOnly) {
+    const lifts = [...new Set(pending.map((g) => block!.core[g.family]).filter((id): id is string => !!id))];
+    const earned = await earnedGraduations(db, userId, block, p, context, lifts);
+    const kept = pending.filter((g) => earned.some((o) => o.family === g.family && o.to === g.to));
+    if (kept.length < pending.length) applied = false;
+    pending = kept;
+    if (pending.length === 0) return { applied, statements: [] };
+  }
   for (const g of pending) {
     const next = Blocks.graduate(data, block, g.family, g.to, p.localDate, context.location.equipment);
     if (next === block) applied = false;
@@ -779,7 +819,7 @@ async function write(
     .where(and(eq(performedSessions.userId, userId), eq(performedSessions.activityId, activityId), eq(performedSessions.source, WATCH_SOURCE)));
   const match = await planMatch(db, userId, slot, performedId, activityId, now);
   const prefs = await prefStatements(db, userId, p, now);
-  const graduation = await graduationStatements(db, userId, slot, p, now);
+  const graduation = await graduationStatements(db, userId, slot, p, now, ctx.graduationsEarned === true);
   const notes: SaveNote[] = [...match.notes];
   if (!graduation.applied) notes.push("graduation_skipped");
   // The completed slot credits its own (current) day — buildDayInput keys it on effectiveDate — the session its day,

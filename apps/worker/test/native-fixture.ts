@@ -150,9 +150,8 @@ export async function seedDevice(
   return { token, id };
 }
 
-/** A program slot on `date` (an app session's row), as the session suites seed one. */
-export async function seedSlot(db: Db, userId: string, date: string): Promise<string> {
-  const programId = newId();
+/** A program slot on `date` (an app session's row), as the session suites seed one — its own new programme (`programId`, else a random one). */
+export async function seedSlot(db: Db, userId: string, date: string, programId: string = newId()): Promise<string> {
   const at = `${date}T12:00:00.000Z`;
   await db.insert(programs).values({
     id: programId,
