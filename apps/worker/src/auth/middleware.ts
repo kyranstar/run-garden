@@ -16,7 +16,10 @@ export interface DeviceContext {
   id: string;
   label: string;
   expiresAt: string;
-  /** What its pairing allows (device-scope.ts): the scope it was paired at, never upgraded in place. */
+  /**
+   * What it may reach (device-scope.ts): its row's scope as THIS request read it — the scope it was paired at, or the one
+   * the laptop granted it since (kit v0.15). Never held anywhere between requests.
+   */
   scope: DeviceScope;
 }
 
@@ -108,7 +111,9 @@ export async function requireUser(c: Context<AppContext>, next: Next): Promise<v
  *     `device_revoked`; expired, 401 `device_expired`; not yet confirmed on the laptop, 401 `device_pending`; a scope
  *     this Worker doesn't know, 403 `out_of_scope`; an account that is not the owner's email, 401 `unauthenticated`;
  *  5. the route and its body on THE DEVICE'S OWN scope's list (device-scope.ts `DEVICE_SCOPES`: a v1 phone's is v1's,
- *     a v2 phone's v2's), else 403 `out_of_scope` — before the restore rule;
+ *     a v2 phone's v2's, a v3 phone's v3's), else 403 `out_of_scope` — before the restore rule. The scope is the one step
+ *     4's read found, on this request: a grant on the laptop (native-devices.ts `grantNextScope`) is judged on the next
+ *     request, the save's privileged fields included (they are that list's body rules);
  *  6. the restore rule (ruling B2), as the cookie path has it: a write while a restore runs is 423;
  *  7. last use written, at most hourly.
  *

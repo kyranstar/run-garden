@@ -4,12 +4,12 @@
  * (`native_devices.id`), and the pairing code only as an HMAC (`native_pairings`).
  */
 import { and, asc, eq, gt, isNull, like, lt, ne, or, sql } from "drizzle-orm";
-import { nativeDevices, nativePairings, nativePairLimits, users } from "@rg/database";
-import { nowInstant } from "@rg/domain";
+import { auditEvents, nativeDevices, nativePairings, nativePairLimits, users } from "@rg/database";
+import { newId, nowInstant } from "@rg/domain";
 import type { Env } from "../env.js";
-import type { Db } from "../services/db.js";
+import { runAtomicallyClaim, type Db } from "../services/db.js";
 import { hmacSha256Hex, randomToken, sha256Hex } from "./crypto.js";
-import { NEWEST_DEVICE_SCOPE } from "./device-scope.js";
+import { isDeviceScope, NEXT_DEVICE_SCOPE, PAIRING_SCOPE, type DeviceScope } from "./device-scope.js";
 
 /**
  * OWNER'S CHOICE, open (SLICE-CONTRACT §9 question 1): how long a confirmed device works before the owner re-pairs it
@@ -309,8 +309,9 @@ async function redeemCounted(
   await db.insert(nativeDevices).values({
     id,
     userId: owner,
-    // The newest scope (stage 2 DESIGN §5.1): what the owner consents to by pairing now. A device keeps it.
-    scope: NEWEST_DEVICE_SCOPE,
+    // What the owner consents to by pairing now (`PAIRING_SCOPE`, which the laptop's code says); the laptop's grant moves
+    // it on from there, in place (`grantNextScope`).
+    scope: PAIRING_SCOPE,
     label: input.label,
     state: "pending",
     checkNumber: check,
@@ -377,7 +378,14 @@ export interface DeviceListItem {
   expiresAt: string;
   /** Active and expiring within NATIVE_DEVICE_WARN_DAYS: re-pair soon. */
   expiresSoon: boolean;
+  /** What it may reach, as stored (device-scope.ts), so the laptop says what it can do. */
+  scope: string;
+  /** The scope the laptop can grant it now (`grantNextScope`): its next, while it is active; null at the top, or pending. */
+  nextScope: DeviceScope | null;
 }
+
+/** The next scope of a device row's scope, null for the top or a scope this Worker doesn't know. */
+const nextOf = (scope: string): DeviceScope | null => (isDeviceScope(scope) ? NEXT_DEVICE_SCOPE[scope] : null);
 
 /** Settings → Devices: the account's pending and active devices, live; never a revoked or expired one. */
 export async function listDevices(db: Db, userId: string, now: string): Promise<DeviceListItem[]> {
@@ -397,7 +405,64 @@ export async function listDevices(db: Db, userId: string, now: string): Promise<
     lastUsedAt: r.lastUsedAt,
     expiresAt: r.expiresAt,
     expiresSoon: r.state === "active" && r.expiresAt <= warnFrom,
+    scope: r.scope,
+    nextScope: r.state === "active" ? nextOf(r.scope) : null,
   }));
+}
+
+/** The audit a grant writes (kit v0.15): which device, from which scope to which. */
+export const SCOPE_GRANTED_KIND = "native_device_scope_granted";
+
+export type GrantOutcome =
+  | { ok: true; scope: DeviceScope; granted: boolean }
+  | { ok: false; error: "not_found" | "device_revoked" | "device_expired" | "device_pending" }
+  | { ok: false; error: "not_next_scope"; scope: string; next: DeviceScope | null };
+
+/**
+ * THE LAPTOP'S GRANT OF A DEVICE'S NEXT SCOPE, IN PLACE (the lead's v0.15 ruling): one ACTIVE, unexpired device of the
+ * account moved from its scope to `to`, which must be exactly its next (`NEXT_DEVICE_SCOPE`: v1 → v2 → v3, one step a
+ * grant). Explicit — the laptop names the scope it grants — and idempotent: a device already at `to` answers
+ * `granted: false` and nothing is written.
+ *
+ * WHAT IT KEEPS: the row's id (its token's hash, so the token works unchanged), its account, label, state, expiry (never
+ * extended), confirmation, last use and tries — every column but `scope`. It touches nothing of the phone's saves. It never
+ * re-enables anything that's off: a revoked or expired device is refused, and the route is 404 while device sign-in is off.
+ *
+ * ONE TRANSACTION, decided in it: the audit (`SCOPE_GRANTED_KIND`, `{deviceId, label, from, to}`) and the row's scope are
+ * written only while the row is still the account's, active, unexpired and at `from` as the statements run — the audit
+ * first, gated on that, then the claim, gated the same way — so a grant lands with its one audit or not at all, and two
+ * at once land once. A miss is then decided again from the row as it now stands (a grant that landed meanwhile is the
+ * idempotent answer).
+ *
+ * WHEN IT TAKES EFFECT: on the device's next request. `requireUser`'s device branch reads the row's scope on every
+ * request, so a request already past it runs under the scope it read; the next one is judged by `to`.
+ */
+export async function grantNextScope(db: Db, userId: string, id: string, to: string, now: string): Promise<GrantOutcome> {
+  const d = nativeDevices;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const [row] = await db
+      .select({ scope: d.scope, state: d.state, expiresAt: d.expiresAt, label: d.label })
+      .from(d)
+      .where(and(eq(d.id, id), eq(d.userId, userId)))
+      .limit(1);
+    if (!row) return { ok: false, error: "not_found" };
+    if (row.state === "revoked") return { ok: false, error: "device_revoked" };
+    if (row.expiresAt <= now) return { ok: false, error: "device_expired" };
+    if (row.state !== "active") return { ok: false, error: "device_pending" };
+    const from = row.scope;
+    if (from === to && isDeviceScope(from)) return { ok: true, scope: from, granted: false };
+    const next = nextOf(from);
+    if (next === null || next !== to) return { ok: false, error: "not_next_scope", scope: from, next };
+    const still = and(eq(d.id, id), eq(d.userId, userId), eq(d.state, "active"), gt(d.expiresAt, now), eq(d.scope, from));
+    const detail = JSON.stringify({ deviceId: id, label: row.label, from, to: next });
+    const claimed = await runAtomicallyClaim(db, [
+      db.insert(auditEvents).select(sql`SELECT ${newId()}, ${userId}, ${SCOPE_GRANTED_KIND}, ${detail}, ${now} WHERE EXISTS (SELECT 1 FROM ${d} WHERE ${still})`),
+      db.update(d).set({ scope: next }).where(still).returning({ id: d.id }),
+    ]);
+    if (claimed > 0) return { ok: true, scope: next, granted: true };
+  }
+  // The row kept changing under the grant: nothing was granted, and the laptop's list will say what it is now.
+  throw new Error("grant_contended");
 }
 
 /** Why a device was revoked. `check_failed` is set by `confirmDevice` itself, in the statement that counts the try. */

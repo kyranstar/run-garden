@@ -8,6 +8,10 @@
  *   GET  /devices                   {enabled, devices}: the pending and active devices, live
  *   POST /devices/:id/confirm       {check} → the pending device active, for NATIVE_DEVICE_LIFETIME_DAYS
  *   POST /devices/:id/revoke        that device revoked, at once
+ *   POST /devices/:id/grant         {scope} → that ACTIVE device moved to its next scope, in place (kit v0.15): {ok, scope,
+ *                                   granted} — `granted: false` when it holds it already; 409 `device_revoked`,
+ *                                   `device_expired`, `device_pending`, or `not_next_scope` {scope, next}; 400
+ *                                   `invalid_grant`; 404 for a device that isn't the account's
  *   POST /devices/revoke-all        every device of the account revoked (the instant kill)
  *
  * The phone:
@@ -18,8 +22,9 @@
  *   GET  /today                     {today, sessions}: the day's training rows only (§10.4), each saying whether the phone
  *                                   can open it (`written`) and its document's revision (`docRev`; kit v0.10)
  *
- * The kill switch (`NATIVE_DEVICES`, a secret): unless it is "1", minting, redeeming and confirming are 404 — the
- * device list and revocation answer either way, so the owner can always see and stop a device.
+ * The kill switch (`NATIVE_DEVICES`, a secret): unless it is "1", minting, redeeming, confirming and granting are 404 —
+ * the device list and revocation answer either way, so the owner can always see and stop a device, and nothing widens one
+ * while device sign-in is off.
  *
  * Rate controls (auth/native-devices.ts, kit v0.5): redeeming is bounded per client and in all (past a bound, the same
  * 401 `pair_failed`, never evaluated); minting is bounded per account (429 `too_many_codes` with `retryAfter` seconds);
@@ -34,8 +39,10 @@ import { loadPreferences } from "../services/calendar-sync.js";
 import { unwrittenCourseOutline } from "../services/course-sessions.js";
 import type { AppContext } from "../auth/middleware.js";
 import { requireUser } from "../auth/middleware.js";
+import { PAIRING_SCOPE } from "../auth/device-scope.js";
 import {
   confirmDevice,
+  grantNextScope,
   isOwnerEmail,
   listDevices,
   mintPairing,
@@ -68,7 +75,8 @@ nativeRoutes.post("/pairings", pairingOn, requireUser, cookieOnly, async (c) => 
   c.header("Cache-Control", "no-store");
   // The owner's own laptop, signed in: told plainly when to try again (MINTS_PER_WINDOW).
   if ("refused" in minted) return c.json({ error: "too_many_codes", retryAfter: minted.retryAfterSeconds }, 429);
-  return c.json(minted);
+  // `scope`: what a phone paired with this code will be able to do, so the laptop says so beside the code.
+  return c.json({ ...minted, scope: PAIRING_SCOPE });
 });
 
 nativeRoutes.post("/pair", pairingOn, async (c) => {
@@ -107,10 +115,28 @@ nativeRoutes.post("/devices/:id/revoke", requireUser, cookieOnly, async (c) => {
 });
 
 /**
+ * The laptop's grant (kit v0.15): Settings → Devices moves one active phone of the account to its next scope, named in the
+ * body — `{scope}` and nothing else — so a resend or a double click grants nothing twice (auth/native-devices.ts
+ * `grantNextScope`). Cookie only, and only while device sign-in is on.
+ */
+nativeRoutes.post("/devices/:id/grant", pairingOn, requireUser, cookieOnly, async (c) => {
+  const body = (await c.req.json().catch(() => null)) as unknown;
+  const scope = typeof body === "object" && body !== null && !Array.isArray(body) && Object.keys(body).length === 1 ? (body as { scope?: unknown }).scope : undefined;
+  if (typeof scope !== "string") return c.json({ error: "invalid_grant" }, 400);
+  const outcome = await grantNextScope(c.get("db"), c.get("userId"), c.req.param("id"), scope, nowInstant());
+  if (outcome.ok) return c.json({ ok: true, scope: outcome.scope, granted: outcome.granted });
+  if (outcome.error === "not_found") return c.json({ error: "not_found" }, 404);
+  if (outcome.error === "not_next_scope") return c.json({ error: outcome.error, scope: outcome.scope, next: outcome.next }, 409);
+  return c.json({ error: outcome.error }, 409);
+});
+
+/**
  * The phone's account read (§10.4), in place of `/api/auth/me`: who it is signed in as, and its own label, expiry and
- * scope — what its pairing allows (stage 2 DESIGN §5.1, additive), so the phone offers only that: a `training-slice-v1`
- * phone plays and saves; a `training-v2` one also moves, skips and puts back. No email, connections or restore state. A
- * cookie gets `device: null`.
+ * scope — what it may reach NOW (stage 2 DESIGN §5.1, additive; the row's scope as this request read it, so a laptop grant
+ * shows here on the next read), so the phone offers only that: a `training-slice-v1` phone plays and saves; a
+ * `training-v2` one also moves, skips and puts back; a `training-v3` one also fits a session to the day and records the
+ * review's feedback. It informs the phone's UI; every request is judged by the server again. No email, connections or
+ * restore state. A cookie gets `device: null`.
  */
 nativeRoutes.get("/me", requireUser, async (c) => {
   const device = c.get("device");

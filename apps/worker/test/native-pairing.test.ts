@@ -93,7 +93,8 @@ describe("minting, on laptop web (cookie only)", () => {
   it("mints one 8-character Crockford code valid 5 minutes, and stores only its HMAC under SESSION_SECRET", async () => {
     const a = await mint();
     expect(a.status, a.text).toBe(200);
-    expect(a.json).toEqual({ code: expect.stringMatching(CROCKFORD), expiresAt: later(5 * MIN) });
+    // `scope`: what a phone paired with it will be able to do (PAIRING_SCOPE), so the laptop says so beside the code.
+    expect(a.json).toEqual({ code: expect.stringMatching(CROCKFORD), expiresAt: later(5 * MIN), scope: "training-v2" });
     const row = await pairing();
     expect(row).toEqual({ userId: w.userId, codeHmac: expect.stringMatching(/^[0-9a-f]{64}$/), createdAt: nowInstant(), expiresAt: later(5 * MIN), tries: 0, usedAt: null });
     // Keyed: neither the code nor its plain hash is stored, and the code was never bound into a statement.
@@ -132,7 +133,7 @@ describe("redeeming, from the phone (unauthenticated)", () => {
       {
         id,
         userId: w.userId,
-        scope: "training-v2", // the newest scope (stage 2 DESIGN §5.1): a new pairing is minted at it
+        scope: "training-v2", // PAIRING_SCOPE (stage 2b RG-NOTES §3.5): a new pairing is still minted at v2; the laptop grants v3
         label: "Kitchen iPhone",
         state: "pending",
         checkNumber: a.json.check,
@@ -251,7 +252,8 @@ describe("confirming on the laptop", () => {
     expect(list.status).toBe(200);
     expect(list.json).toEqual({
       enabled: true,
-      devices: [{ id, label: "Kitchen iPhone", state: "pending", check, createdAt: nowInstant(), confirmedAt: null, lastUsedAt: null, expiresAt: later(10 * MIN), expiresSoon: false }],
+      // Its scope as stored, and no grant offered while it is pending (kit v0.15).
+      devices: [{ id, label: "Kitchen iPhone", state: "pending", check, createdAt: nowInstant(), confirmedAt: null, lastUsedAt: null, expiresAt: later(10 * MIN), expiresSoon: false, scope: "training-v2", nextScope: null }],
     });
     vi.setSystemTime(new Date(Date.now() + 2 * MIN));
     const a = await w.call("POST", `/api/native/devices/${id}/confirm`, { body: { check } });

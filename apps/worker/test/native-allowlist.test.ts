@@ -6,7 +6,8 @@
  * a route added later fails here until someone classifies it:
  *
  *  - `device`: on the scope's list. For `training-slice-v1` only the slice's eight; for `training-v2` those and stage
- *    2a's four. A device of that scope reaches the handler.
+ *    2a's four; for `training-v3` v2's twelve and stage 2b's two document routes. A device of that scope reaches the
+ *    handler.
  *  - `gated`: behind `requireUser`. A device of that scope is refused 403 `out_of_scope` before the handler runs.
  *  - `open`: not behind `requireUser` (sign-in, health, assets, the bridge's 410, a switch's 404 …). The device token is
  *    no credential there: a device's answer is exactly the anonymous one.
@@ -17,7 +18,8 @@
  * active device token of each scope, against the real default export, every switch on: wherever the anonymous request
  * reached `requireUser` (a spy on the real function says), each device must be on its scope's list or get 403
  * `out_of_scope`; wherever it did not, each device's answer must be the anonymous one. v1's list is pinned as it was
- * before v2 existed, and v2's is v1's, the same entries, plus four. Synthetic data only; `fetch` stubbed.
+ * before v2 existed, and v2's is v1's, the same entries, plus four; v3's is v2's in v2's order with Build's and the save's
+ * body rules widened (kit v0.15), plus two. Synthetic data only; `fetch` stubbed.
  */
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { eq } from "drizzle-orm";
@@ -48,7 +50,8 @@ vi.mock("../src/services/calendar-sync.js", async (importOriginal) => ({
 }));
 
 const { default: worker, mountedRoutes } = await import("../src/index.js");
-const { DEVICE_SCOPES, deviceDrainBody, deviceMoveBody, deviceRouteOf, deviceSaveBody, emptyBody, emptyObjectBody } = await import("../src/auth/device-scope.js");
+const { DEVICE_SCOPES, deviceBuildBody, deviceDocBody, deviceDrainBody, deviceFeedbackSaveBody, deviceMoveBody, deviceRouteOf, deviceSaveBody, emptyBody, emptyObjectBody } =
+  await import("../src/auth/device-scope.js");
 
 vi.setConfig({ testTimeout: 600_000 });
 
@@ -64,16 +67,19 @@ const V1_PAIRS = [
   "POST /api/sessions/:workoutId/start",
   "PUT /api/sessions/performed/:id",
 ];
-/** Each scope's pairs: v2 is v1 and stage 2a's plan edits and the watch drain (DESIGN §9). */
+/** v2: v1 and stage 2a's plan edits and the watch drain (DESIGN §9). */
+const V2_PAIRS = [
+  ...V1_PAIRS,
+  "POST /api/plan/workouts/:id/move",
+  "POST /api/plan/workouts/:id/skip",
+  "POST /api/plan/workouts/:id/unskip",
+  "POST /api/sessions/watch/drain",
+];
+/** Each scope's pairs: v3 is v2 and stage 2b's document read and edit (kit v0.15). */
 const DEVICE_PAIRS: Record<Scope, readonly string[]> = {
   "training-slice-v1": V1_PAIRS,
-  "training-v2": [
-    ...V1_PAIRS,
-    "POST /api/plan/workouts/:id/move",
-    "POST /api/plan/workouts/:id/skip",
-    "POST /api/plan/workouts/:id/unskip",
-    "POST /api/sessions/watch/drain",
-  ],
+  "training-v2": V2_PAIRS,
+  "training-v3": [...V2_PAIRS, "GET /api/workouts/:id/doc", "PUT /api/workouts/:id/doc"],
 };
 /**
  * A probe's body where `{}` is outside the pair's body rule: a move in its grammar (the route then answers 404), and the
@@ -82,6 +88,8 @@ const DEVICE_PAIRS: Record<Scope, readonly string[]> = {
 const PROBE_BODIES: Record<string, string> = {
   "POST /api/plan/workouts/:id/move": JSON.stringify({ toDate: "2026-11-20", toTime: "07:30" }),
   "POST /api/sessions/watch/drain": JSON.stringify({ workoutId: "probe-id" }),
+  // A document edit in v3's grammar (the route then answers 404 for an id that isn't the account's).
+  "PUT /api/workouts/:id/doc": JSON.stringify({ doc: {}, baseRev: 0 }),
 };
 
 const keyOf = (r: { method: string; path: string }) => `${r.method} ${r.path}`;
@@ -196,6 +204,29 @@ describe("every mounted route is classified", () => {
       ["POST", String(/^\/api\/sessions\/watch\/drain$/), deviceDrainBody],
     ]);
     expect(Object.keys(DEVICE_SCOPES).sort()).toEqual([...SCOPES].sort());
+  });
+
+  it("v3's list is v2's twelve in v2's order — the same entries but Build's and the save's, whose body rules widen — then two", () => {
+    const v2 = DEVICE_SCOPES["training-v2"];
+    const v3 = DEVICE_SCOPES["training-v3"];
+    expect(v3).toHaveLength(v2.length + 2);
+    const widened = new Map<number, unknown>([
+      [5, deviceBuildBody],
+      [7, deviceFeedbackSaveBody],
+    ]);
+    v2.forEach((r, i) => {
+      if (widened.has(i)) {
+        // The same pair, its body rule the wider one: never another path or method.
+        expect([v3[i]!.method, String(v3[i]!.pattern), v3[i]!.body]).toEqual([r.method, String(r.pattern), widened.get(i)]);
+        expect(v3[i]).not.toBe(r);
+      } else expect(v3[i]).toBe(r);
+    });
+    // v2's own entries are untouched by v3: Build is still exactly `{}`, the save still refuses graduations and "not for me".
+    expect([v2[5]!.body, v2[7]!.body]).toEqual([emptyObjectBody, deviceSaveBody]);
+    expect(v3.slice(v2.length).map((r) => [r.method, String(r.pattern), r.body ?? null])).toEqual([
+      ["GET", String(/^\/api\/workouts\/[^/]+\/doc$/), null],
+      ["PUT", String(/^\/api\/workouts\/[^/]+\/doc$/), deviceDocBody],
+    ]);
   });
 });
 

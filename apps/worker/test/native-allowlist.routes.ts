@@ -4,26 +4,29 @@
  * each scope, is checked against how it behaves for a device of that scope:
  *
  *  - `device`: on the scope's list (auth/device-scope.ts `DEVICE_SCOPES`) — for `training-slice-v1` exactly the eight
- *    pairs of SLICE-CONTRACT §10.3; for `training-v2` those and stage 2a's four (DESIGN §5.1, §9);
+ *    pairs of SLICE-CONTRACT §10.3; for `training-v2` those and stage 2a's four (DESIGN §5.1, §9); for `training-v3` v2's
+ *    twelve and stage 2b's two document routes (kit v0.15: Build and the save widen their body rules, not their pairs);
  *  - `gated`: behind `requireUser`, so that scope's device token is 403 `out_of_scope`;
  *  - `open`: not behind `requireUser` — the device token is no credential there, and changes nothing;
  *  - `bearer`: behind its own bearer door (LifeOS, the saves extension), which the device token does not open.
  *
- * A route is one class for every scope, or a class per scope where they differ (`V2_DEVICE`): a scope added later must
- * name its class for each of those, or the type fails. A new route that a device should reach is a new scope (a later
- * stage), never a widened one.
+ * A route is one class for every scope, or a class per scope where they differ (`V2_DEVICE`, `V3_DEVICE`): a scope added
+ * later must name its class for each of those, or the type fails. A new route that a device should reach is a new scope
+ * (a later stage), never a widened one — reached by a new pairing or the laptop's grant of the next scope.
  */
 export type RouteClass = "device" | "gated" | "open" | "bearer";
 
 /** The device scopes, oldest first. */
-export const SCOPES = ["training-slice-v1", "training-v2"] as const;
+export const SCOPES = ["training-slice-v1", "training-v2", "training-v3"] as const;
 export type Scope = (typeof SCOPES)[number];
 
 /** A route's class: the same under every scope, or one per scope. */
 export type Classified = RouteClass | Readonly<Record<Scope, RouteClass>>;
 
-/** Stage 2a's plan edits and the watch drain: refused to a v1 device, reached by a v2 one. */
-const V2_DEVICE: Readonly<Record<Scope, RouteClass>> = { "training-slice-v1": "gated", "training-v2": "device" };
+/** Stage 2a's plan edits and the watch drain: refused to a v1 device, reached by a v2 one (and a v3 one: v3 holds v2). */
+const V2_DEVICE: Readonly<Record<Scope, RouteClass>> = { "training-slice-v1": "gated", "training-v2": "device", "training-v3": "device" };
+/** Stage 2b's document read and edit (kit v0.15, "Make it fit"): reached only by a v3 device. */
+const V3_DEVICE: Readonly<Record<Scope, RouteClass>> = { "training-slice-v1": "gated", "training-v2": "gated", "training-v3": "device" };
 
 /** The class of a classified route under `scope`. */
 export const classUnder = (classified: Classified, scope: Scope): RouteClass => (typeof classified === "string" ? classified : classified[scope]);
@@ -228,8 +231,8 @@ export const ROUTE_CLASSES: Record<string, Classified> = {
   "ALL /api/workouts/*": "gated",
   "POST /api/workouts": "gated",
   "DELETE /api/workouts/:id": "gated",
-  "PUT /api/workouts/:id/doc": "gated",
-  "GET /api/workouts/:id/doc": "gated",
+  "PUT /api/workouts/:id/doc": V3_DEVICE,
+  "GET /api/workouts/:id/doc": V3_DEVICE,
   "GET /api/workouts": "gated",
   "ALL /api/templates/*": "gated",
   "GET /api/templates": "gated",
@@ -312,6 +315,7 @@ export const ROUTE_CLASSES: Record<string, Classified> = {
   "POST /api/native/devices/revoke-all": "gated",
   "POST /api/native/devices/:id/confirm": "gated",
   "POST /api/native/devices/:id/revoke": "gated",
+  "POST /api/native/devices/:id/grant": "gated",
   "GET /api/native/me": "device",
   "GET /api/native/today": "device",
   "POST /api/native/sign-out": "device",
