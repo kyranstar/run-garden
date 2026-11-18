@@ -434,20 +434,22 @@ describe("the review's feedback from the phone: explicit, applied once, earned b
     expect(everything()).toEqual(held);
 
     // A save is the account's heaviest request already (the activity, the match, the garden's step), and the review's
-    // feedback was the web's cost before it was the phone's. What the phone adds is the earned check's read of the lift's
-    // history: pinned against the web's own save of the same session and feedback.
-    const cost = async (by: string | null, feedback: boolean) => {
+    // feedback was the web's cost before it was the phone's. What the phone adds — the earned check's read of the lift's
+    // history (one ranked query, then four per 90 sessions it names) and the read of the session's own moves (review r-m3)
+    // — is pinned against the web's own save of the same feedback. The garden's step is left out of both: how far it walks
+    // depends on the account's state at each save, not on who sent it.
+    const cost = async (by: string | null) => {
       const s = await strengthStarted();
-      const review = feedback ? { graduations: s.asked, excluded: { [s.other]: true } } : {};
-      const a = await save(wire(s.slot, s.b, { entries: [sets(s.lift.from, 16)], review }), by);
+      const a = await save(wire(s.slot, s.b, { entries: [sets(s.lift.from, 16)], review: { graduations: s.asked, excluded: { [s.other]: true } } }), by);
       expect([a.json.status, a.json.notes], a.text).toEqual(["saved", []]);
-      return a.total;
+      return { total: a.total, outsideGarden: a.statements.filter((x) => !/garden_/.test(x)).length };
     };
-    const phone = { plain: await cost(v3, false), feedback: await cost(v3, true) };
-    const laptop = { plain: await cost(null, false), feedback: await cost(null, true) };
-    console.info(`[2b] a save's statements: the phone's ${phone.plain} plain, ${phone.feedback} with a graduation and a Not for me; the web's ${laptop.plain} and ${laptop.feedback}`);
-    // The earned check's read: one ranked query over the lift's sessions, then four per 90 it names (none here).
-    expect(phone.feedback - phone.plain - (laptop.feedback - laptop.plain)).toBeLessThanOrEqual(5);
+    const phone = await cost(v3);
+    const laptop = await cost(null);
+    console.info(`[2b] a save with a graduation and a Not for me: the phone's ${phone.total} statements, the web's ${laptop.total} (${phone.outsideGarden} and ${laptop.outsideGarden} outside the garden's step)`);
+    // The device's own row read stands where the cookie's session read does. The earned check is one ranked query, and four
+    // more when the lift has history here (by which lift the build holds); the session's moves are one.
+    expect(phone.outsideGarden - laptop.outsideGarden).toBeLessThanOrEqual(1 + 4 + 1);
   });
 
   it("a partial session — the lift never reached, the save still `completed: true` — earns nothing: skipped, said, and the rest lands", async () => {
@@ -527,6 +529,46 @@ describe("the review's feedback from the phone: explicit, applied once, earned b
     const a = await save(wire(slot, b, { entries: [bridge], review: { graduations: asked } }), null);
     expect([a.json.status, a.json.notes], a.text).toEqual(["saved", []]);
     expect((await loadProgramState(w.db, programId))!.core[lift.family]).toBe(lift.to);
+  });
+
+  /** The moves the session held: its build's items and what ⇄ offered for them. */
+  const heldBy = (b: any) => new Set<string>([
+    ...(b.items as Array<{ exerciseId: string }>).map((i) => i.exerciseId),
+    ...Object.values(b.alternatives as Record<string, Array<{ id: string }>>).flat().map((a) => a.id),
+  ]);
+  /** Library moves this session never held. */
+  const notHeld = (b: any, n: number) => EXERCISES.map((e) => e.id).filter((id) => !heldBy(b).has(id)).slice(0, n);
+
+  it("a device's Not for me keeps only the session's own moves: the rest is skipped and said, never written (review r-m3)", async () => {
+    const { slot, b, other } = await strengthStarted();
+    const [outsideA, outsideB] = notHeld(b, 2);
+    // ⇄'s offer for a slot, never played: the session held it, so it may be set aside too.
+    const offered = Object.values(b.alternatives as Record<string, Array<{ id: string }>>).flat()[0]!.id;
+    const body = wire(slot, b, { review: { excluded: { [other]: true, [offered]: true, [outsideA!]: true, [outsideB!]: false } } });
+    const a = await save(body);
+    expect([a.status, a.json.status, a.json.notes], a.text).toEqual([200, "saved", ["exclusion_skipped"]]);
+    expect(prefsNow()).toEqual([other, offered].sort().map((id) => ({ id, excluded: 1 })));
+    expect(q(`select count(*) as n from exercise_prefs where user_id = ? and exercise_id in (?, ?)`, w.userId, outsideA, outsideB)[0].n).toBe(0);
+    // Its resend is the same save: nothing written, nothing new said.
+    expect((await save(body)).json).toEqual({ status: "same_payload" });
+  });
+
+  it("a move the session played that the build never held (the player's swap) may be set aside; the web's Not for me is as it was", async () => {
+    const { slot, b } = await strengthStarted();
+    const [played, outside] = notHeld(b, 2);
+    const swapped = wire(slot, b, {
+      movesDone: [{ exerciseId: played!, seconds: 120, slotKey: b.items[0].slotKey }],
+      entries: [{ exerciseId: played!, implement: null, format: "straight", perSide: false, sets: [{ setIndex: 0, reps: 8, seconds: null, load: null }] }],
+      review: { excluded: { [played!]: true } },
+    });
+    const a = await save(swapped);
+    expect([a.json.status, a.json.notes], a.text).toEqual(["saved", []]);
+    expect(prefsNow()).toEqual([{ id: played, excluded: 1 }]);
+    // The laptop's save of another session is unchanged: it sets what its review sends.
+    const web = await strengthStarted();
+    const fromWeb = await save(wire(web.slot, web.b, { review: { excluded: { [outside!]: true } } }), null);
+    expect([fromWeb.json.status, fromWeb.json.notes], fromWeb.text).toEqual(["saved", []]);
+    expect(prefsNow().map((r) => r.id)).toContain(outside);
   });
 
   it("v2's save is as it was: graduations or Not for me are 403 out_of_scope before any write", async () => {

@@ -98,8 +98,15 @@ import { reopenedDocColumns } from "./workout-doc-store.js";
  * What a save says beside the session, when something did not go the usual way. `superseded_auto_match`: the matcher's
  * own guess — this slot completed by another activity, or the joined watch activity filed on another slot — gave way
  * to this session (ruling 2b-R5; the other activity counts as extra training, the other slot is open again).
+ * `exclusion_skipped`: a device's "not for me" for a move the session never held was not written (review r-m3).
  */
-export type SaveNote = "slot_already_matched" | "activity_matched_elsewhere" | "slot_gone" | "graduation_skipped" | "superseded_auto_match";
+export type SaveNote =
+  | "slot_already_matched"
+  | "activity_matched_elsewhere"
+  | "slot_gone"
+  | "graduation_skipped"
+  | "exclusion_skipped"
+  | "superseded_auto_match";
 
 export type SaveOutcome =
   | { status: "saved"; performedId: string; activityId: string; matched: boolean; notes: SaveNote[] }
@@ -138,6 +145,12 @@ export interface SaveCtx {
    * web's), the save applies what its review sends, as it did.
    */
   graduationsEarned?: boolean | undefined;
+  /**
+   * A device's save (stage 2b, review r-m3): its "not for me" marks (`review.excluded`, set or lifted) are kept only for
+   * the moves the session held (`sessionMoveIds`); the rest are not written, and the save says `exclusion_skipped`. Each
+   * mark shapes every later build, so a phone can't set one on a move it never showed. Absent (the web's), as it was.
+   */
+  exclusionsOwnOnly?: boolean | undefined;
 }
 
 type SlotRow = typeof plannedWorkouts.$inferSelect;
@@ -176,6 +189,43 @@ async function startedBuilds(db: Db, userId: string, workoutId: string): Promise
       ),
     );
   return rows.flatMap((r) => (typeof r.date === "string" && isLocalDate(r.date) ? [{ id: r.id, date: r.date }] : []));
+}
+
+/**
+ * THE MOVES A SESSION HELD (`SaveCtx.exclusionsOwnOnly`, review r-m3): what its review can have shown — the moves the save
+ * itself played (`entries`, `movesDone`: the player's swap included), and its build's: the build it names, else the slot's
+ * started ones — their items and what ⇄ offered for them (the engine's `alternatives`, a document's `alternates` and
+ * `offers`), the same set the review basis reads its prefs for. One read, of those builds.
+ */
+async function sessionMoveIds(db: Db, userId: string, slotId: string, p: PerformedSessionWire): Promise<Set<string>> {
+  const ids = new Set<string>([...p.entries.map((e) => e.exerciseId), ...p.movesDone.map((m) => m.exerciseId)]);
+  const rows = await db
+    .select({ payload: sessionBuilds.payload })
+    .from(sessionBuilds)
+    .where(
+      and(
+        eq(sessionBuilds.workoutId, slotId),
+        eq(sessionBuilds.userId, userId),
+        p.buildId !== null
+          ? eq(sessionBuilds.id, p.buildId)
+          : or(isNotNull(sessionBuilds.lockedAt), sql`json_extract(${sessionBuilds.payload}, ${UNSTARTED_AT_PATH}) is not null`),
+      ),
+    );
+  type Alt = { id?: unknown };
+  const add = (alts: unknown) => {
+    for (const a of Array.isArray(alts) ? (alts as Alt[]) : []) if (typeof a?.id === "string") ids.add(a.id);
+  };
+  for (const { payload } of rows) {
+    const build = (payload as { build?: Record<string, unknown> } | null)?.build ?? {};
+    for (const i of Array.isArray(build.items) ? (build.items as Array<{ exerciseId?: unknown }>) : []) if (typeof i?.exerciseId === "string") ids.add(i.exerciseId);
+    for (const alts of Object.values((build.alternatives as Record<string, unknown> | undefined) ?? {})) add(alts);
+    const slots = ((build.fromDoc as { slots?: Record<string, { alternates?: unknown; offers?: unknown }> } | undefined)?.slots) ?? {};
+    for (const s of Object.values(slots)) {
+      add(s?.alternates);
+      add(s?.offers);
+    }
+  }
+  return ids;
 }
 
 /**
@@ -825,7 +875,11 @@ async function write(
     .from(performedSessions)
     .where(and(eq(performedSessions.userId, userId), eq(performedSessions.activityId, activityId), eq(performedSessions.source, WATCH_SOURCE)));
   const match = await planMatch(db, userId, slot, performedId, activityId, now);
-  const prefs = await prefStatements(db, userId, p, now);
+  // A device's "not for me" only for the moves the session held (review r-m3); the rest is not written, and said.
+  const marks = Object.keys(p.review.excluded);
+  const held = ctx.exclusionsOwnOnly && marks.length > 0 ? await sessionMoveIds(db, userId, slot.id, p) : null;
+  const ownExcluded = held ? Object.fromEntries(Object.entries(p.review.excluded).filter(([id]) => held.has(id))) : p.review.excluded;
+  const prefs = await prefStatements(db, userId, held ? { ...p, review: { ...p.review, excluded: ownExcluded } } : p, now);
   const graduation = await graduationStatements(db, userId, slot, p, now, {
     only: ctx.graduationsEarned === true,
     // The watch's copies this save takes over are this session, not its history (review r-m1).
@@ -833,6 +887,7 @@ async function write(
   });
   const notes: SaveNote[] = [...match.notes];
   if (!graduation.applied) notes.push("graduation_skipped");
+  if (held && Object.keys(ownExcluded).length < marks.length) notes.push("exclusion_skipped");
   // The completed slot credits its own (current) day — buildDayInput keys it on effectiveDate — the session its day,
   // the build the day it was played for, and a displaced activity or a reopened slot theirs: the replay starts at the
   // earliest (rulings 2b-R5, 2b-R7 as amended).

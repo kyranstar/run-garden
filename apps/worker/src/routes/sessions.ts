@@ -523,6 +523,8 @@ sessionRoutes.put("/performed/:id", async (c) => {
       // A device's graduation applies only when the session's own sets earn it (stage 2b; only a v3 device's save can
       // carry one at all: device-scope.ts). The web's applies what its review sends, as before.
       graduationsEarned: byDevice(c),
+      // And its "not for me" only for the session's own moves (review r-m3). The web's sets what its review sends.
+      exclusionsOwnOnly: byDevice(c),
     });
     if (outcome.status === "conflict") return c.json({ error: "conflict" }, 409);
     if (outcome.status === "slot_done") return c.json({ error: "slot_done" }, 409);
