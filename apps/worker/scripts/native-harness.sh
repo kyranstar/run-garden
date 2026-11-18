@@ -64,6 +64,9 @@ case "${1:-}" in
         "AI_DEFAULT_ENABLED=0",
         "AI_GATEWAY_BASE_URL=http://127.0.0.1:9",
         `APP_URL=http://127.0.0.1:${process.argv[2]}`,
+        // The LifeOS plan door exists (the hash of a token nobody holds), so the check can read the QA plan with the QA plan
+        // token (the phone QA harness).
+        `LIFEOS_TOKEN_SHA256=${require("node:crypto").createHash("sha256").update(randomBytes(32)).digest("hex")}`,
       ];
       require("node:fs").writeFileSync(process.argv[3], lines.join("\n") + "\n", { mode: 0o600 });
     ' "$OWNER" "$PORT" "$ENV_FILE"

@@ -48,6 +48,16 @@ function sql(command) {
   return JSON.parse(out)[0].results;
 }
 
+/** Several reads of the LOCAL D1 in one wrangler call (`;`-separated): each statement's rows, in order. */
+function sqlAll(statements) {
+  const out = execFileSync("npx", ["wrangler", "d1", "execute", "run-garden-db", "--local", "-c", "wrangler.dev.toml", "--persist-to", state, "--json", "--command", statements.join(";\n")], {
+    cwd: worker,
+    encoding: "utf8",
+    env: { ...process.env, WRANGLER_SEND_METRICS: "false" },
+  });
+  return JSON.parse(out).map((r) => r.results);
+}
+
 let passed = 0;
 const failed = [];
 function check(label, got, want) {
@@ -331,6 +341,81 @@ const raceReduced = reducedAudits();
 const downs = await Promise.all([reduceAs(raceId, "training-v2"), reduceAs(raceId, "training-v2"), reduceAs(raceId, "training-v2")]);
 check("three step-downs at once on local D1: one reduced, two not, one audit", [downs.map((a) => `${a.status} ${a.json.reduced}`).sort(), reducedAudits() - raceReduced], [["200 false", "200 false", "200 true"], 1]);
 check("the laptop grants the phone v3 back: 200 granted, and its document read answers again", [(await grantAs(phoneId, "training-v3")).json.granted, (await call("GET", `/api/workouts/${fid}/doc`, { bearer: token })).status], [true, 200]);
+
+// 4e. The LifeOS QA account on local D1 (the phone QA harness, routes/qa.ts): the laptop sets it up (account, fixtures, a code
+// and the run's tokens); a phone pairs to it, active at once, and does what the on-device suite does; the harness token reads
+// the state and purges; then EVERY table of the real local D1 that has a user_id column, and every child of the QA account's
+// plan rows, holds nothing of it — read straight from sqlite_master, not through the registry the purge used. The owner's
+// rows are counted before and after: unchanged.
+/** Every table of the local D1 with a `user_id` column, read from sqlite_master and each table's own columns. */
+const userIdTables = sql(
+  "select m.name from sqlite_master m where m.type = 'table' and m.name not like 'sqlite_%' and m.name not like '_cf_%' and m.name <> 'd1_migrations' " +
+    "and exists (select 1 from pragma_table_info(m.name) p where p.name = 'user_id') order by m.name",
+).map((t) => t.name);
+/** Each of those tables' rows for `userId`, in one call. */
+const rowsByTable = (userId) =>
+  Object.fromEntries(sqlAll(userIdTables.map((name) => `select '${name}' as t, count(*) as n from "${name}" where user_id = '${userId}'`)).map(([r]) => [r.t, r.n]));
+const ownerTables = () => rowsByTable(me.json.userId);
+const ownerBefore = ownerTables();
+const qaSetup = await call("POST", "/api/qa/setup", { cookie: true, body: {} });
+check("QA: the laptop's Set up makes the account, its fixtures and a code with the run's tokens", [qaSetup.status, qaSetup.json.created, qaSetup.json.seeded, /^rgq_/.test(qaSetup.json.harnessToken ?? ""), /^[0-9a-f]{64}$/.test(qaSetup.json.planToken ?? "")], [200, true, true, true, true]);
+const [qaRow] = sql("select id, email, google_sub as sub from users where email = 'lifeos-qa@invalid'");
+check("QA: one account at lifeos-qa@invalid, no Google identity, not the owner's", [qaRow?.email, qaRow?.sub, qaRow?.id !== me.json.userId], ["lifeos-qa@invalid", null, true]);
+const qaId = qaRow.id;
+check("QA: a device token can't reach the owner's QA routes: 403 out_of_scope", (await call("GET", "/api/qa/status", { bearer: token })).json, { error: "out_of_scope" });
+const qaPair = await call("POST", "/api/native/pair", { body: { code: qaSetup.json.code, label: "LifeOS phone" } });
+check("QA: its code pairs a phone (the owner's wire shape: pending)", [qaPair.status, qaPair.json.state], [200, "pending"]);
+const qaToken = qaPair.json.token;
+const qaMe = await call("GET", "/api/native/me", { bearer: qaToken });
+check("QA: …active at once, as the QA account, at v3", [qaMe.status, qaMe.json.userId, qaMe.json.device?.scope], [200, qaId, "training-v3"]);
+const qaDay = (await call("GET", "/api/native/today", { bearer: qaToken })).json;
+check("QA: the phone's day is today's three QA fixtures, and nothing of the owner's", qaDay.sessions.map((s) => s.title).sort(), ["QA Easy run", "QA Hips and back", "QA Mobility"]);
+const qaPlan = await call("GET", `/api/lifeos/plan?from=${qaDay.today}&to=${qaDay.today}`, { bearer: qaSetup.json.planToken });
+check("QA: its plan token reads its plan at /api/lifeos/plan", [qaPlan.status, (qaPlan.json.days?.[0]?.sessions ?? []).map((s) => s.title).sort()], [200, ["QA Easy run", "QA Hips and back", "QA Mobility"]]);
+const hips = qaDay.sessions.find((s) => s.title === "QA Hips and back");
+const qaMoved = await call("POST", `/api/plan/workouts/${hips.id}/move`, { bearer: qaToken, body: { toDate: qaDay.today, toTime: "23:50", from: { date: qaDay.today, time: hips.time } } });
+check("QA: the phone moves it later today, from where it saw it", [qaMoved.status, qaMoved.json.watchDrain], [200, undefined]);
+check("QA: skip, then unskip", [(await call("POST", `/api/plan/workouts/${hips.id}/skip`, { bearer: qaToken })).json, (await call("POST", `/api/plan/workouts/${hips.id}/unskip`, { bearer: qaToken })).json], [{ ok: true }, { ok: true }]);
+const qaBuilt = (await call("POST", `/api/sessions/${hips.id}/build`, { bearer: qaToken, body: {} })).json.build;
+check("QA: Build and Start", (await call("POST", `/api/sessions/${hips.id}/start`, { bearer: qaToken, body: { buildId: qaBuilt.buildId } })).status, 200);
+const qaSaveId = `harness-qa-${hips.id}`;
+const qaSave = {
+  ...save, id: qaSaveId, workoutId: hips.id, buildId: qaBuilt.buildId, localDate: qaBuilt.date, plannedSeconds: qaBuilt.plannedSeconds ?? 600, minutes: qaBuilt.minutes ?? 10,
+  mode: qaBuilt.mode ?? "build", theme: qaBuilt.theme ?? null, locationId: qaBuilt.locationId ?? null, blockRef: qaBuilt.blockRef ?? null,
+  stepsTotal: (qaBuilt.steps ?? []).length || 1, stepsDone: (qaBuilt.steps ?? []).length || 1,
+  movesDone: (qaBuilt.items ?? []).map((i) => ({ exerciseId: i.exerciseId, seconds: 60, ...(i.slotKey ? { slotKey: i.slotKey } : {}) })),
+  entries: [{ exerciseId: qaBuilt.items?.[0]?.exerciseId ?? "bridge", implement: null, format: "straight", perSide: false, sets: [{ setIndex: 0, reps: 10, seconds: null, load: null }] }],
+};
+check("QA: the save", (await call("PUT", `/api/sessions/performed/${qaSaveId}`, { bearer: qaToken, body: qaSave })).json.status, "saved");
+const harnessAs = (method, path, body) => call(method, `/api/qa/run${path}`, { bearer: qaSetup.json.harnessToken, body });
+const qaState = (await harnessAs("GET", "/state")).json;
+check("QA: the harness reads it done at its new time, one move audit, one performed session, matched", [
+  qaState.plan.find((p) => p.id === hips.id)?.state, qaState.plan.find((p) => p.id === hips.id)?.time,
+  qaState.audits.filter((a) => a.kind === "workout_moved").length, qaState.performed.map((p) => p.id), qaState.matches.filter((m) => m.undoneAt === null).map((m) => m.method),
+], ["completed", "23:50", 1, [qaSaveId], ["app_session"]]);
+check("QA: …and no provider row at all", [qaState.providers.connections, qaState.providers.corosWriteJobs, qaState.providers.calendarEventLinks, qaState.providers.syncRuns], [0, 0, 0, 0]);
+const qaPlanIds = sql(`select id from planned_workouts where user_id = '${qaId}'`).map((r) => r.id);
+const qaPurged = await harnessAs("POST", "/purge", { confirm: "purge qa" });
+check("QA: the harness purges it: every table checked, zero remain", [qaPurged.status, qaPurged.json.total], [200, 0]);
+check("QA: the harness's own zero-row check, after", [(await harnessAs("GET", "/verify")).json.total, (await harnessAs("GET", "/verify")).json.exists], [0, false]);
+const leftByUser = Object.entries(rowsByTable(qaId)).filter(([, n]) => n > 0);
+check(`QA: on the real local D1, every one of the ${userIdTables.length} tables with a user_id holds nothing of it`, leftByUser, []);
+const inList = qaPlanIds.map((id) => `'${id}'`).join(",") || "''";
+const leftChildren = sqlAll(
+  ["planned_workout_stages", "schedule_overrides", "workout_completion_matches", "calendar_event_links", "calendar_event_suppressions"].map(
+    (name) => `select '${name}' as t, count(*) as n from "${name}" where workout_id in (${inList})`,
+  ),
+)
+  .map(([r]) => [r.t, r.n])
+  .filter(([, n]) => n > 0);
+check("QA: …nor any child of its plan rows, by the ids they had", leftChildren, []);
+check("QA: …which were there before the purge (the check reads real rows)", qaPlanIds.length, 5);
+check("QA: …nor its user row, pairing code or mint counter", [
+  sql(`select count(*) as n from users where id = '${qaId}' or email = 'lifeos-qa@invalid'`)[0].n,
+  sql(`select count(*) as n from native_pair_limits where key = 'mint:${qaId}'`)[0].n,
+], [0, 0]);
+check("QA: the phone is signed out with it: 401", (await call("GET", "/api/native/me", { bearer: qaToken })).status, 401);
+check("QA: the owner's rows, table by table, as they were", ownerTables(), ownerBefore);
 
 // 5. More races on local D1: three codes (the mint bound is 5 a window, and this check mints 5 in all), each redeemed by
 // four requests at once — one device each, never two. Each new code lifts the redeem throttles, so each race starts clean.

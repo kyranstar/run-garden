@@ -321,8 +321,11 @@ export async function seedQaFixtures(db: Db, env: Pick<Env, "ALLOWED_GOOGLE_EMAI
 
 // ── Pairing and the run's tokens ─────────────────────────────────────────────────────────────────────────────
 
-/** The first 8 hex of SHA-256(userId): how the phone's state snapshot and the panel name an account without its id. */
-export const accountTag = async (userId: string): Promise<string> => (await sha256Hex(userId)).slice(0, 8);
+/**
+ * How the panel and the phone's state snapshot name an account without its id: the first 8 hex of LifeOS's own account key
+ * (LifeOS `RunGardenAccountKey`: SHA-256 of "lifeos run-garden account v1\n" and the id), so the two can be compared.
+ */
+export const accountTag = async (userId: string): Promise<string> => (await sha256Hex(`lifeos run-garden account v1\n${userId}`)).slice(0, 8);
 
 /**
  * A pairing code for the QA account (the owner's laptop, or the harness token), with the run's tokens: the same code, HMAC,
