@@ -314,6 +314,14 @@ describe("the document: GET and PUT /api/workouts/:id/doc with baseRev", () => {
     expect(read.json.excluded).toEqual(["birdDog", "deadBug"]);
     expect(read.writes).toEqual([]);
     expect(read.total).toBeLessThanOrEqual(BUDGET);
+    // Only this account's: another account's places and its Not for me marks never reach this phone (review r2-m4).
+    const other = await makeTestUser(w.db, { timezone: LA });
+    await createPlace(w.db, other.userId, { name: "Their garage", equipment: ["kettlebell"], isDefault: true }, nowInstant());
+    client()
+      .prepare(`insert into exercise_prefs (id, user_id, exercise_id, rating, excluded, pinned, updated_at) values (?, ?, 'pushup', null, 1, 0, ?), (?, ?, 'gobletSquat', null, 1, 0, ?)`)
+      .run(`${other.userId}:pushup`, other.userId, nowInstant(), `${other.userId}:gobletSquat`, other.userId, nowInstant());
+    const mine = (await readDoc(id)).json;
+    expect([mine.locations.map((l: { name: string }) => l.name), mine.excluded]).toEqual([["Hotel", "Gym", "Flat"], ["birdDog", "deadBug"]]);
   });
 
   it("an edit (a move removed) is the session's next revision; only its row changes, with one revision row", async () => {
@@ -695,6 +703,26 @@ describe("the review's feedback from the phone: explicit, applied once, earned b
     const fromWeb = await save(wire(web.slot, web.b, { review: { excluded: { [outside!]: true } } }), null);
     expect([fromWeb.json.status, fromWeb.json.notes], fromWeb.text).toEqual(["saved", []]);
     expect(prefsNow().map((r) => r.id)).toContain(outside);
+  });
+
+  it("a document session's own moves count too: an alternate ⇄ offered, and a move reached but never played (review r2-m4)", async () => {
+    // Landings with a gentler planned alternate (snapDown → tempoSquat), then split squats.
+    const id = await workoutOn(D, landingsDoc());
+    const b = (await build(id, {})).json.build;
+    expect(Object.values(b.fromDoc.slots as Record<string, { alternates?: Array<{ id: string }> }>).flatMap((s) => (s.alternates ?? []).map((a) => a.id))).toContain("tempoSquat");
+    await phoneStarts(id, b.buildId);
+    const [outside] = notHeld(b, 1).filter((x) => x !== "tempoSquat" && x !== "bwSplitSquat");
+    // Played only the landings; the split squats were reached on the plan but not logged, and the alternate never played.
+    const body = wire(id, b, {
+      movesDone: [{ exerciseId: "snapDown", seconds: 120 }],
+      // How many moves its plan held, as the app's player says (what the review may set aside is bounded by it).
+      movesPlanned: (b.items as unknown[]).length,
+      entries: [{ exerciseId: "snapDown", implement: null, format: "straight", perSide: false, sets: [{ setIndex: 0, reps: 5, seconds: null, load: null }] }],
+      review: { excluded: { tempoSquat: true, bwSplitSquat: true, [outside!]: true } },
+    });
+    const a = await save(body);
+    expect([a.status, a.json.status, a.json.notes], a.text).toEqual([200, "saved", ["exclusion_skipped"]]);
+    expect(prefsNow().map((r) => r.id)).toEqual(["bwSplitSquat", "tempoSquat"]);
   });
 
   it("v2's save is as it was: graduations or Not for me are 403 out_of_scope before any write", async () => {
