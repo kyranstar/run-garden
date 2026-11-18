@@ -18,6 +18,22 @@ import { DateTime } from "luxon";
 import { eq } from "drizzle-orm";
 import { schema } from "@rg/database";
 import { newId, nowInstant, performedSessionSaveSchema } from "@rg/domain";
+
+/** Hold a grant between its read of the device and its one transaction (the next `runAtomicallyClaim`), once. */
+const gates = vi.hoisted(() => ({ claim: null as null | (() => Promise<void>) }));
+vi.mock("../src/services/db.js", async (importOriginal) => {
+  const real = await importOriginal<typeof import("../src/services/db.js")>();
+  return {
+    ...real,
+    runAtomicallyClaim: async (...args: Parameters<typeof real.runAtomicallyClaim>) => {
+      const hold = gates.claim;
+      gates.claim = null;
+      if (hold) await hold();
+      return real.runAtomicallyClaim(...args);
+    },
+  };
+});
+
 import type { Env } from "../src/env.js";
 import { nativeRoutes } from "../src/routes/native.js";
 import { sessionRoutes } from "../src/routes/sessions.js";
@@ -41,6 +57,7 @@ let w: NativeWorld;
 afterEach(() => {
   vi.unstubAllGlobals();
   vi.useRealTimers();
+  gates.claim = null;
 });
 
 beforeEach(async () => {
@@ -102,6 +119,29 @@ describe("a grant moves an active device to its next scope, in place", () => {
     expect(both.map((a) => [a.status, a.json.granted]).sort()).toEqual([[200, false], [200, true]]);
     expect(deviceRow(d.id).scope).toBe(V3);
     expect(audits()).toHaveLength(1);
+  });
+
+  it("a grant that lands between another's read and its write: the other grants nothing, and writes no audit", async () => {
+    const d = await phone();
+    let inner: Awaited<ReturnType<typeof grant>> | null = null;
+    gates.claim = async () => void (inner = await grant(d.id));
+    const outer = await grant(d.id);
+    expect([inner!.json, outer.json]).toEqual([
+      { ok: true, scope: V3, granted: true },
+      { ok: true, scope: V3, granted: false },
+    ]);
+    expect(audits()).toHaveLength(1);
+  });
+
+  it("a device revoked between the grant's read and its write: nothing granted, no audit, and it stays revoked", async () => {
+    const d = await phone();
+    gates.claim = async () => {
+      expect((await w.call("POST", `/api/native/devices/${d.id}/revoke`, { body: {} })).json).toEqual({ ok: true, revoked: true });
+    };
+    const a = await grant(d.id);
+    expect([a.status, a.json]).toEqual([409, { error: "device_revoked" }]);
+    expect([deviceRow(d.id).state, deviceRow(d.id).scope]).toEqual(["revoked", V2]);
+    expect(audits()).toEqual([]);
   });
 
   it("the ladder is one step a grant: v1 → v2, then v2 → v3", async () => {

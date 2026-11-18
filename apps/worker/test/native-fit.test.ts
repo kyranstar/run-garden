@@ -22,7 +22,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { DateTime } from "luxon";
 import { addDays, newId, nowInstant, performedSessionSaveSchema, type WorkoutDoc } from "@rg/domain";
-import { LOCATION_PRESETS } from "@rg/exercise-library";
+import { EXERCISES, LOCATION_PRESETS, makeEngineData } from "@rg/exercise-library";
+import { Blocks } from "@rg/session-engine";
 
 vi.mock("../src/services/calendar-sync.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../src/services/calendar-sync.js")>()),
@@ -472,11 +473,18 @@ describe("the review's feedback from the phone: explicit, applied once, earned b
     expect((await loadProgramState(w.db, programId))!.core[lift.family]).toBe(lift.from);
   });
 
-  it("a graduation the review never offers — another family's, or to a move that isn't the lift's harder one — is skipped", async () => {
+  it("a graduation the review never offers is skipped: the lift earned, but asked to switch to another of its family's moves", async () => {
     const { slot, b, programId, lift } = await strengthStarted();
     const before = (await loadProgramState(w.db, programId))!;
-    const wrongTo = await save(wire(slot, b, { entries: [sets(lift.from, 16)], review: { graduations: [{ family: lift.family, to: "gobletSquat" }] } }));
-    expect(wrongTo.json.notes, wrongTo.text).toEqual(["graduation_skipped"]);
+    // A move the block would take as that family's lift (the engine's own candidates at the place), but not the harder one
+    // this session's sets earned: the web would switch to it; a device's save may not.
+    const data = makeEngineData({ activeProfiles: [], careProfiles: [], exercises: EXERCISES });
+    const equipment = LOCATION_PRESETS.find((l) => l.id === "home")!.equipment;
+    const sideways = Blocks.familyCandidates(data, lift.family, { equipment }).find((e) => e.id !== lift.from && e.id !== lift.to);
+    expect(sideways, `another ${lift.family} candidate`).toBeDefined();
+    expect(Blocks.graduate(data, before, lift.family, sideways!.id, D, equipment)).not.toBe(before);
+    const a = await save(wire(slot, b, { entries: [sets(lift.from, 16)], review: { graduations: [{ family: lift.family, to: sideways!.id }] } }));
+    expect([a.json.status, a.json.notes], a.text).toEqual(["saved", ["graduation_skipped"]]);
     expect((await loadProgramState(w.db, programId))!.core).toEqual(before.core);
   });
 
