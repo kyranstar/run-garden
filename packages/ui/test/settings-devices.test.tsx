@@ -27,7 +27,7 @@ const pending = (over: Partial<NativeDeviceDto> = {}): NativeDeviceDto => ({
 });
 /** The ladder the worker grants and steps down along (device-scope.ts `NEXT_DEVICE_SCOPE`, `PREVIOUS_DEVICE_SCOPE`). */
 const NEXT: Record<string, string | null> = { "training-slice-v1": "training-v2", "training-v2": "training-v3", "training-v3": null };
-const PREVIOUS: Record<string, string | null> = { "training-slice-v1": null, "training-v2": "training-slice-v1", "training-v3": "training-v2" };
+const PREVIOUS: Record<string, string | null> = { "training-slice-v1": null, "training-v2": null, "training-v3": "training-v2" };
 /** An active phone at `scope` (v2 unless said), with the steps the worker offers it. */
 const active = (over: Partial<NativeDeviceDto> = {}): NativeDeviceDto => {
   const scope = over.scope ?? "training-v2";
@@ -317,7 +317,7 @@ describe("Settings → Devices", () => {
     worker({ devices: [active()] });
     await mount();
     const row = rowOf("Running phone");
-    expect([...row.querySelectorAll("button")].map(words)).toEqual(["Allow fitting and feedback", "Stop moving workouts", "Revoke"]);
+    expect([...row.querySelectorAll("button")].map(words)).toEqual(["Allow fitting and feedback", "Revoke"]);
     await click(button("Allow fitting and feedback", row));
     // Nothing is sent until it's confirmed: the line says what the grant adds, and that it can be stopped here.
     expect(calls.filter((c) => c.method === "POST")).toEqual([]);
@@ -348,7 +348,7 @@ describe("Settings → Devices", () => {
     expect(button("Allow fitting and feedback", rowOf("New phone"))).toBeTruthy();
   });
 
-  it("Not now puts the question away and sends nothing; a v1 phone's button is for moving workouts, and v2's step-down for stopping it", async () => {
+  it("Not now puts the question away and sends nothing; a v1 phone's button is for moving workouts, and a v2 phone has no step-down", async () => {
     worker({ devices: [active({ label: "Old phone", scope: "training-slice-v1" })] });
     await mount();
     expect([...rowOf("Old phone").querySelectorAll("button")].map(words)).toEqual(["Allow moving workouts", "Revoke"]);
@@ -361,23 +361,22 @@ describe("Settings → Devices", () => {
     await click(button("Allow moving workouts", rowOf("Old phone")));
     await click(button("Allow", rowOf("Old phone")));
     expect(calls.filter((c) => c.method === "POST").map((c) => c.body)).toEqual([{ scope: "training-v2" }]);
-    await click(button("Stop moving workouts", rowOf("Old phone")));
-    expect(words(rowOf("Old phone"))).toContain("It will no longer move, skip or put back workouts on your plan. It stays paired.");
-    await click(button("Stop", rowOf("Old phone")));
-    expect(calls.filter((c) => c.method === "POST").map((c) => [c.path.split("/").at(-1), c.body])).toEqual([["grant", { scope: "training-v2" }], ["reduce", { scope: "training-slice-v1" }]]);
+    // At v2 the next grant is offered, and no step-down (review r2-m2): stopping its plan edits is Revoke.
+    expect([...rowOf("Old phone").querySelectorAll("button")].map(words)).toEqual(["Allow fitting and feedback", "Revoke"]);
   });
 
-  it("no grant at the top, while pending, or with device sign-in off — but a step-down still answers with sign-in off", async () => {
+  it("no grant at the top, while pending, or with device sign-in off — but the v3 step-down still answers with sign-in off", async () => {
     worker({ devices: [active({ label: "New phone", scope: "training-v3", nextScope: null }), pending()] });
     await mount();
     expect([...rowOf("New phone").querySelectorAll("button")].map(words)).toEqual(["Stop fitting and feedback", "Revoke"]);
     expect([...rowOf("Kitchen iPhone").querySelectorAll("button")].map(words)).toEqual(["Confirm", "Revoke"]);
     act(() => root?.unmount());
     host?.remove();
-    worker({ enabled: false, devices: [active()] });
+    worker({ enabled: false, devices: [active(), active({ id: "d".repeat(64), label: "New phone", scope: "training-v3" })] });
     await mount();
-    // Narrowing a phone never widens one: like Revoke, it is the owner's whatever the switch.
-    expect([...rowOf("Running phone").querySelectorAll("button")].map(words)).toEqual(["Stop moving workouts", "Revoke"]);
+    // Narrowing a phone never widens one: like Revoke, it is the owner's whatever the switch. A v2 phone has none to offer.
+    expect([...rowOf("New phone").querySelectorAll("button")].map(words)).toEqual(["Stop fitting and feedback", "Revoke"]);
+    expect([...rowOf("Running phone").querySelectorAll("button")].map(words)).toEqual(["Revoke"]);
   });
 
   it("a refused grant or step-down says why plainly, and the list is read again", async () => {
@@ -388,23 +387,26 @@ describe("Settings → Devices", () => {
     await click(button("Allow", rowOf("Running phone")));
     expect(words(host)).toContain("That phone's access changed meanwhile. Here it is as it stands now.");
     expect(calls.filter((c) => c.method === "GET" && c.path === "/api/native/devices").length).toBeGreaterThan(gets);
-    const refusals: Array<[{ status: number; body: unknown }, string]> = [
-      [{ status: 409, body: { error: "device_revoked" } }, "That phone was revoked or has expired: pair it again."],
-      [{ status: 409, body: { error: "device_expired" } }, "That phone was revoked or has expired: pair it again."],
-      [{ status: 404, body: { error: "not_found" } }, "Device sign-in is off, or that phone is no longer paired."],
-      [{ status: 500, body: { error: "x" } }, "Couldn't change what that phone can do. Try again."],
+    // [the refusal, what the grant says, what the step-down says] — a step-down answers whatever the switch, so its 404 is
+    // the phone gone, never "sign-in is off".
+    const refusals: Array<[{ status: number; body: unknown }, string, string]> = [
+      [{ status: 409, body: { error: "device_revoked" } }, "That phone was revoked or has expired: pair it again.", "That phone was revoked or has expired: pair it again."],
+      [{ status: 409, body: { error: "device_expired" } }, "That phone was revoked or has expired: pair it again.", "That phone was revoked or has expired: pair it again."],
+      [{ status: 404, body: { error: "not_found" } }, "Device sign-in is off, or that phone is no longer paired.", "That phone is no longer paired."],
+      [{ status: 409, body: { error: "not_previous_scope", scope: "training-v2", previous: null } }, "That phone's access changed meanwhile. Here it is as it stands now.", "That phone's access changed meanwhile. Here it is as it stands now."],
+      [{ status: 500, body: { error: "x" } }, "Couldn't change what that phone can do. Try again.", "Couldn't change what that phone can do. Try again."],
     ];
-    for (const [refusal, said] of refusals) {
+    for (const [refusal, grantSays, stepSays] of refusals) {
       act(() => root?.unmount());
       host?.remove();
-      worker({ devices: [active()], grantRefusal: refusal, reduceRefusal: refusal });
+      worker({ devices: [active(), active({ id: "d".repeat(64), label: "New phone", scope: "training-v3" })], grantRefusal: refusal, reduceRefusal: refusal });
       await mount();
       await click(button("Allow fitting and feedback", rowOf("Running phone")));
       await click(button("Allow", rowOf("Running phone")));
-      expect(words(host)).toContain(said);
-      await click(button("Stop moving workouts", rowOf("Running phone")));
-      await click(button("Stop", rowOf("Running phone")));
-      expect(words(host)).toContain(said);
+      expect(words(host)).toContain(grantSays);
+      await click(button("Stop fitting and feedback", rowOf("New phone")));
+      await click(button("Stop", rowOf("New phone")));
+      expect(words(host)).toContain(stepSays);
     }
   });
 

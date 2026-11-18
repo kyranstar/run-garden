@@ -10,9 +10,9 @@
  *  - Each phone says what it can do, in plain words (its scope; kit v0.15). An active phone with a next scope has one
  *    button for it, which first says in one line what that adds; Allow grants it in place — the same phone, token and
  *    expiry — and Not now puts the question away. Only while device sign-in is on.
- *  - The step-down (review r-m4): an active phone above the bottom has one button to stop what its last grant allowed,
- *    which first says in one line what stops and that it stays paired; Stop steps it down in place. Like Revoke, it
- *    answers whatever the switch: narrowing a phone never widens one.
+ *  - The step-down (review r-m4): an active v3 phone has one button to stop what its grant allowed (only v3 → v2, review
+ *    r2-m2: plan edits are stopped by Revoke), which first says in one line what stops and that it stays paired; Stop
+ *    steps it down in place. Like Revoke, it answers whatever the switch: narrowing a phone never widens one.
  *  - Revoke all: every phone at once.
  *
  * The card shows nothing while the switch is off and no phone is paired, or when the list can't be read. With the switch
@@ -58,9 +58,11 @@ export const GRANTS: Readonly<Record<string, { button: string; line: string }>> 
   },
 };
 
-/** The step-down from each scope (review r-m4): its button, and the one line that says what stops before anything is sent. */
+/**
+ * The step-down from each scope (review r-m4): its button, and the one line that says what stops before anything is sent.
+ * Only from v3 (review r2-m2): a phone taken below v2 drops the plan edits it hasn't sent, so stopping those is Revoke's.
+ */
 export const STEP_DOWNS: Readonly<Record<string, { button: string; line: string }>> = {
-  "training-v2": { button: "Stop moving workouts", line: "It will no longer move, skip or put back workouts on your plan. It stays paired." },
   "training-v3": {
     button: "Stop fitting and feedback",
     line: "It will no longer fit workouts to the day or record Not for me and harder-move switches. It stays paired.",
@@ -90,12 +92,13 @@ function confirmRefusal(e: unknown): string {
 }
 
 /** Why a grant or a step-down was refused, in words that say what to do (review r-m6: never "try again" when it can't work). */
-function scopeRefusal(e: unknown): string {
+function scopeRefusal(e: unknown, step: "grant" | "reduce"): string {
   const body = e instanceof ApiError ? (e.body as { error?: string } | null) : null;
   // The phone moved on meanwhile (another tab changed it, or this list was old): the list, read again, shows it as it is.
   if (body?.error === "not_next_scope" || body?.error === "not_previous_scope") return "That phone's access changed meanwhile. Here it is as it stands now.";
   if (body?.error === "device_revoked" || body?.error === "device_expired") return "That phone was revoked or has expired: pair it again.";
-  if (e instanceof ApiError && e.status === 404) return "Device sign-in is off, or that phone is no longer paired.";
+  // The grant is 404 while device sign-in is off; the step-down answers whatever the switch, so its 404 is the phone gone.
+  if (e instanceof ApiError && e.status === 404) return step === "grant" ? "Device sign-in is off, or that phone is no longer paired." : "That phone is no longer paired.";
   return "Couldn't change what that phone can do. Try again.";
 }
 
@@ -228,8 +231,8 @@ export function DevicesSection({ timezone }: { timezone?: string | null } = {}) 
         );
       })}
       {confirm.isError ? <Banner kind="warn">{confirmRefusal(confirm.error)}</Banner> : null}
-      {grant.isError ? <Banner kind="warn">{scopeRefusal(grant.error)}</Banner> : null}
-      {reduce.isError ? <Banner kind="warn">{scopeRefusal(reduce.error)}</Banner> : null}
+      {grant.isError ? <Banner kind="warn">{scopeRefusal(grant.error, "grant")}</Banner> : null}
+      {reduce.isError ? <Banner kind="warn">{scopeRefusal(reduce.error, "reduce")}</Banner> : null}
       {minted ? (
         <div className="stack">
           {expired ? (

@@ -324,6 +324,7 @@ check("the laptop steps the phone down, v3 → v2: 200 reduced", (await reduceAs
 check("…its row the same but its scope, with one audit", [deviceRowOf(phoneId), reducedAudits() - reducedBefore], [{ ...beforeReduce, scope: "training-v2" }, 1]);
 check("…and the same token is judged by v2 on its next request: the document read is 403", (await call("GET", `/api/workouts/${fid}/doc`, { bearer: token })).json, { error: "out_of_scope" });
 check("…while v2's own routes answer: /me says training-v2", (await call("GET", "/api/native/me", { bearer: token })).json.device?.scope, "training-v2");
+check("…and never below v2 (review r2-m2: Revoke stops plan edits): v2 → v1 is 409 not_previous_scope, the phone keeps v2", [(await reduceAs(phoneId, "training-slice-v1")).json, deviceRowOf(phoneId).scope], [{ error: "not_previous_scope", scope: "training-v2", previous: null }, "training-v2"]);
 check("the same step-down again: reduced false, no second audit", [(await reduceAs(phoneId, "training-v2")).json, reducedAudits() - reducedBefore], [{ ok: true, scope: "training-v2", reduced: false }, 1]);
 check("never two rungs at once: v2 → … asked as v3 → v1 is 409 not_previous_scope", (await reduceAs(raceId, "training-slice-v1")).json, { error: "not_previous_scope", scope: "training-v3", previous: "training-v2" });
 const raceReduced = reducedAudits();

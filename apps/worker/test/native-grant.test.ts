@@ -375,7 +375,7 @@ describe("the laptop's step-down: one rung down, in place", () => {
     expect((await grant(d.id, { scope: V3 })).json).toEqual({ ok: true, scope: V3, granted: true });
   });
 
-  it("the same step-down again: 200 reduced false, nothing written; v2 → v1 the same way; never below v1, never two rungs", async () => {
+  it("the same step-down again: 200 reduced false, nothing written; never two rungs, never below v2, never an unknown name", async () => {
     const d = await phone({ scope: V3 });
     expect((await reduce(d.id, V2)).json.reduced).toBe(true);
     const held = everything();
@@ -383,7 +383,6 @@ describe("the laptop's step-down: one rung down, in place", () => {
     expect([again.status, again.json]).toEqual([200, { ok: true, scope: V2, reduced: false }]);
     expect(writesOf(again)).toEqual([]);
     expect(everything()).toEqual(held);
-    expect((await reduce(d.id, V1)).json).toEqual({ ok: true, scope: V1, reduced: true });
     const top = await phone({ scope: V3 });
     const bottom = await phone({ scope: V1 });
     const held2 = everything();
@@ -392,7 +391,22 @@ describe("the laptop's step-down: one rung down, in place", () => {
     expect((await reduce(bottom.id, "training-v0")).json).toEqual({ error: "not_previous_scope", scope: V1, previous: null });
     expect((await reduce(top.id, "__proto__")).json).toEqual({ error: "not_previous_scope", scope: V3, previous: V2 });
     expect(everything()).toEqual(held2);
-    expect(reducedAudits().map((r) => [r.detail.from, r.detail.to])).toEqual([[V3, V2], [V2, V1]]);
+    expect(reducedAudits().map((r) => [r.detail.from, r.detail.to])).toEqual([[V3, V2]]);
+  });
+
+  it("v2 → v1 is no step-down (review r2-m2): 409 not_previous_scope, the phone keeps v2 — Revoke is how plan edits stop", async () => {
+    // A phone told it holds less than v2 drops every plan edit it hasn't sent: that is Revoke's to do, said as Revoke.
+    const d = await phone({ scope: V2 });
+    const held = everything();
+    const a = await reduce(d.id, V1);
+    expect([a.status, a.json]).toEqual([409, { error: "not_previous_scope", scope: V2, previous: null }]);
+    expect(everything()).toEqual(held);
+    expect((await w.call("GET", "/api/native/me", { bearer: d.token })).json.device.scope).toBe(V2);
+    // Stepped down from v3, it stops at v2.
+    const top = await phone({ scope: V3 });
+    expect((await reduce(top.id, V2)).json).toEqual({ ok: true, scope: V2, reduced: true });
+    expect((await reduce(top.id, V1)).json).toEqual({ error: "not_previous_scope", scope: V2, previous: null });
+    expect(reducedAudits()).toHaveLength(1);
   });
 
   it("refused: revoked, expired, pending, another account's, a device token, a bad body; nothing written", async () => {
@@ -419,28 +433,29 @@ describe("the laptop's step-down: one rung down, in place", () => {
     const d = await phone({ scope: V3 });
     const a = await reduce(d.id, V2, { env: { NATIVE_DEVICES: "0" } });
     expect([a.status, a.json]).toEqual([200, { ok: true, scope: V2, reduced: true }]);
+    const e = await phone({ scope: V3 });
     await w.db.insert(accountState).values({ userId: w.userId, restoreId: "r-1", restoreStartedAt: nowInstant(), updatedAt: nowInstant() });
-    expect((await reduce(d.id, V1)).json).toEqual({ error: "restore_in_progress" });
+    expect((await reduce(e.id, V2)).json).toEqual({ error: "restore_in_progress" });
+    expect(deviceRow(e.id).scope).toBe(V3);
+  });
+
+  it("a step-down held between its read and its write while another lands: it reduces nothing twice, one audit", async () => {
+    const d = await phone({ scope: V3 });
+    let inner: Awaited<ReturnType<typeof reduce>> | null = null;
+    gates.claim = async () => void (inner = await reduce(d.id, V2));
+    // Read at v3 (so v3 → v2), but by its write the phone is at v2 already: the idempotent answer, no audit of its own.
+    const outer = await reduce(d.id, V2);
+    expect([inner!.json, outer.json]).toEqual([{ ok: true, scope: V2, reduced: true }, { ok: true, scope: V2, reduced: false }]);
     expect(deviceRow(d.id).scope).toBe(V2);
+    expect(reducedAudits()).toHaveLength(1);
   });
 
-  it("a step-down held between its read and its write while a grant lands: it reduces nothing it didn't read, no audit of its own", async () => {
-    const d = await phone({ scope: V2 });
-    let inner: Awaited<ReturnType<typeof grant>> | null = null;
-    gates.claim = async () => void (inner = await grant(d.id, { scope: V3 }));
-    // Read at v2 (so v2 → v1), but by its write the phone is at v3: it reduces nothing, and says what it is now.
-    const outer = await reduce(d.id, V1);
-    expect([inner!.json, outer.json]).toEqual([{ ok: true, scope: V3, granted: true }, { error: "not_previous_scope", scope: V3, previous: V2 }]);
-    expect(deviceRow(d.id).scope).toBe(V3);
-    expect([audits().length, reducedAudits().length]).toEqual([1, 0]);
-  });
-
-  it("the laptop's list says the step-down it can offer: none at v1, none while pending", async () => {
+  it("the laptop's list says the step-down it can offer: from v3 only — none at v2 or v1, none while pending", async () => {
     await phone({ scope: V1, label: "Old phone" });
     await phone({ scope: V2, label: "Running phone" });
     await phone({ scope: V3, label: "New phone" });
     await phone({ scope: V3, label: "Pending phone", state: "pending", confirmedAt: null });
     const listed = (await w.call("GET", "/api/native/devices")).json.devices as Array<{ label: string; previousScope: string | null }>;
-    expect(Object.fromEntries(listed.map((d) => [d.label, d.previousScope]))).toEqual({ "Old phone": null, "Running phone": V1, "New phone": V2, "Pending phone": null });
+    expect(Object.fromEntries(listed.map((d) => [d.label, d.previousScope]))).toEqual({ "Old phone": null, "Running phone": null, "New phone": V2, "Pending phone": null });
   });
 });

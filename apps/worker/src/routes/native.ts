@@ -12,10 +12,11 @@
  *                                   granted} — `granted: false` when it holds it already; 409 `device_revoked`,
  *                                   `device_expired`, `device_pending`, or `not_next_scope` {scope, next}; 400
  *                                   `invalid_grant`; 404 for a device that isn't the account's
- *   POST /devices/:id/reduce        {scope} → that ACTIVE device moved one scope down, in place (review r-m4: an undo, a
- *                                   rollback without Revoke): {ok, scope, reduced}; 409 the device's state, or
- *                                   `not_previous_scope` {scope, previous}; 400 `invalid_reduce`; 404 as the grant. It
- *                                   answers while device sign-in is off, as Revoke does
+ *   POST /devices/:id/reduce        {scope} → that ACTIVE device moved from v3 to v2, in place (review r-m4: an undo, a
+ *                                   rollback without Revoke; only that rung, r2-m2): {ok, scope, reduced}; 409 the
+ *                                   device's state, or `not_previous_scope` {scope, previous} (v2 → v1 among them:
+ *                                   Revoke stops plan edits); 400 `invalid_reduce`; 404 as the grant. It answers while
+ *                                   device sign-in is off, as Revoke does
  *   POST /devices/revoke-all        every device of the account revoked (the instant kill)
  *
  * The phone:

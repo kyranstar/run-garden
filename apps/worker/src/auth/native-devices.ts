@@ -505,7 +505,8 @@ export async function grantNextScope(db: Db, userId: string, id: string, to: str
 
 /**
  * THE LAPTOP'S STEP-DOWN, IN PLACE (stage 2b review r-m4): `stepScope` down the ladder (`PREVIOUS_DEVICE_SCOPE`: v3 → v2
- * → v1, one step at a time), auditing `SCOPE_REDUCED_KIND` — an undo of a grant, and a rollback that needs no Revoke: the
+ * only, review r2-m2; v2 → v1 is `not_previous_scope`, Revoke being how plan edits stop), auditing `SCOPE_REDUCED_KIND`
+ * — an undo of the v3 grant, and a rollback that needs no Revoke: the
  * phone keeps its pairing, token and expiry, and on its next request is judged by the lower scope. It answers while device
  * sign-in is off, as Revoke does: narrowing a device never widens one.
  */

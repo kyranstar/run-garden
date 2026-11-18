@@ -54,12 +54,14 @@ export const NEXT_DEVICE_SCOPE: Readonly<Record<DeviceScope, DeviceScope | null>
 };
 
 /**
- * The scope the laptop's step-down moves a device back to from each (review r-m4: an undo of a grant, a rollback without
- * a Revoke): the one below, one step at a time; null at the bottom.
+ * The scope the laptop's step-down moves a device back to from each (review r-m4: an undo of the v3 grant, a rollback to
+ * a worker that knows v2, without a Revoke): ONLY v3 → v2 (the lead's call on review r2-m2). Below v2 is no step-down: a
+ * phone told it holds less than v2 drops every plan edit it hasn't sent, so stopping plan edits is Revoke's, never a
+ * quiet rung. Null where there is none.
  */
 export const PREVIOUS_DEVICE_SCOPE: Readonly<Record<DeviceScope, DeviceScope | null>> = {
   [DEVICE_SCOPE_V1]: null,
-  [DEVICE_SCOPE_V2]: DEVICE_SCOPE_V1,
+  [DEVICE_SCOPE_V2]: null,
   [DEVICE_SCOPE_V3]: DEVICE_SCOPE_V2,
 };
 
