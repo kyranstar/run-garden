@@ -21,7 +21,9 @@
  *
  * The phone:
  *   POST /pair                      unauthenticated, {code, label} → {token, check, state: "pending", confirmBy}; every
- *                                   failure alike is 401 `pair_failed`
+ *                                   failure alike is 401 `pair_failed`. The LifeOS QA account's code (services/qa-account.ts)
+ *                                   answers the same, but its phone is active at once (the owner's QA mint was its
+ *                                   consent): its first `/me` says paired
  *   POST /sign-out                  its device token: its own row revoked
  *   GET  /me                        {userId, device: {label, expiresAt, scope}} (§10.4, trimmed on the server)
  *   GET  /today                     {today, sessions}: the day's training rows only (§10.4), each saying whether the phone
@@ -93,6 +95,8 @@ nativeRoutes.post("/pair", pairingOn, async (c) => {
   const paired = await redeemPairing(c.get("db"), c.env, { code: body.code, label }, nowInstant(), c.req.header("cf-connecting-ip"));
   c.header("Cache-Control", "no-store");
   if (!paired) return c.json({ error: "pair_failed" }, 401);
+  // Always `pending` on the wire: the phone's contract (LifeOS takes no other answer) is to ask `/me` how it stands, and the
+  // LifeOS QA account's phone (services/qa-account.ts), active at once, hears "paired" there on its next read.
   return c.json({ token: paired.token, check: paired.check, state: "pending", confirmBy: paired.confirmBy });
 });
 

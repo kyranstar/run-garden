@@ -10,6 +10,7 @@ import { deviceSigningMessage, sha256Hex, verifyEd25519 } from "./crypto.js";
 import { nativeDevicesEnabled } from "../env.js";
 import { inDeviceScope, isDeviceScope, type DeviceScope } from "./device-scope.js";
 import { deviceTokenOf, findDevice, isDeviceBearer, isOwnerEmail, touchDevice } from "./native-devices.js";
+import { isQaEmail } from "./qa-identity.js";
 
 /** A request a paired phone made with its device token (native device sign-in): which device, as `requireUser` found it. */
 export interface DeviceContext {
@@ -109,7 +110,8 @@ export async function requireUser(c: Context<AppContext>, next: Next): Promise<v
  *  3. not one well-formed token: 401 `unauthenticated`, before any read;
  *  4. the device, by its token's SHA-256, with its account (one read): none, 401 `unauthenticated`; revoked, 401
  *     `device_revoked`; expired, 401 `device_expired`; not yet confirmed on the laptop, 401 `device_pending`; a scope
- *     this Worker doesn't know, 403 `out_of_scope`; an account that is not the owner's email, 401 `unauthenticated`;
+ *     this Worker doesn't know, 403 `out_of_scope`; an account that is neither the owner's email nor the LifeOS QA
+ *     account's (`isQaEmail`), 401 `unauthenticated`;
  *  5. the route and its body on THE DEVICE'S OWN scope's list (device-scope.ts `DEVICE_SCOPES`: a v1 phone's is v1's,
  *     a v2 phone's v2's, a v3 phone's v3's), else 403 `out_of_scope` — before the restore rule. The scope is the one step
  *     4's read found, on this request: a grant on the laptop (native-devices.ts `grantNextScope`) is judged on the next
@@ -138,7 +140,9 @@ async function requireDevice(c: Context<AppContext>, next: Next): Promise<void |
   if (device.state !== "active") return c.json({ error: "device_pending" }, 401);
   const scope = device.scope;
   if (!isDeviceScope(scope)) return c.json({ error: "out_of_scope" }, 403);
-  if (!isOwnerEmail(device.email, c.env)) return c.json({ error: "unauthenticated" }, 401);
+  // The owner's account, or the LifeOS QA account (auth/qa-identity.ts: an address no sign-in can reach, paired only from the
+  // owner's laptop, holding only fixtures) — no other account's device signs in.
+  if (!isOwnerEmail(device.email, c.env) && !isQaEmail(device.email, c.env)) return c.json({ error: "unauthenticated" }, 401);
   if (!(await inDeviceScope(c, scope))) return c.json({ error: "out_of_scope" }, 403);
   if (MUTATING.has(c.req.method) && !openWhileRestoring(c) && (await restoreInProgress(db, device.userId))) {
     return c.json({ error: "restore_in_progress" }, 423);

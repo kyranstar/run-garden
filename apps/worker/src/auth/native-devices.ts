@@ -10,6 +10,7 @@ import type { Env } from "../env.js";
 import { runAtomicallyClaim, type Db } from "../services/db.js";
 import { hmacSha256Hex, randomToken, sha256Hex } from "./crypto.js";
 import { isDeviceScope, NEXT_DEVICE_SCOPE, PAIRING_SCOPE, PREVIOUS_DEVICE_SCOPE, type DeviceScope } from "./device-scope.js";
+import { QA_EMAIL, qaPossible } from "./qa-identity.js";
 
 /**
  * OWNER'S CHOICE, open (SLICE-CONTRACT §9 question 1): how long a confirmed device works before the owner re-pairs it
@@ -220,6 +221,11 @@ export async function mintPairing(
   env: Env,
   userId: string,
   now: string,
+  /**
+   * `liftRedeemThrottles: false` (the QA account's mint, services/qa-account.ts): the code is made as any other, but the
+   * redeem throttles stay — they guard the owner's code too, and only the owner's own Pair lifts them.
+   */
+  opts: { liftRedeemThrottles?: boolean } = {},
 ): Promise<{ code: string; expiresAt: string } | { refused: true; retryAfterSeconds: number }> {
   const mints = await countAttempt(db, `mint:${userId}`, now, MINTS);
   if (!mints.allowed) {
@@ -230,8 +236,27 @@ export async function mintPairing(
   const expiresAt = at(now, PAIRING_CODE_TTL_MS);
   const fresh = { codeHmac, createdAt: now, expiresAt, tries: 0, usedAt: null };
   await db.insert(nativePairings).values({ userId, ...fresh }).onConflictDoUpdate({ target: nativePairings.userId, set: fresh });
-  await db.delete(nativePairLimits).where(like(nativePairLimits.key, REDEEM_KEYS));
+  if (opts.liftRedeemThrottles !== false) await db.delete(nativePairLimits).where(like(nativePairLimits.key, REDEEM_KEYS));
   return { code, expiresAt };
+}
+
+/**
+ * The owner's account and the QA account (services/qa-account.ts), in ONE read: the owner's by `ALLOWED_GOOGLE_EMAIL`
+ * as `ownerIdOf` reads it, the QA account's by `QA_EMAIL` — only where the QA account can exist (`qaPossible`);
+ * elsewhere exactly `ownerIdOf`'s read.
+ */
+async function pairingAccountsOf(db: Db, env: Env): Promise<{ owner: string | null; qa: string | null }> {
+  if (!qaPossible(env)) return { owner: await ownerIdOf(db, env), qa: null };
+  const owner = (env.ALLOWED_GOOGLE_EMAIL ?? "").trim().toLowerCase();
+  const rows = await db
+    .select({ id: users.id, email: users.email })
+    .from(users)
+    .where(or(sql`lower(${users.email}) = ${owner}`, eq(users.email, QA_EMAIL)))
+    .limit(2);
+  return {
+    owner: rows.find((r) => r.email.trim().toLowerCase() === owner)?.id ?? null,
+    qa: rows.find((r) => r.email === QA_EMAIL)?.id ?? null,
+  };
 }
 
 /**
@@ -259,7 +284,7 @@ export async function redeemPairing(
   input: { code: string; label: string },
   now: string,
   clientIp?: string | null,
-): Promise<{ token: string; check: string; confirmBy: string } | null> {
+): Promise<Redeemed | null> {
   if (await throttledNow(db, GLOBAL_REDEEM_KEY, now)) return null;
   const client = await clientKey(env.SESSION_SECRET, clientIp);
   if (client && !(await countAttempt(db, client, now, PER_IP)).allowed) return null;
@@ -275,14 +300,69 @@ export async function redeemPairing(
   return paired;
 }
 
-/** The redemption itself, once the attempt is counted and allowed. */
+/**
+ * A redeemed code's phone: its token (shown once), its check number, and its state — `pending` until the owner's Confirm,
+ * or `active` at once for the QA account's phone (the owner's QA mint was its consent), with `confirmBy` then its pairing
+ * time.
+ */
+export interface Redeemed {
+  token: string;
+  check: string;
+  confirmBy: string;
+  state: "pending" | "active";
+}
+
+/**
+ * The redemption itself, once the attempt is counted and allowed.
+ *
+ * THE QA ACCOUNT'S CODE FIRST (the phone QA harness, services/qa-account.ts), and only when that account exists: one
+ * conditional UPDATE … RETURNING claims the QA account's own live code (its HMAC is bound to the QA id, so the owner's
+ * code never matches it) — a match marks it used; a miss writes nothing there. Only when it claims nothing does the
+ * owner's statement below run, exactly as before: a QA code is never counted as a wrong try at the owner's code, and with
+ * no QA account the owner's path is what it was (one account read, the same UPDATE). The QA code's guesses are bounded by
+ * its 5-minute life and by the per-client and global redeem bounds every attempt has already passed.
+ */
 async function redeemCounted(
   db: Db,
   env: Env,
   input: { code: string; label: string },
   now: string,
-): Promise<{ token: string; check: string; confirmBy: string } | null> {
-  const owner = await ownerIdOf(db, env);
+): Promise<Redeemed | null> {
+  const { owner, qa } = await pairingAccountsOf(db, env);
+  if (qa) {
+    const qaHmac = await pairingCodeHmac(env.SESSION_SECRET, qa, normalizeCode(input.code));
+    const [qaClaim] = await db
+      .update(nativePairings)
+      .set({ usedAt: now })
+      .where(
+        and(
+          eq(nativePairings.userId, qa),
+          eq(nativePairings.codeHmac, qaHmac),
+          isNull(nativePairings.usedAt),
+          gt(nativePairings.expiresAt, now),
+          lt(nativePairings.tries, PAIRING_MAX_TRIES),
+        ),
+      )
+      .returning({ userId: nativePairings.userId });
+    if (qaClaim) {
+      const token = `rgd_${randomToken(32)}`;
+      const id = await sha256Hex(token);
+      const check = await checkNumberOf(id);
+      await db.insert(nativeDevices).values({
+        id,
+        userId: qa,
+        scope: PAIRING_SCOPE,
+        label: input.label,
+        state: "active",
+        checkNumber: check,
+        createdAt: now,
+        confirmedAt: now,
+        expiresAt: at(now, NATIVE_DEVICE_LIFETIME_DAYS * DAY_MS),
+      });
+      // The answer's shape is the owner's (the phone takes no other): `confirmBy` as a pending phone's would be.
+      return { token, check, confirmBy: at(now, PENDING_CONFIRM_MS), state: "active" };
+    }
+  }
   if (!owner) return null;
   const hmac = await pairingCodeHmac(env.SESSION_SECRET, owner, normalizeCode(input.code));
   const matches = sql`${nativePairings.codeHmac} = ${hmac}`;
@@ -318,7 +398,7 @@ async function redeemCounted(
     createdAt: now,
     expiresAt: confirmBy,
   });
-  return { token, check, confirmBy };
+  return { token, check, confirmBy, state: "pending" };
 }
 
 export type ConfirmOutcome =
