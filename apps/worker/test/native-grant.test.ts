@@ -71,7 +71,7 @@ beforeEach(async () => {
   ]);
 });
 
-const client = () => (w.db as unknown as { $client: { prepare(s: string): { all(...a: unknown[]): any[] } } }).$client;
+const client = () => (w.db as unknown as { $client: { prepare(s: string): { all(...a: unknown[]): any[]; run(...a: unknown[]): unknown } } }).$client;
 const q = (sql: string, ...args: unknown[]): any[] => client().prepare(sql).all(...args);
 const deviceRow = (id: string) => q(`select * from native_devices where id = ?`, id)[0];
 const audits = () => q(`select user_id as userId, kind, detail from audit_events where kind = 'native_device_scope_granted' order by rowid`).map((r) => ({ ...r, detail: JSON.parse(r.detail) }));
@@ -142,6 +142,16 @@ describe("a grant moves an active device to its next scope, in place", () => {
     expect([a.status, a.json]).toEqual([409, { error: "device_revoked" }]);
     expect([deviceRow(d.id).state, deviceRow(d.id).scope]).toEqual(["revoked", V2]);
     expect(audits()).toEqual([]);
+  });
+
+  it("a device whose expiry has come by the grant's write is not granted: the claim's own gate holds expiry (review r-m6, MU8)", async () => {
+    const d = await phone();
+    // Its row says it expired as the statements ran (the request read it live a moment before): the claim, gated on the
+    // row as it then stands, lands nothing, and the answer is the row's state.
+    gates.claim = async () => void client().prepare(`update native_devices set expires_at = ? where id = ?`).run(instant(D, "08:00"), d.id);
+    const a = await grant(d.id);
+    expect([a.status, a.json]).toEqual([409, { error: "device_expired" }]);
+    expect([deviceRow(d.id).scope, audits()]).toEqual([V2, []]);
   });
 
   it("the ladder is one step a grant: v1 → v2, then v2 → v3", async () => {

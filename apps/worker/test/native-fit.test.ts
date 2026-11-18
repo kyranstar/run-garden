@@ -548,6 +548,35 @@ describe("the review's feedback from the phone: explicit, applied once, earned b
     expect((await loadProgramState(w.db, programId))!.core).toEqual(before.core);
   });
 
+  it("never switches twice: the next session's save, carrying the same Switch, adds no second rotation (review r-m6, MU19)", async () => {
+    const { slot, b, programId, lift, asked } = await strengthStarted();
+    expect((await save(wire(slot, b, { entries: [sets(lift.from, 16)], review: { graduations: asked } }))).json.notes).toEqual([]);
+    // The next day, the same programme's next session; the laptop's save carries the same Switch again (a stale review, a
+    // second tab). Its lift is already the one asked for: nothing to switch, nothing skipped, one rotation.
+    const next = addDays(D, 1);
+    setClock(next, "09:00");
+    const nextSlot = `${slot.slice(0, -D.length)}${next}`;
+    const at = nowInstant();
+    client()
+      .prepare(
+        `insert into planned_workouts (id, user_id, plan_id, source_workout_id, title, category, sport, original_plan_date, last_verified_coros_date, effective_date, effective_time, source_content_fingerprint, calendar_block_duration_seconds, fallback_estimated_duration_seconds, coros_sync_state, completion_state, origin, content_state, created_at, updated_at)
+         values (?, ?, ?, ?, 'Mobility', 'yoga', 'yoga', ?, '', ?, '18:00', 'program', 1800, 1800, 'calendar_only', 'scheduled', 'program', 'outline', ?, ?)`,
+      )
+      .run(nextSlot, w.userId, programId, nextSlot, next, next, at, at);
+    const nb = (await build(nextSlot, { overrides: { mode: "build" } }, null)).json.build;
+    expect((await w.call("POST", `/api/sessions/${nextSlot}/start`, { body: { buildId: nb.buildId } })).status).toBe(200);
+    const again = await save(
+      wire(nextSlot, nb, { startedAt: instant(next, "09:05"), endedAt: instant(next, "09:35"), entries: [sets(lift.to, 16)], review: { graduations: asked } }),
+      null,
+    );
+    expect([again.json.status, again.json.notes], again.text).toEqual(["saved", []]);
+    const block = (await loadProgramState(w.db, programId))!;
+    expect([block.core[lift.family], block.rotations.filter((r) => r.why === "graduated")]).toEqual([
+      lift.to,
+      [{ family: lift.family, from: lift.from, to: lift.to, date: D, why: "graduated" }],
+    ]);
+  });
+
   it("the web's save is as it was: it applies the graduation its review sends", async () => {
     const { slot, b, programId, lift, asked } = await strengthStarted();
     const a = await save(wire(slot, b, { entries: [bridge], review: { graduations: asked } }), null);
