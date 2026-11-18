@@ -162,6 +162,67 @@ describe("garden basics", () => {
     expect(unplanned.snapshot.plants.length).toBe(g2.plants.length);
   });
 
+  // The owner, 2026-11-17: "COROS runs I do that aren't on the plan don't count for the garden. They should." Every
+  // real run brings the rain and resets the run clock; only the plan's own rewards (plantings, the category counters)
+  // stay with the plan.
+  it("an unplanned run counts as a run: it waters fully, resets the run clock and brings the rain", () => {
+    const dry = advanceEmptyDays(initialSnapshot(START), START, 6).snapshot;
+    expect(dry.state.daysSinceCompletedRun).toBe(6);
+    const day = addDays(START, 6);
+    const planned = simulateDay(dry, runDay(day, "easy"));
+    const unplanned = simulateDay(dry, {
+      ...emptyDay(day),
+      completedRuns: [{ workoutId: `unplanned-${day}`, category: "easy", discipline: "run", unplanned: true }],
+    });
+    for (const s of [planned.snapshot, unplanned.snapshot]) {
+      expect(s.state.daysSinceCompletedRun).toBe(0);
+      expect(s.state.droughtDays).toBe(0);
+      expect(s.state.weatherState).toBe("fresh_rain");
+    }
+    // The same rain as a planned run's: the base watering, not a light one.
+    expect(unplanned.snapshot.state.moisture).toBeCloseTo(dry.state.moisture + 0.25, 10);
+    const plantsBefore = new Map(dry.plants.map((p) => [p.id, p]));
+    for (const p of unplanned.snapshot.plants) {
+      const before = plantsBefore.get(p.id)!;
+      expect(p.hydration).toBeCloseTo(Math.min(1, before.hydration + 0.35), 10);
+    }
+    // It counts as a run, lifetime and by window — but the plan's category rewards stay the plan's.
+    expect(unplanned.snapshot.state.totalCompletedRuns).toBe(dry.state.totalCompletedRuns + 1);
+    expect(unplanned.snapshot.state.easyRunCount).toBe(dry.state.easyRunCount);
+    expect(planned.snapshot.state.easyRunCount).toBe(dry.state.easyRunCount + 1);
+    expect(unplanned.events.find((e) => e.kind === "run_completed")?.detail).toBe("unplanned");
+  });
+
+  it("an unplanned run after a drought is a comeback, like a planned one", () => {
+    const dry = advanceEmptyDays(initialSnapshot(START), START, 16).snapshot;
+    expect(dry.state.daysSinceCompletedRun).toBeGreaterThanOrEqual(DEFAULT_GARDEN_CONFIG.droughtStartDays);
+    const day = addDays(START, 16);
+    const { snapshot } = simulateDay(dry, {
+      ...emptyDay(day),
+      completedRuns: [{ workoutId: `unplanned-${day}`, category: "easy", unplanned: true }],
+    });
+    expect(snapshot.state.weatherState).toBe("recovery_rain");
+    expect(snapshot.state.inComeback).toBe(true);
+    expect(snapshot.state.daysSinceCompletedRun).toBe(0);
+    expect(snapshot.state.droughtDays).toBe(0);
+  });
+
+  it("an unplanned run of any category plants nothing and earns no intensity reward", () => {
+    for (const category of ["quality", "long", "race", "recovery", "easy"] as const) {
+      let s = initialSnapshot(START);
+      // Two unplanned runs: an easy run's planting comes on every second one, a long run's tree on the first.
+      for (const day of [START, addDays(START, 1)]) {
+        const r = simulateDay(s, { ...emptyDay(day), completedRuns: [{ workoutId: `u-${day}`, category, unplanned: true }] });
+        expect(r.events.some((e) => e.kind === "plant_added")).toBe(false);
+        s = r.snapshot;
+      }
+      expect(s.plants.length).toBe(initialSnapshot(START).plants.length);
+      expect(s.state.qualityRunCount + s.state.longRunCount + s.state.easyRunCount + s.state.recoveryRunCount).toBe(0);
+      expect(s.state.raceCount).toBe(0);
+      expect(s.state.totalCompletedRuns).toBe(2);
+    }
+  });
+
   it("the first long run plants the first tree", () => {
     const g = initialSnapshot(START);
     const { snapshot, events } = simulateDay(g, runDay(START, "long"));

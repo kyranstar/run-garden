@@ -21,7 +21,7 @@ export type UnlockGate =
   // Achievement gates — named milestones shown as locked cards in the codex.
   | { kind: "early_runs"; count: number } // runs started before 07:00
   | { kind: "distance_run"; meters: number } // a single run of at least N meters
-  | { kind: "total_runs"; count: number } // lifetime completed planned runs
+  | { kind: "total_runs"; count: number } // lifetime completed runs, planned or not (v7)
   | { kind: "comeback_streak"; count: number } // N straight days back after a break
   // Discipline gates — strength, yoga, and cross-discipline balance.
   | { kind: "strength_sessions"; count: number }

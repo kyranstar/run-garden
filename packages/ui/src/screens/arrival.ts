@@ -91,7 +91,7 @@ export function eventSentence(e: GardenEvent): string | null {
           ? "An extra yoga or mobility session tended the meadow."
           : "A yoga or mobility session tended the meadow.";
       }
-      if (e.detail === "unplanned") return "An extra run gave the garden a light watering.";
+      if (e.detail === "unplanned") return "An extra run watered the garden.";
       const article = /^[aeiou]/i.test(catg) ? "An" : "A";
       return catg ? `${article} ${catg} run watered the garden.` : "A run watered the garden.";
     }

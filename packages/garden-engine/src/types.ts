@@ -8,7 +8,8 @@ import type {
   WorkoutCategory,
 } from "@rg/domain";
 
-export const SIMULATION_VERSION = 6;
+/** 7: every real run brings the rain and resets the run clock, on the plan or not (2026-11-17). */
+export const SIMULATION_VERSION = 7;
 
 /** The three disciplines the garden listens to; each drives its own axis. */
 export type Discipline = "run" | "strength" | "yoga";
@@ -86,16 +87,18 @@ export interface EngineGardenState {
    * that decides what kind of ground the next expansion carves. */
   countersAtExpansion?: { long: number; strength: number; yoga: number; balanced: number };
 
-  // Long-term counters driving unlocks (planned runs only).
+  // Long-term counters driving unlocks. The category counters are the plan's (planned runs only).
   qualityRunCount: number;
   easyRunCount: number;
   longRunCount: number;
   recoveryRunCount: number;
+  /** Runs started at 17:00 local or later (any run, planned or not, from v7). */
   eveningRunCount: number;
   /** Runs started before 07:00 local (any run, planned or not). */
   earlyRunCount: number;
   /** Longest single run ever, in meters (any run, planned or not). */
   longestRunMeters: number;
+  /** Runs completed, lifetime (any run, planned or not, from v7). */
   totalCompletedRuns: number;
   /** Planned races finished (a race also counts as a quality run). */
   raceCount: number;
@@ -178,7 +181,8 @@ export interface CompletedRunInput {
    */
   discipline?: Discipline;
   window?: "morning" | "evening";
-  /** True when this run was not part of the plan (modest rewards only). */
+  /** True when this session was not part of the plan: a run still brings the rain, resets the run clock and counts
+   * as a run (v7), but earns none of the plan's own rewards (its category's plantings and counters). */
   unplanned?: boolean;
   /** Distance in meters, when known — drives distance-milestone unlocks. */
   distanceMeters?: number;

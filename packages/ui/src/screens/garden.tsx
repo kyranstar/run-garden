@@ -1729,7 +1729,7 @@ export function GardenScreen() {
 
   const renderLog = (items: Array<{ e: GardenEvent; text: string }>) =>
     items.length === 0 ? (
-      <p className="muted">Complete your first planned run to bring the rain.</p>
+      <p className="muted">Complete your first run to bring the rain.</p>
     ) : (
       <ul className="garden-history">
         {items.map(({ e, text }) => (
@@ -1750,8 +1750,8 @@ export function GardenScreen() {
 
   const howItWorks = showWeather ? (
     <Banner kind="info" id="garden-how-it-works">
-      Completing a planned run brings <strong>rain</strong>, which waters the garden and grows
-      new plants; a rest day brings gentle <strong>sun</strong>. Go a few days without running
+      Every run brings <strong>rain</strong>, which waters the garden, and the runs on your plan
+      grow new plants; a rest day brings gentle <strong>sun</strong>. Go a few days without running
       and clouds gather, then a dry spell, then <strong>drought</strong> after about two weeks —
       your next run turns it back to recovery rain. Consistency unlocks new species; the same
       running history always grows the exact same garden. Tap any plant to see what it came

@@ -97,7 +97,7 @@ export function describeGate(gate: UnlockGate): string {
         ? "Cover a half-marathon in one run"
         : `Run ${Math.round(gate.meters / 1000)} km in a single run`;
     case "total_runs":
-      return `Complete ${gate.count} planned runs, lifetime`;
+      return `Complete ${gate.count} runs, lifetime`;
     case "comeback_streak":
       return `Run ${gate.count} days in a row after a long break`;
     case "strength_sessions":

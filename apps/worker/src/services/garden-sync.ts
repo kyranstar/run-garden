@@ -338,16 +338,10 @@ export async function buildDayInput(
   }
 
   // Unplanned extra sessions: run/strength/yoga activities on this date with no match.
-  // audit#2 (c) — documented, deliberately skipped: an unplanned run still
-  // cannot RESET the run-decay clock, even in a week with no planned runs.
-  // The reset is a transition-function decision (simulateDay reads only the
-  // `unplanned` flag, simulate.ts step 4), and the sole input-side lever —
-  // clearing `unplanned` here — would also grant the full planned-run
-  // rewards (plantings, species, counters) the reward contract reserves for
-  // the plan. Changing the transition needs a SIMULATION_VERSION bump, out
-  // of scope for input derivation. The pre-race taper is sheltered by the
-  // raceDate window below regardless, and an unplanned run already freezes
-  // the clock for its own day (the sim neither resets nor advances it).
+  // audit#2 (c), settled in the transition (SIMULATION_VERSION 7; the owner, 2026-11-17: "COROS runs I do that aren't
+  // on the plan don't count for the garden. They should."): an unplanned run brings the rain and resets the run clock
+  // like a planned one, and counts as a run. `unplanned` stays set here — it is what keeps the plan's own rewards
+  // (its category's plantings and counters) with the plan, and what the garden log's copy reads.
   // P3a: bound the unmatched-activity scan to the simulated day instead of
   // scanning the whole table once per simulated day. Date attribution below
   // reads the watch-local start (startTimeLocal ?? startTime) while startTime

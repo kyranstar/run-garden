@@ -3,7 +3,7 @@
 The garden is a deterministic, event-sourced simulation of your training
 consistency. Implementation: `packages/garden-engine/src/` (`simulate.ts`,
 `species.ts`, `condition.ts`, `prng.ts`, `types.ts`); the worker feeds it in
-`apps/worker/src/services/garden-sync.ts`. Simulation version: **1**.
+`apps/worker/src/services/garden-sync.ts`. Simulation version: **7**.
 
 ## Determinism
 
@@ -33,9 +33,12 @@ consistency. Implementation: `packages/garden-engine/src/` (`simulate.ts`,
   `seed → growing → mature / flowering`, plus `thirsty`, `wilted`, `dormant`,
   `dead`. Genesis seeds a small starter meadow (3 meadow grass + 2 clover) so
   day one is never bare dirt.
-- Only **planned** completed runs water fully, advance counters, and plant new
-  species. Unplanned runs give a modest ambient benefit (+0.1 moisture,
-  +0.15 hydration) — never rare species, never intensity rewards.
+- **Every** completed run — planned or not — waters fully, resets the run
+  clock, brings the rain (and the comeback), and counts toward the run
+  milestones (total, evening, early, distance). Only **planned** runs earn the
+  plan's own rewards: their category's plantings and counters (quality, long,
+  easy, recovery, race). Until v7 (2026-11-17) an unplanned run gave only a
+  light ambient watering and left the run clock frozen.
 
 Primary UI shows a **condition word**, not numbers (`conditionWord`):
 `flourishing` / `well_watered` / `growing` / `a_little_dry` / `recovering` /
@@ -46,7 +49,7 @@ dry, `mild_drought` in drought, otherwise `clear_sun`/`seasonal_breeze`.
 
 ## The decay curve (`DEFAULT_GARDEN_CONFIG`)
 
-Days are counted in `daysSinceCompletedRun` (planned runs reset it; observed
+Days are counted in `daysSinceCompletedRun` (every run resets it; observed
 rest days and plan gaps do **not** increment it).
 
 | Threshold | Days | Effect |
@@ -68,7 +71,7 @@ nurse log, mushroom host), preserved history that later enables fungi.
 
 ## Comeback mechanics
 
-A planned run after ≥ 14 dry days is a **comeback**: it waters extra (+0.4
+A run (planned or not) after ≥ 14 dry days is a **comeback**: it waters extra (+0.4
 moisture, +0.5 hydration vs the normal +0.25/+0.35) and starts `inComeback`.
 Two consecutive comeback-streak runs reopen blooms on mature flowering plants;
 the comeback resolves after 5 streak runs (or 3 with moisture > 0.85). The

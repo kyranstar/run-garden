@@ -261,9 +261,12 @@ export function simulateDay(
   const yogaSessions = runs.filter((r) => disciplineOf(r) === "yoga");
   // Only running brings the rain: moisture, weather, drought and the comeback
   // arc stay run-driven. Lifting and yoga feed the earth and life axes instead.
-  const plannedRuns = runSessions.filter((r) => !r.unplanned);
-  const comebackToday =
-    plannedRuns.length > 0 && state.daysSinceCompletedRun >= cfg.droughtStartDays;
+  // Every real run brings it, on the plan or not (v7; the owner, 2026-11-17:
+  // "COROS runs I do that aren't on the plan don't count for the garden. They
+  // should.") — an unplanned run used to leave the run clock frozen and the
+  // weather dry. Only the plan's own rewards stay the plan's (applyRun).
+  const ranToday = runSessions.length > 0;
+  const comebackToday = ranToday && state.daysSinceCompletedRun >= cfg.droughtStartDays;
 
   // Adventures: optional sports shelter the garden — never feed the clocks.
   const adventures = (input.adventures ?? []).filter(qualifiesAsAdventure);
@@ -347,11 +350,9 @@ export function simulateDay(
     }
   }
 
-  if (runSessions.length > 0) {
-    if (plannedRuns.length > 0) {
-      state.daysSinceCompletedRun = 0;
-      state.droughtDays = 0;
-    }
+  if (ranToday) {
+    state.daysSinceCompletedRun = 0;
+    state.droughtDays = 0;
   } else if (!state.restMode) {
     // 4. A day with no completed run. The freeze's scope is punitive paths
     //    only — a planned rest day still earns its credit even when the
@@ -447,7 +448,7 @@ export function simulateDay(
   const weather = deriveWeather(
     state,
     cfg,
-    plannedRuns.length > 0,
+    ranToday,
     input.restObserved,
     comebackToday,
     input.date,
@@ -530,20 +531,15 @@ function applyRun(
   if (disciplineOf(run) !== "run") return;
 
   // Achievement counters honor every real run, planned or not — a 10K is a
-  // 10K. (Species/intensity rewards below remain planned-only.)
+  // 10K. (The plan's own rewards below — its plantings and category counters —
+  // remain planned-only.)
   if (run.distanceMeters != null && run.distanceMeters > state.longestRunMeters) {
     state.longestRunMeters = run.distanceMeters;
   }
   if (run.startHourLocal != null && run.startHourLocal < 7) state.earlyRunCount += 1;
 
-  if (run.unplanned) {
-    // Modest ambient benefit only; never rare species, never extra-intensity rewards.
-    state.moisture = Math.min(1, state.moisture + 0.1);
-    for (const p of living) p.hydration = Math.min(1, p.hydration + 0.15);
-    return;
-  }
-
-  // Every completed planned run waters the whole garden.
+  // Every completed run waters the whole garden, on the plan or not (v7: an
+  // unplanned run used to give only a light ambient watering).
   state.moisture = Math.min(1, state.moisture + (comebackToday ? 0.4 : 0.25));
   for (const p of living) {
     p.hydration = Math.min(1, p.hydration + (comebackToday ? 0.5 : 0.35));
@@ -573,9 +569,13 @@ function applyRun(
     }
   }
 
-  // Counters (planned runs only).
+  // Every run counts, lifetime and by window.
   state.totalCompletedRuns += 1;
   if (run.window === "evening") state.eveningRunCount += 1;
+
+  // The plan's own rewards: what its category plants and counts. An unplanned
+  // run never plants and never earns an intensity reward, whatever it carries.
+  if (run.unplanned) return;
 
   switch (run.category) {
     case "quality":

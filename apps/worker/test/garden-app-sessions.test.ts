@@ -274,12 +274,14 @@ async function storedInputs(db: Db, userId = USER): Promise<Map<string, GardenDa
 
 /**
  * The seeded garden as the code BEFORE 2d left it (recorded on main ea258ec by this very test, before the gates
- * existed): the stored snapshot, the event stream and every day input, through the parity helpers.
+ * existed): the stored snapshot, the event stream and every day input, through the parity helpers. The snapshot and the
+ * events were re-recorded at SIMULATION_VERSION 7 (2026-11-17: an unplanned run brings the rain and resets the run
+ * clock), a change to the transition alone — the day inputs are still the pre-2d recording, byte for byte.
  */
 const BEFORE_2D = {
-  snapshot: "f9f0976547081f2936a211df87c00bfbe821a8a00886f2be4168d3e36a91d957",
-  events: "28092a232d6af1afde660aab9709bcaacdb746bb6d96a9eb70a3836da4508e90",
-  eventRows: 593,
+  snapshot: "d08b9f5b341eadd78c1859a04082af72159c2674563d7b0e7fd6739c0e6ef0a3",
+  events: "b5d21d7af27386cc59c2fa16f4a2bd2f8fea9bf5780ddfc193b5a39eac739e51",
+  eventRows: 591,
   dayInputs: "c4bc6551d8c6205695c7a001978b13904010f5e1fbcf607fe742e321f11a5293",
   dayInputRows: 233,
   lastSimulatedDate: "2026-10-20",
