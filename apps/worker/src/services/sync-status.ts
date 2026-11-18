@@ -12,6 +12,7 @@ import { SETTLED_COMPLETION_STATES, watchEarlierVersions, type WatchEarlierVersi
 import { studioPlanRetired } from "./studio-push.js";
 import { WATCH_JOB_UNDERWAY, watchJobCondition } from "./watch-jobs.js";
 import type { Db } from "./db.js";
+import { notQaAccount } from "../auth/qa-identity.js";
 
 /** Legacy constant — last consumers (device routes) die in Phase C Task 4. */
 export const DEVICE_ONLINE_WINDOW_MS = 3 * 60_000;
@@ -25,12 +26,13 @@ export interface CloudPresence {
 
 /** THE liveness computation — the only copy in the codebase. The COROS
  * cloud connection IS the executor: connected means the worker itself can
- * read and write, so online and write-capable are the same fact. */
+ * read and write, so online and write-capable are the same fact. The LifeOS QA account (auth/qa-identity.ts) is never
+ * present, whatever its rows say: nothing is queued for a watch it can't have. */
 export async function cloudPresence(db: Db, userId: string): Promise<CloudPresence> {
   const [row] = await db
     .select({ status: providerConnections.status })
     .from(providerConnections)
-    .where(and(eq(providerConnections.userId, userId), eq(providerConnections.provider, "coros")))
+    .where(and(eq(providerConnections.userId, userId), eq(providerConnections.provider, "coros"), notQaAccount(providerConnections.userId)))
     .limit(1);
   const online = row?.status === "connected";
   return { registered: online, online, writeCapable: online };

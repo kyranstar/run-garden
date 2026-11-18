@@ -48,6 +48,7 @@ import { todayBodyRoutes } from "./routes/today-body.js";
 import { growthRoutes } from "./routes/growth.js";
 import { nativeRoutes } from "./routes/native.js";
 import { qaRoutes } from "./routes/qa.js";
+import { notQaAccount } from "./auth/qa-identity.js";
 import { makeDb, chunkIds, type Db } from "./services/db.js";
 import { fixtureThreshold, fixtureWatchJob } from "./services/designed-runs.js";
 import { loadPreferences, syncCalendar } from "./services/calendar-sync.js";
@@ -322,9 +323,12 @@ export function mountedRoutes(): Array<{ method: string; path: string }> {
  * replacing (ruling B2) — the file is still arriving into a half-wiped
  * account, and anything written now would win over it. Each writer checks the
  * marker again itself; skipping here just keeps the loop from trying.
+ *
+ * Never the LifeOS QA account (auth/qa-identity.ts): no cron works on it — no calendar sync, COROS read, garden, coach,
+ * reconcile or weekly review, and no run row — so its fixtures stay exactly as seeded until the purge.
  */
 async function allUserIds(db: Db): Promise<string[]> {
-  const rows = await db.select({ id: users.id }).from(users);
+  const rows = await db.select({ id: users.id }).from(users).where(notQaAccount(users.id));
   const restoring = await accountsRestoring(db);
   return rows.map((r) => r.id).filter((id) => !restoring.has(id));
 }

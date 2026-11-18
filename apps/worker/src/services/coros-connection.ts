@@ -3,6 +3,7 @@ import { providerConnections } from "@rg/database";
 import { newId, nowInstant } from "@rg/domain";
 import { CorosApiError, CorosClient, type CorosRegion } from "@rg/coros";
 import { decryptSecret, encryptSecret } from "../auth/crypto.js";
+import { notQaAccount } from "../auth/qa-identity.js";
 import type { Env } from "../env.js";
 import type { Db } from "./db.js";
 import { sleepNeedsReconnect } from "./coros-mcp.js";
@@ -29,12 +30,22 @@ export interface CorosConnectResult {
 
 type ConnRow = typeof providerConnections.$inferSelect;
 
-async function connRow(db: Db, userId: string): Promise<ConnRow | undefined> {
+/**
+ * The account's COROS connection row. `forUse` (a client about to call COROS): never the LifeOS QA account's
+ * (auth/qa-identity.ts), whatever its rows say — in the same statement, no read added.
+ */
+async function connRow(db: Db, userId: string, opts: { forUse?: true } = {}): Promise<ConnRow | undefined> {
   return (
     await db
       .select()
       .from(providerConnections)
-      .where(and(eq(providerConnections.userId, userId), eq(providerConnections.provider, PROVIDER)))
+      .where(
+        and(
+          eq(providerConnections.userId, userId),
+          eq(providerConnections.provider, PROVIDER),
+          opts.forUse ? notQaAccount(providerConnections.userId) : undefined,
+        ),
+      )
       .limit(1)
   )[0];
 }
@@ -127,7 +138,7 @@ export async function corosClient(
   userId: string,
   fetchImpl: typeof fetch = fetch,
 ): Promise<CorosClient | null> {
-  const row = await connRow(db, userId);
+  const row = await connRow(db, userId, { forUse: true });
   if (!row || row.status === "disconnected" || !row.encryptedRefreshToken) return null;
   if (row.status === "error" && row.lastErrorCategory === "bad_credentials") return null;
 

@@ -10,7 +10,7 @@ import { deviceSigningMessage, sha256Hex, verifyEd25519 } from "./crypto.js";
 import { nativeDevicesEnabled } from "../env.js";
 import { inDeviceScope, isDeviceScope, type DeviceScope } from "./device-scope.js";
 import { deviceTokenOf, findDevice, isDeviceBearer, isOwnerEmail, touchDevice } from "./native-devices.js";
-import { isQaEmail } from "./qa-identity.js";
+import { isQaEmail, qaEnv } from "./qa-identity.js";
 
 /** A request a paired phone made with its device token (native device sign-in): which device, as `requireUser` found it. */
 export interface DeviceContext {
@@ -141,8 +141,11 @@ async function requireDevice(c: Context<AppContext>, next: Next): Promise<void |
   const scope = device.scope;
   if (!isDeviceScope(scope)) return c.json({ error: "out_of_scope" }, 403);
   // The owner's account, or the LifeOS QA account (auth/qa-identity.ts: an address no sign-in can reach, paired only from the
-  // owner's laptop, holding only fixtures) — no other account's device signs in.
-  if (!isOwnerEmail(device.email, c.env) && !isQaEmail(device.email, c.env)) return c.json({ error: "unauthenticated" }, 401);
+  // owner's laptop, holding only fixtures) — no other account's device signs in. The QA account's requests run with every
+  // switch that reaches a provider or a model off (`qaEnv`): nothing they do leaves run-garden.
+  const qa = isQaEmail(device.email, c.env);
+  if (!isOwnerEmail(device.email, c.env) && !qa) return c.json({ error: "unauthenticated" }, 401);
+  if (qa) c.env = qaEnv(c.env);
   if (!(await inDeviceScope(c, scope))) return c.json({ error: "out_of_scope" }, 403);
   if (MUTATING.has(c.req.method) && !openWhileRestoring(c) && (await restoreInProgress(db, device.userId))) {
     return c.json({ error: "restore_in_progress" }, 423);

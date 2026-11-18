@@ -82,6 +82,7 @@ import { courseDefinition, deriveDoc } from "@rg/workout";
 import { restoreInProgress } from "./account-state.js";
 import { loadPreferences } from "./calendar-sync.js";
 import { chunkedInsert, chunkIds, insertBatches, type Db } from "./db.js";
+import { notQaAccount } from "../auth/qa-identity.js";
 import { DocWorkoutNotFoundError, NotRemovableError, removeDocWorkout } from "./doc-workouts.js";
 import { plannedRowColumns, type PlannedRow } from "./planned-columns.js";
 import { separateDayCollisions, windowTimeFor } from "./day-placement.js";
@@ -1029,7 +1030,8 @@ export async function placeSlotsForAllPrograms(db: Db, at: Date = new Date()): P
   const active = await db
     .select({ id: programs.id, userId: programs.userId })
     .from(programs)
-    .where(and(inArray(programs.kind, PLACED_KINDS), eq(programs.status, "active")));
+    // Never the LifeOS QA account's (auth/qa-identity.ts): the crons leave its fixtures as they were seeded.
+    .where(and(inArray(programs.kind, PLACED_KINDS), eq(programs.status, "active"), notQaAccount(programs.userId)));
   // Every zone's today is at most a day behind UTC's, so a slot still ahead of its athlete is dated on or after
   // UTC's today; each candidate is then held to its own user's today below.
   const lingering = await db
@@ -1047,6 +1049,7 @@ export async function placeSlotsForAllPrograms(db: Db, at: Date = new Date()): P
         eq(plannedWorkouts.contentState, "outline"),
         sql`${plannedWorkouts.effectiveDate} = ${plannedWorkouts.originalPlanDate}`,
         gte(plannedWorkouts.effectiveDate, todayInZone("UTC", at)),
+        notQaAccount(programs.userId),
       ),
     )
     .groupBy(programs.id, programs.userId);

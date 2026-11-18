@@ -4,6 +4,7 @@ import { nowInstant } from "@rg/domain";
 import type { CueEventResource, GoogleEventResource } from "@rg/calendar";
 import { decryptSecret, encryptSecret } from "../auth/crypto.js";
 import { refreshGoogleToken } from "../auth/google.js";
+import { notQaAccount } from "../auth/qa-identity.js";
 import type { Env } from "../env.js";
 import type { Db } from "./db.js";
 
@@ -34,7 +35,10 @@ export interface GoogleCalendarClient {
   freeBusy(calendarIds: string[], timeMin: string, timeMax: string): Promise<Array<{ start: string; end: string }>>;
 }
 
-/** Returns a client bound to the user's stored (encrypted) Google tokens. */
+/**
+ * Returns a client bound to the user's stored (encrypted) Google tokens. Never for the LifeOS QA account
+ * (auth/qa-identity.ts), whatever its rows say: no calendar event is ever made, moved or read for it.
+ */
 export async function googleCalendarClient(
   db: Db,
   env: Env,
@@ -43,7 +47,9 @@ export async function googleCalendarClient(
   const rows = await db
     .select()
     .from(providerConnections)
-    .where(and(eq(providerConnections.userId, userId), eq(providerConnections.provider, "google_calendar")))
+    .where(
+      and(eq(providerConnections.userId, userId), eq(providerConnections.provider, "google_calendar"), notQaAccount(providerConnections.userId)),
+    )
     .limit(1);
   const conn = rows[0];
   if (!conn || conn.status === "disconnected" || !conn.encryptedRefreshToken) return null;

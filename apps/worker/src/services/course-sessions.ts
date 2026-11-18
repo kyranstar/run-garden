@@ -63,6 +63,7 @@ import { restoreInProgress } from "./account-state.js";
 import { loadPreferences } from "./calendar-sync.js";
 import { COURSE_WRITES_PER_PASS } from "./cron-limits.js";
 import { runAtomicallyClaim, type Db } from "./db.js";
+import { notQaAccount } from "../auth/qa-identity.js";
 import { separateDayCollisions } from "./day-placement.js";
 import { dayValidateCtx, judgeDoc } from "./doc-build.js";
 import { markMirrorOwedIf } from "./mirror-owed.js";
@@ -372,6 +373,8 @@ export async function writeCourseSessionsDue(db: Db, at: Date = new Date()): Pro
         inArray(pw.completionState, STILL_TO_DO),
         gte(pw.effectiveDate, addDays(utc, -1)),
         lte(pw.effectiveDate, addDays(utc, 1)),
+        // Never the LifeOS QA account's (auth/qa-identity.ts): the crons leave its fixtures as they were seeded.
+        notQaAccount(pw.userId),
       ),
     );
   // What the day refused last, so a pass's room goes to what can be written.

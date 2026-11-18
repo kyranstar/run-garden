@@ -61,6 +61,7 @@ import { restoreInProgress } from "./account-state.js";
 import { STILL_TO_DO } from "./course-sessions.js";
 import { COURSE_FINISH_BUDGET, COURSE_FINISHES_PER_PASS } from "./cron-limits.js";
 import { chunkIds, runAtomically, type Db } from "./db.js";
+import { notQaAccount } from "../auth/qa-identity.js";
 import { DocWorkoutNotFoundError, LOCKED_CONTENT, NotRemovableError, removeDocWorkout, workoutsOnTheWire } from "./doc-workouts.js";
 import { removeFromPlan } from "./plan-mutations.js";
 import { planVersionInsert } from "./plan-registry.js";
@@ -363,7 +364,14 @@ export async function finishCoursesPartWay(db: Db, at: Date = new Date()): Promi
     .select({ program: programs, prefs: userPreferences.prefs })
     .from(programs)
     .leftJoin(userPreferences, eq(userPreferences.userId, programs.userId))
-    .where(and(eq(programs.kind, "course"), sql`case when json_valid(${programs.config}) then json_extract(${programs.config}, '$.finishing') end is not null`))
+    .where(
+      and(
+        eq(programs.kind, "course"),
+        sql`case when json_valid(${programs.config}) then json_extract(${programs.config}, '$.finishing') end is not null`,
+        // Never the LifeOS QA account's (auth/qa-identity.ts): the crons leave its fixtures as they were seeded.
+        notQaAccount(programs.userId),
+      ),
+    )
     .orderBy(sql`random()`)
     .limit(COURSE_FINISHES_PER_PASS);
   const now = nowInstant(at);

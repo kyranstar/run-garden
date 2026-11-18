@@ -59,6 +59,7 @@ import { noRestoreSql, restoreInProgress } from "./account-state.js";
 import { createRun, RunKeyTakenError, WeekBudgetError } from "./coach-runs.js";
 import { stepAlarmOn, stepperLeaseMs, tellStepper } from "./coach-run-stepper.js";
 import type { Db } from "./db.js";
+import { notQaAccount } from "../auth/qa-identity.js";
 import { PLAN_DRAFT_KIND, planDraftKey, readPlanEndings, type PlanEnding } from "./plan-ending.js";
 import { draftOf, planOnEndOf, promptOfPlan } from "./plan-summaries.js";
 import type { RunScope } from "./design-tools/types.js";
@@ -107,7 +108,8 @@ export async function draftEndingPlans(db: Db, env: Env, at: Date = new Date()):
     .selectDistinct({ userId: programs.userId, prefs: sql<string | null>`(${userPreferences.prefs})` })
     .from(programs)
     .leftJoin(userPreferences, eq(userPreferences.userId, programs.userId))
-    .where(and(eq(programs.kind, "coach"), eq(programs.status, "active"), isNull(programs.archivedAt)));
+    // Never the LifeOS QA account's (auth/qa-identity.ts): no model is ever called for it.
+    .where(and(eq(programs.kind, "coach"), eq(programs.status, "active"), isNull(programs.archivedAt), notQaAccount(programs.userId)));
   for (const a of accounts) {
     try {
       if (await draftForAccount(db, env, a.userId, a.prefs, at)) out.started += 1;
