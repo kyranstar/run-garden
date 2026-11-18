@@ -2232,8 +2232,10 @@ describe("what it costs", () => {
     statements.length = 0;
     expect((await writeCourseSession(db, userId, stale, ctx)).written).toBe(true);
     const retimes = statements.filter((s) => /^update "planned_workouts" set .*"effective_time"/.test(s)).length;
-    // Not a day that happened to stay put.
-    expect(retimes).toBeGreaterThanOrEqual(others);
+    // Not a day that happened to stay put. The others collide with each other, a minute apart, at noon on their own day:
+    // today is laid out from the times the sessions hold (day-placement rule 4, stage 2b review r-m2), so all but the one
+    // that keeps its time move — later, never before now. (Before, every one was laid out again from the 07:00 window.)
+    expect(retimes).toBeGreaterThanOrEqual(others - 1);
     // The plan's read is this call's; the hourly pass holds its plan already.
     expect(statements.length - 1).toBe(COURSE_WRITE_COST + retimes);
   });
