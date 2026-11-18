@@ -22,11 +22,15 @@ const iso = (ms: number) => new Date(NOW + ms).toISOString();
 const DAY = 86_400_000;
 
 const pending = (over: Partial<NativeDeviceDto> = {}): NativeDeviceDto => ({
-  id: "a".repeat(64), label: "Kitchen iPhone", state: "pending", check: "4821", createdAt: iso(-60_000), confirmedAt: null, lastUsedAt: null, expiresAt: iso(9 * 60_000), expiresSoon: false, ...over,
+  id: "a".repeat(64), label: "Kitchen iPhone", state: "pending", check: "4821", createdAt: iso(-60_000), confirmedAt: null, lastUsedAt: null, expiresAt: iso(9 * 60_000), expiresSoon: false,
+  scope: "training-v2", nextScope: null, ...over,
 });
 const active = (over: Partial<NativeDeviceDto> = {}): NativeDeviceDto => ({
-  id: "b".repeat(64), label: "Running phone", state: "active", check: null, createdAt: iso(-3 * DAY), confirmedAt: iso(-3 * DAY), lastUsedAt: iso(-2 * 3_600_000), expiresAt: iso(27 * DAY), expiresSoon: false, ...over,
+  id: "b".repeat(64), label: "Running phone", state: "active", check: null, createdAt: iso(-3 * DAY), confirmedAt: iso(-3 * DAY), lastUsedAt: iso(-2 * 3_600_000), expiresAt: iso(27 * DAY), expiresSoon: false,
+  scope: "training-v2", nextScope: "training-v3", ...over,
 });
+/** The ladder the worker grants along (device-scope.ts `NEXT_DEVICE_SCOPE`). */
+const NEXT: Record<string, string | null> = { "training-slice-v1": "training-v2", "training-v2": "training-v3", "training-v3": null };
 
 let root: Root | null = null;
 let host: HTMLDivElement | null = null;
@@ -34,7 +38,10 @@ let calls: Array<{ method: string; path: string; body: unknown }>;
 
 /** A worker in memory: the devices list and what Pair, Confirm and Revoke do to it. */
 function worker(
-  init: { enabled?: boolean; devices?: NativeDeviceDto[]; listStatus?: number; listBody?: unknown; pairRefusal?: unknown; confirmRefusal?: unknown; timezone?: string } = {},
+  init: {
+    enabled?: boolean; devices?: NativeDeviceDto[]; listStatus?: number; listBody?: unknown; pairRefusal?: unknown; confirmRefusal?: unknown; timezone?: string;
+    grantRefusal?: { status: number; body: unknown }; pairScope?: string;
+  } = {},
 ) {
   const state = { enabled: init.enabled ?? true, devices: [...(init.devices ?? [])] };
   calls = [];
@@ -49,7 +56,16 @@ function worker(
         if (init.listStatus) return json(init.listBody ?? { error: "x" }, init.listStatus);
         return json(init.listBody ?? state);
       }
-      if (path === "/api/native/pairings") return init.pairRefusal ? json(init.pairRefusal, 429) : json({ code: "7K2QXM9D", expiresAt: iso(5 * 60_000) });
+      if (path === "/api/native/pairings") {
+        return init.pairRefusal ? json(init.pairRefusal, 429) : json({ code: "7K2QXM9D", expiresAt: iso(5 * 60_000), ...(init.pairScope ? { scope: init.pairScope } : {}) });
+      }
+      const grant = path.match(/^\/api\/native\/devices\/(\w+)\/grant$/);
+      if (grant && init.grantRefusal) return json(init.grantRefusal.body, init.grantRefusal.status);
+      if (grant) {
+        const to = (JSON.parse(String(req!.body)) as { scope: string }).scope;
+        state.devices = state.devices.map((d) => (d.id === grant[1] ? { ...d, scope: to, nextScope: NEXT[to] ?? null } : d));
+        return json({ ok: true, scope: to, granted: true });
+      }
       const confirm = path.match(/^\/api\/native\/devices\/(\w+)\/confirm$/);
       if (confirm && init.confirmRefusal) {
         state.devices = state.devices.filter((d) => d.id !== confirm[1]);
@@ -264,6 +280,97 @@ describe("Settings → Devices", () => {
     expect(button("Pair a phone")).toBeUndefined();
     expect(button("Revoke", rowOf("Running phone"))).toBeTruthy();
     expect(button("Revoke all")).toBeTruthy();
+  });
+
+  it("each phone says what it can do, in plain words; a pending one what it will once confirmed", async () => {
+    worker({
+      devices: [
+        active({ id: "c".repeat(64), label: "Old phone", scope: "training-slice-v1", nextScope: "training-v2" }),
+        active({ label: "Running phone" }),
+        active({ id: "d".repeat(64), label: "New phone", scope: "training-v3", nextScope: null }),
+        active({ id: "e".repeat(64), label: "Odd phone", scope: "training-v9", nextScope: null }),
+        pending(),
+      ],
+    });
+    await mount();
+    expect(words(rowOf("Old phone"))).toContain("Can play and save workouts");
+    expect(words(rowOf("Running phone"))).toContain("Can play, save and move workouts");
+    expect(words(rowOf("New phone"))).toContain("Can play, save, move and fit workouts, and record your feedback");
+    // A scope this laptop has no words for says nothing of it, rather than guess.
+    expect(words(rowOf("Odd phone"))).not.toContain("Can ");
+    expect(words(rowOf("Kitchen iPhone"))).toContain("Once confirmed, it can play, save and move workouts.");
+  });
+
+  it("an active v2 phone has one button for the next version; it says what that adds, once, then grants it", async () => {
+    worker({ devices: [active()] });
+    await mount();
+    const row = rowOf("Running phone");
+    expect([...row.querySelectorAll("button")].map(words)).toEqual(["Allow fitting and feedback", "Revoke"]);
+    await click(button("Allow fitting and feedback", row));
+    // Nothing is sent until it's confirmed: the line says what the grant adds.
+    expect(calls.filter((c) => c.method === "POST")).toEqual([]);
+    const asking = rowOf("Running phone");
+    expect(words(asking)).toContain(
+      "It will also be able to fit a workout to the day (its time, place and moves) and record Not for me and harder-move switches.",
+    );
+    expect([...asking.querySelectorAll("button")].map(words)).toEqual(["Allow", "Not now"]);
+    await click(button("Allow", asking));
+    expect(calls.filter((c) => c.method === "POST")).toEqual([{ method: "POST", path: `/api/native/devices/${"b".repeat(64)}/grant`, body: { scope: "training-v3" } }]);
+    const after = rowOf("Running phone");
+    expect(words(after)).toContain("Can play, save, move and fit workouts, and record your feedback");
+    expect(words(after)).not.toContain("It will also");
+    expect([...after.querySelectorAll("button")].map(words)).toEqual(["Revoke"]);
+  });
+
+  it("Not now puts the question away and sends nothing; a v1 phone's button is for moving workouts", async () => {
+    worker({ devices: [active({ label: "Old phone", scope: "training-slice-v1", nextScope: "training-v2" })] });
+    await mount();
+    await click(button("Allow moving workouts", rowOf("Old phone")));
+    expect(words(rowOf("Old phone"))).toContain("It will also be able to move, skip and put back workouts on your plan.");
+    await click(button("Not now", rowOf("Old phone")));
+    expect(words(rowOf("Old phone"))).not.toContain("It will also");
+    expect(button("Allow moving workouts", rowOf("Old phone"))).toBeTruthy();
+    expect(calls.filter((c) => c.method === "POST")).toEqual([]);
+    await click(button("Allow moving workouts", rowOf("Old phone")));
+    await click(button("Allow", rowOf("Old phone")));
+    expect(calls.filter((c) => c.method === "POST").map((c) => c.body)).toEqual([{ scope: "training-v2" }]);
+    expect(button("Allow fitting and feedback", rowOf("Old phone"))).toBeTruthy();
+  });
+
+  it("no grant is offered at the top, while pending, or with device sign-in off", async () => {
+    worker({ devices: [active({ label: "New phone", scope: "training-v3", nextScope: null }), pending()] });
+    await mount();
+    expect([...rowOf("New phone").querySelectorAll("button")].map(words)).toEqual(["Revoke"]);
+    expect([...rowOf("Kitchen iPhone").querySelectorAll("button")].map(words)).toEqual(["Confirm", "Revoke"]);
+    act(() => root?.unmount());
+    host?.remove();
+    worker({ enabled: false, devices: [active()] });
+    await mount();
+    expect([...rowOf("Running phone").querySelectorAll("button")].map(words)).toEqual(["Revoke"]);
+  });
+
+  it("a grant the server refuses says so plainly, and the list is read again", async () => {
+    worker({ devices: [active()], grantRefusal: { status: 409, body: { error: "not_next_scope", scope: "training-v3", next: null } } });
+    await mount();
+    await click(button("Allow fitting and feedback", rowOf("Running phone")));
+    const gets = calls.filter((c) => c.method === "GET" && c.path === "/api/native/devices").length;
+    await click(button("Allow", rowOf("Running phone")));
+    expect(words(host)).toContain("That phone's access changed meanwhile. Here it is as it stands now.");
+    expect(calls.filter((c) => c.method === "GET" && c.path === "/api/native/devices").length).toBeGreaterThan(gets);
+    act(() => root?.unmount());
+    host?.remove();
+    worker({ devices: [active()], grantRefusal: { status: 409, body: { error: "device_revoked" } } });
+    await mount();
+    await click(button("Allow fitting and feedback", rowOf("Running phone")));
+    await click(button("Allow", rowOf("Running phone")));
+    expect(words(host)).toContain("Couldn't change what that phone can do. Try again.");
+  });
+
+  it("the pairing code says what a phone paired now can do, from the worker's answer", async () => {
+    worker({ pairScope: "training-v2" });
+    await mount();
+    await click(button("Pair a phone"));
+    expect(words(host)).toContain("A phone paired now can play, save and move workouts.");
   });
 
   it("sits in Settings → Data & account, before Account", async () => {

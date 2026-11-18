@@ -342,6 +342,10 @@ export interface NativeDeviceDto {
   expiresAt: string;
   /** Active and expiring within 7 days: re-pair soon. */
   expiresSoon: boolean;
+  /** What it may reach, as the worker stores it: `training-slice-v1`, `training-v2`, `training-v3` (or one a newer worker knows). */
+  scope: string;
+  /** The scope Settings can grant it now (its next, while active), else null. */
+  nextScope: string | null;
 }
 
 export interface NativeDevicesResponse {
@@ -3039,15 +3043,23 @@ export const api = {
   nativeDevices: () => get<NativeDevicesResponse>("/api/native/devices"),
   /**
    * Pair: the account's one pairing code (a new one burns the old, and lifts the redeem throttles), shown once; it lives 5
-   * minutes. 429 `too_many_codes` with `retryAfter` seconds past a few codes in a window.
+   * minutes. `scope`: what a phone paired with it will be able to do (absent from an older worker). 429 `too_many_codes`
+   * with `retryAfter` seconds past a few codes in a window.
    */
-  nativePair: () => post<{ code: string; expiresAt: string }>("/api/native/pairings", {}),
+  nativePair: () => post<{ code: string; expiresAt: string; scope?: string }>("/api/native/pairings", {}),
   /**
    * Confirm a pending phone whose check number matches the one it shows. 409 `check_mismatch` / `confirm_expired`; after
    * a few wrong numbers the phone is revoked: 409 `check_mismatch` with `revoked: true`.
    */
   nativeConfirm: (id: string, check: string) => post<{ ok: true; expiresAt: string }>(`/api/native/devices/${encodeURIComponent(id)}/confirm`, { check }),
   nativeRevoke: (id: string) => post<{ ok: true; revoked: boolean }>(`/api/native/devices/${encodeURIComponent(id)}/revoke`, {}),
+  /**
+   * Grant an active phone its next scope, in place (its token, expiry and saves kept), naming the scope granted: a resend
+   * is `granted: false`. 409 `not_next_scope` {scope, next} when it isn't the phone's next one; 409 `device_revoked`,
+   * `device_expired`, `device_pending`.
+   */
+  nativeGrant: (id: string, scope: string) =>
+    post<{ ok: true; scope: string; granted: boolean }>(`/api/native/devices/${encodeURIComponent(id)}/grant`, { scope }),
   nativeRevokeAll: () => post<{ ok: true; revoked: number }>("/api/native/devices/revoke-all", {}),
   calendars: () => get<{ calendars: Array<{ id: string; summary: string; primary?: boolean }> }>("/api/calendar/calendars"),
   chooseCalendar: (opts: { calendarId?: string; createNew?: boolean }) => post<{ ok: true; calendarId: string }>("/api/calendar/choose", opts),
