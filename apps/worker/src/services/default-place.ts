@@ -13,7 +13,7 @@
  * Each read is one scalar subquery (`defaultPlaceSql`, `ownPlaceSql`), so a caller folds it into a statement it already
  * runs; `defaultPlace` / `namedPlace` are the one-statement forms.
  */
-import { sql, type SQL } from "drizzle-orm";
+import { eq, sql, type SQL } from "drizzle-orm";
 import { athleteProfiles, locations } from "@rg/database";
 import { NO_EQUIPMENT_PLACE } from "@rg/domain";
 import { LOCATION_PRESETS, NO_EQUIPMENT_GEAR, noEquipmentPlace } from "@rg/exercise-library";
@@ -38,6 +38,27 @@ export function defaultPlaceOrder(userId: string): SQL[] {
   const p = athleteProfiles;
   const chosen = sql`(select case when json_valid(${p.preferences}) then json_extract(${p.preferences}, '$.defaultPlaceId') end from ${p} where ${p.userId} = ${userId})`;
   return [sql`(${l.id} = coalesce(${chosen}, '')) desc`, sql`${l.isDefault} desc`, sql`${l.createdAt} asc`, sql`${l.id} asc`];
+}
+
+/**
+ * The places a session can name, as Build's choices list them (`loadEngineContext`'s `locations`, the sheet's
+ * `choices.locations`): the default first (`defaultPlaceOrder`), then the rest as they were made; with none of the
+ * athlete's own, the preset Home the engine trains with. One statement. The phone's document *Place* chip offers these
+ * (stage 2b: a device's `GET /api/workouts/:id/doc`).
+ */
+export async function placeChoices(db: Db, userId: string): Promise<Array<{ id: string; name: string }>> {
+  const rows = await db
+    .select({ id: l.id, name: l.name, createdAt: l.createdAt })
+    .from(l)
+    .where(eq(l.userId, userId))
+    .orderBy(...defaultPlaceOrder(userId));
+  if (rows.length === 0) {
+    const home = LOCATION_PRESETS.find((p) => p.id === "home")!;
+    return [{ id: home.id, name: home.name }];
+  }
+  const [first, ...rest] = rows;
+  rest.sort((a, b) => a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id));
+  return [first!, ...rest].map((r) => ({ id: r.id, name: r.name ?? r.id }));
 }
 
 /** The athlete's default place among their own, as one row of JSON text ({ id, name, equipment }), or null. */

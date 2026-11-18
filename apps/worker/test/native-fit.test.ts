@@ -263,9 +263,13 @@ describe("the document: GET and PUT /api/workouts/:id/doc with baseRev", () => {
   it("v3 reads a session's document; v2 is refused; an engine slot has none; another account's is 404", async () => {
     const id = await workoutOn(D);
     const a = await readDoc(id);
-    expect([a.status, a.json.rev, a.json.origin, a.json.doc.title, Object.keys(a.json).sort()], a.text).toEqual([200, 1, "studio", "Hips and back", ["derived", "doc", "origin", "rev"]]);
+    expect([a.status, a.json.rev, a.json.origin, a.json.doc.title, Object.keys(a.json).sort()], a.text).toEqual([
+      200, 1, "studio", "Hips and back", ["derived", "doc", "excluded", "locations", "origin", "rev"],
+    ]);
     expect(a.writes).toEqual([]);
     expect(a.total).toBeLessThanOrEqual(BUDGET);
+    // The web's read is as it was: none of the phone's two lists.
+    expect(Object.keys((await readDoc(id, null)).json).sort()).toEqual(["derived", "doc", "origin", "rev"]);
     expect([(await readDoc(id, v2)).status, (await readDoc(id, v2)).json]).toEqual([403, { error: "out_of_scope" }]);
     const slot = await seedSlot(w.db, w.userId, D);
     expect((await readDoc(slot)).json).toEqual({ doc: null, reason: "missing" });
@@ -279,6 +283,30 @@ describe("the document: GET and PUT /api/workouts/:id/doc with baseRev", () => {
     const held = everything();
     expect([(await editDoc(theirs, { doc: calmDoc({ title: "Mine now" }), baseRev: 1 })).status]).toEqual([404]);
     expect(everything()).toEqual(held);
+  });
+
+  it("the phone's read carries the places a document can name, as Build lists them, and the athlete's Not for me list", async () => {
+    const id = await workoutOn(D);
+    // No place of the account's yet: Build's choices list the preset Home, and so does the read.
+    expect((await readDoc(id)).json.locations).toEqual([{ id: "home", name: "Home" }]);
+    const gym = await createPlace(w.db, w.userId, { name: "Gym", equipment: ["kettlebell", "bench"] }, nowInstant());
+    vi.advanceTimersByTime(1_000);
+    const flat = await createPlace(w.db, w.userId, { name: "Flat", equipment: ["mat"], isDefault: true }, nowInstant());
+    vi.advanceTimersByTime(1_000);
+    const hotel = await createPlace(w.db, w.userId, { name: "Hotel", equipment: [] }, nowInstant());
+    // The default first, then as they were made: exactly the list (and order) Build's choices give an engine slot.
+    const slot = await seedSlot(w.db, w.userId, D);
+    const built = await build(slot, {});
+    expect((await readDoc(id)).json.locations).toEqual([{ id: flat, name: "Flat" }, { id: gym, name: "Gym" }, { id: hotel, name: "Hotel" }]);
+    expect((await readDoc(id)).json.locations).toEqual(built.json.choices.locations);
+    // Not for me, as it stands now: what the phone filters a document's swap lists with, as the web's item sheet does.
+    expect((await readDoc(id)).json.excluded).toEqual([]);
+    client().prepare(`insert into exercise_prefs (id, user_id, exercise_id, rating, excluded, pinned, updated_at) values (?, ?, 'deadBug', null, 1, 0, ?), (?, ?, 'bridge', 1, 0, 0, ?), (?, ?, 'birdDog', -1, 1, 0, ?)`)
+      .run(`${w.userId}:deadBug`, w.userId, nowInstant(), `${w.userId}:bridge`, w.userId, nowInstant(), `${w.userId}:birdDog`, w.userId, nowInstant());
+    const read = await readDoc(id);
+    expect(read.json.excluded).toEqual(["birdDog", "deadBug"]);
+    expect(read.writes).toEqual([]);
+    expect(read.total).toBeLessThanOrEqual(BUDGET);
   });
 
   it("an edit (a move removed) is the session's next revision; only its row changes, with one revision row", async () => {
@@ -313,8 +341,9 @@ describe("the document: GET and PUT /api/workouts/:id/doc with baseRev", () => {
     expect([a.status, a.json.rev], a.text).toEqual([200, 2]);
     expect(a.json.workout.time).toBe("17:30");
     // The other session moved — later, after this one, and said so; not to the morning window, eleven hours gone.
-    expect(a.json.moved).toEqual([{ workoutId: slot, title: "Mobility", from: "18:00", to: expect.any(String) }]);
-    const to = a.json.moved[0].to as string;
+    // Its exact shape: {workoutId, title, from: {date, time}, to: {date, time}}, a time `HH:MM` (or null for an untimed row).
+    expect(a.json.moved).toEqual([{ workoutId: slot, title: "Mobility", from: { date: D, time: "18:00" }, to: { date: D, time: expect.stringMatching(/^\d{2}:\d{2}$/) } }]);
+    const to = a.json.moved[0].to.time as string;
     expect(to > "18:00", to).toBe(true);
     expect(q(`select effective_time as t from planned_workouts where id = ?`, slot)[0].t).toBe(to);
     // An edit that changes nothing else on the day says nothing moved.

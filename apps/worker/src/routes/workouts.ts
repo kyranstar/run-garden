@@ -2,7 +2,9 @@
  * Planned workouts' documents (programme spec §3, Amendment A; Stage 2 spec §10).
  *
  *   GET  /api/workouts/:id/doc   the row's document with what is derived from it, and its revision; a row with no usable
- *                                document answers `{ doc: null, reason }`, never a 500
+ *                                document answers `{ doc: null, reason }`, never a 500. A device's read also carries
+ *                                `locations` [{id, name}] (Build's own place choices) and `excluded` (the athlete's
+ *                                "not for me" moves), for the phone's Make it fit (stage 2b)
  *   GET  /api/workouts           a searchable list ("like last week's"); archived rows are not workouts
  *   POST /api/workouts           {date, time?, doc, clientId?} → 201 {workout, warnings}: a document workout
  *                                (services/doc-workouts.ts); a `clientId` it has seen → 200 with that row, nothing written
@@ -45,9 +47,11 @@ import {
   removeDocWorkout,
   reviseDocWorkout,
   RunUnsupportedError,
+  setAsideMoves,
   StaleRevisionError,
   StartedTodayError,
 } from "../services/doc-workouts.js";
+import { placeChoices } from "../services/default-place.js";
 import { likePatternOf } from "../services/like-pattern.js";
 import { RestoreInProgressError } from "../services/programs.js";
 import { plannedWorkoutColumns, rowMinutes } from "../services/workout-doc-parity.js";
@@ -182,7 +186,13 @@ workoutRoutes.get("/:id/doc", async (c) => {
   const library = await libraryForDocs(c.get("db"), c.get("userId"), [doc]);
   // Its origin: a coach or watch-plan session (NULL) is no session of the app's until a revise adopts it, so the
   // Studio's Start sends its document first (the session routes build only the app's own rows: `appAuthoredRow`).
-  return c.json({ doc, derived: deriveDoc(doc, library.all), rev: row.workoutDocRev ?? null, origin: row.origin ?? null });
+  const read = { doc, derived: deriveDoc(doc, library.all), rev: row.workoutDocRev ?? null, origin: row.origin ?? null };
+  if (!c.get("device")) return c.json(read);
+  // The phone's Make it fit (stage 2b): the places its Place chip can offer, as Build's choices list them, and the moves
+  // the athlete set aside, which its swap lists leave out, as the web's item sheet does. Two statements; the web's read
+  // is as it was.
+  const [locations, excluded] = await Promise.all([placeChoices(c.get("db"), c.get("userId")), setAsideMoves(c.get("db"), c.get("userId"))]);
+  return c.json({ ...read, locations, excluded });
 });
 
 workoutRoutes.get("/", async (c) => {

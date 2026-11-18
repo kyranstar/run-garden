@@ -43,7 +43,7 @@
  * Every user-scoped; a write is refused while a restore is replacing the account (`RestoreInProgressError`).
  */
 import type { RunWire } from "@rg/domain";
-import { and, eq, exists, getTableColumns, inArray, isNull, ne, notExists, notInArray, or, sql, type SQL } from "drizzle-orm";
+import { and, asc, eq, exists, getTableColumns, inArray, isNull, ne, notExists, notInArray, or, sql, type SQL } from "drizzle-orm";
 import {
   coachPlans,
   corosWriteJobs,
@@ -81,7 +81,7 @@ import { restoreInProgress } from "./account-state.js";
 import { loadOwnProgramNames, recordedStampFor } from "./coros-stamp.js";
 import { chunkIds, runAtomically, type Db } from "./db.js";
 import { judgeDoc } from "./doc-build.js";
-import { separateDayCollisions, windowTimeFor } from "./day-placement.js";
+import { separateDayCollisions, windowTimeFor, type RetimedRow } from "./day-placement.js";
 import { placeOrDefault } from "./default-place.js";
 import { loadBuildHistory } from "./engine-inputs.js";
 import { RestoreInProgressError } from "./programs.js";
@@ -441,6 +441,19 @@ export async function profilesAndSetAside(db: Db, userId: string): Promise<{ act
   ]);
   const active = [...new Set(conditionRows.map((r) => r.profileId).filter(isProfileId))].sort();
   return { active, profiles: active.map((id) => PROFILES[id]), excluded: setAside.map((r) => r.exerciseId) };
+}
+
+/**
+ * The moves the athlete set aside ("not for me"), sorted: what the phone filters a document's swap lists with before
+ * Start, as the web's item sheet does (stage 2b: a device's `GET /api/workouts/:id/doc`). One statement.
+ */
+export async function setAsideMoves(db: Db, userId: string): Promise<string[]> {
+  const rows = await db
+    .select({ exerciseId: exercisePrefs.exerciseId })
+    .from(exercisePrefs)
+    .where(and(eq(exercisePrefs.userId, userId), eq(exercisePrefs.excluded, true)))
+    .orderBy(asc(exercisePrefs.exerciseId));
+  return rows.map((r) => r.exerciseId);
 }
 
 /**
@@ -814,12 +827,36 @@ async function heldCopyName(
   return row.title;
 }
 
+/** A place in a session's day and time, as `moved` says it: a time `HH:MM`, or null for a row with none. */
+export interface DaySlot {
+  date: string;
+  time: string | null;
+}
+
+/** One other session a document edit's collision pass re-timed (the `PUT …/doc` answer's `moved`). */
+export interface MovedSession {
+  workoutId: string;
+  title: string;
+  from: DaySlot;
+  to: DaySlot;
+}
+
+const CLOCK_TIME = /^([01]\d|2[0-3]):[0-5]\d$/;
+const slotOf = (date: string, time: string): DaySlot => ({ date, time: CLOCK_TIME.test(time) ? time : null });
+
+/** What the collision pass re-timed, but the edited session itself (its own new time is the answer's `workout`). */
+export function movedSessions(retimed: readonly RetimedRow[], except: string): MovedSession[] {
+  return retimed
+    .filter((m) => m.workoutId !== except)
+    .map((m) => ({ workoutId: m.workoutId, title: m.title, from: slotOf(m.date, m.from), to: slotOf(m.date, m.to) }));
+}
+
 /**
  * `PUT /api/workouts/:id/doc`: a new revision of a workout's document, adopting a watch-shaped row (see the header).
  * `calendarChanged`: its title, category or booked length moved — what its event shows. `moved`: every OTHER session of
- * that day the collision pass re-timed for the new length (stage 2b review r-m2), so a client can say so; this one's own
- * new time is in `workout`. Throws `DocWorkoutNotFoundError`, `NotEditableError`, `PastDateError`, `StaleRevisionError`,
- * `DocInvalidError`, `RunUnsupportedError`, `RestoreInProgressError`.
+ * that day the collision pass re-timed for the new length (stage 2b review r-m2; `movedSessions`), so a client can say so;
+ * this one's own new time is in `workout`. Throws `DocWorkoutNotFoundError`, `NotEditableError`, `PastDateError`,
+ * `StaleRevisionError`, `DocInvalidError`, `RunUnsupportedError`, `RestoreInProgressError`.
  */
 export async function reviseDocWorkout(
   db: Db,
@@ -833,7 +870,7 @@ export async function reviseDocWorkout(
   rev: number | null;
   watchHasOlder: boolean;
   warnings: DocIssue[];
-  moved: Array<{ workoutId: string; title: string; from: string; to: string }>;
+  moved: MovedSession[];
   calendarChanged: boolean;
 }> {
   const pw = plannedWorkouts;
@@ -984,8 +1021,7 @@ export async function reviseDocWorkout(
     await enqueueUnpushIfOurs(db, userId, after, ctx.now, ctx.prefs, { sent, addressPath: false });
     await markMirrorOwed(db, userId, workoutId, ctx.now);
   }
-  const others = moved.filter((m) => m.workoutId !== workoutId).map(({ workoutId: id, title, from, to }) => ({ workoutId: id, title, from, to }));
-  return { workout, rev, watchHasOlder, warnings, moved: others, calendarChanged };
+  return { workout, rev, watchHasOlder, warnings, moved: movedSessions(moved, workoutId), calendarChanged };
 }
 
 /**

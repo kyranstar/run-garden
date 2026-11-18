@@ -18,6 +18,7 @@ import { EXERCISES } from "@rg/exercise-library";
 import { deriveDoc } from "@rg/workout";
 import { localClock, placeDaySessions, relaidDay, type PlaceableSession } from "../src/services/day-placement.js";
 import { placedTimes } from "../src/services/design-placement.js";
+import { movedSessions } from "../src/services/doc-workouts.js";
 import { calmDoc } from "./doc-workout-fixture.js";
 
 const prefs: SchedulingPreferences = { ...DEFAULT_SCHEDULING_PREFERENCES, timezone: "America/Los_Angeles" };
@@ -110,6 +111,21 @@ describe("the coach designer's card lays today out by the same clock as the writ
     const derived = deriveDoc(doc, EXERCISES);
     const written = relaidDay(TODAY, [s("studio", derived.category, derived.estimatedMinutes, "17:30"), s("programme", "strength", 45, "18:00")], prefs, localClock(now, prefs.timezone))!;
     expect(time).toBe(written.get("studio"));
+  });
+});
+
+describe("what a document edit's answer says moved (`moved`, the contract's exact shape)", () => {
+  it("every other session the pass re-timed, as {workoutId, title, from: {date, time}, to: {date, time}}; an untimed row's time is null", () => {
+    const retimed = [
+      { workoutId: "edited", date: TODAY, title: "Hips and back", from: "17:30", to: "19:05" },
+      { workoutId: "programme", date: TODAY, title: "Lower body", from: "18:00", to: "18:45" },
+      { workoutId: "untimed", date: TODAY, title: "A flow", from: "", to: "19:40" },
+    ];
+    expect(movedSessions(retimed, "edited")).toEqual([
+      { workoutId: "programme", title: "Lower body", from: { date: TODAY, time: "18:00" }, to: { date: TODAY, time: "18:45" } },
+      { workoutId: "untimed", title: "A flow", from: { date: TODAY, time: null }, to: { date: TODAY, time: "19:40" } },
+    ]);
+    expect(movedSessions([], "edited")).toEqual([]);
   });
 });
 
