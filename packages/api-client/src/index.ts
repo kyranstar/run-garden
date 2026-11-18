@@ -356,6 +356,36 @@ export interface NativeDevicesResponse {
   devices: NativeDeviceDto[];
 }
 
+/** Settings → Developer → LifeOS QA (`GET /api/qa/status`; the owner's only — anyone else's is a 404). */
+export interface QaStatusDto {
+  qa: { userId: string; accountTag: string; createdAt: string | null } | null;
+  today: string;
+  /** Every row the QA account holds, in all. */
+  rows: number;
+  devices: Array<{ state: string; scope: string; label: string; lastUsedAt: string | null }>;
+  plan: Array<{ title: string; date: string; time: string; state: string }>;
+}
+
+/** A QA pairing code, with the run's tokens (`POST /api/qa/pairings`, `/api/qa/setup`). */
+export interface QaMintDto {
+  code: string;
+  expiresAt: string;
+  scope: string;
+  planToken: string;
+  harnessToken: string;
+  harnessExpiresAt: string;
+  accountTag: string;
+  created?: boolean;
+  seeded?: boolean;
+}
+
+/** The checked purge: what went, per table, and what is left (all zero). */
+export interface QaPurgeDto {
+  removed: Record<string, number>;
+  remaining: Record<string, number>;
+  total: number;
+}
+
 export interface MeResponse {
   userId: string;
   email: string;
@@ -3075,6 +3105,14 @@ export const api = {
   nativeReduce: (id: string, scope: string) =>
     post<{ ok: true; scope: string; reduced: boolean }>(`/api/native/devices/${encodeURIComponent(id)}/reduce`, { scope }),
   nativeRevokeAll: () => post<{ ok: true; revoked: number }>("/api/native/devices/revoke-all", {}),
+  /** Settings → Developer → LifeOS QA: the QA account as it stands (404 for anyone but the owner). */
+  qaStatus: () => get<QaStatusDto>("/api/qa/status"),
+  /** The QA account made if there is none, its fixtures seeded if it has none, and a pairing code with the run's tokens. */
+  qaSetup: () => post<QaMintDto>("/api/qa/setup", {}),
+  /** A fresh pairing code for the QA account (5 minutes), with the run's tokens. */
+  qaPair: () => post<QaMintDto>("/api/qa/pairings", {}),
+  /** Everything the QA account owns, gone, and every table checked zero. */
+  qaPurge: () => post<QaPurgeDto>("/api/qa/purge", { confirm: "purge qa" }),
   calendars: () => get<{ calendars: Array<{ id: string; summary: string; primary?: boolean }> }>("/api/calendar/calendars"),
   chooseCalendar: (opts: { calendarId?: string; createNew?: boolean }) => post<{ ok: true; calendarId: string }>("/api/calendar/choose", opts),
   calendarSync: () => post<Record<string, unknown>>("/api/calendar/sync"),

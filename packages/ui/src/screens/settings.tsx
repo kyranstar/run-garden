@@ -39,6 +39,7 @@ import { useLivePrefs, useSaveAsYouGo, useSettingSwitch } from "./settings/save.
 import { SoundsSection } from "./settings/sounds.js";
 import { SavesSection } from "./settings/saves.js";
 import { DevicesSection } from "./settings/devices.js";
+import { QA_STATUS_QUERY, QaSection, statusOf as qaStatusOf } from "./settings/qa.js";
 import { ageText } from "./settings/age.js";
 
 const TZ_OPTIONS: string[] = (() => {
@@ -1889,7 +1890,22 @@ export function SettingsScreen() {
         <DevicesSection timezone={prefs.timezone} />
         <AccountSection email={me.data?.email ?? null} signingOut={logout.isPending} onSignOut={() => logout.mutate()} />
       </SettingsGroup>
+      <DeveloperGroup />
     </div>
+  );
+}
+
+/**
+ * Settings → Developer: the owner's tools — today, LifeOS QA (settings/qa.tsx). The whole group shows only when the worker
+ * answers the QA status, which it does for the owner alone (anyone else's is a 404).
+ */
+function DeveloperGroup() {
+  const status = useQuery({ queryKey: QA_STATUS_QUERY, queryFn: api.qaStatus, retry: false });
+  if (!qaStatusOf(status.data)) return null;
+  return (
+    <SettingsGroup id="settings-developer" title="Developer">
+      <QaSection />
+    </SettingsGroup>
   );
 }
 
