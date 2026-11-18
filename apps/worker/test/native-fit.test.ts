@@ -466,6 +466,40 @@ describe("the review's feedback from the phone: explicit, applied once, earned b
     expect(prefsNow()).toEqual([{ id: other, excluded: 1 }]);
   });
 
+  it("the watch's own copy of this very session, ingested first, is not its history: an earned graduation still applies (review r-m1)", async () => {
+    const { slot, b, programId, lift, asked } = await strengthSlotWithWatchCopy();
+    const a = await save(wire(slot, b, { entries: [sets(lift.from, 16)], review: { graduations: asked } }));
+    // The save joined the watch's activity (one physical session, one activity) and took over its sets…
+    expect([a.status, a.json.status, a.json.activityId, a.json.notes], a.text).toEqual([200, "saved", "coros-lift", []]);
+    expect(q(`select count(*) as n from performed_sessions where id = 'watch-copy'`)[0].n).toBe(0);
+    // …and the graduation its own sets earned applied: the watch's lighter, shorter copy of the same lift was not judged.
+    expect((await loadProgramState(w.db, programId))!.core[lift.family]).toBe(lift.to);
+  });
+
+  /**
+   * A strength session the phone started, and the watch's own copy of it already ingested (review RV-G2): the phone was
+   * offline at the review and COROS synced first. Its activity a minute after the phone's start, the same length; its
+   * performed session that lift's newest entry — no load, 8 reps — and started after the phone's.
+   */
+  async function strengthSlotWithWatchCopy() {
+    const started = await strengthStarted();
+    const at = nowInstant();
+    client()
+      .prepare(`insert into activities (id, user_id, coros_activity_id, source, start_time, sport, duration_seconds, created_at, updated_at) values (?, ?, ?, 'coros', ?, 'strength', 1800, ?, ?)`)
+      .run("coros-lift", w.userId, "coros-9001", new Date(Date.parse(instant(D, "09:06"))).toISOString().replace(".000Z", "Z"), at, at);
+    client()
+      .prepare(
+        `insert into performed_sessions (id, user_id, workout_id, activity_id, source, source_ref, local_date, started_at, seconds, completed, moves_done, payload_hash, created_at, updated_at) values ('watch-copy', ?, null, 'coros-lift', 'watch', 'lbl-9001', ?, ?, 1800, 1, '[]', 'h', ?, ?)`,
+      )
+      .run(w.userId, D, instant(D, "09:06"), at, at);
+    for (const i of [0, 1, 2]) {
+      client()
+        .prepare(`insert into performed_sets (id, performed_session_id, entry_index, exercise_id, implement, format, per_side, set_index, reps, done, flags) values (?, 'watch-copy', 0, ?, null, 'straight', 0, ?, 8, 1, '[]')`)
+        .run(`watch-copy:0:${i}`, started.lift.from, i);
+    }
+    return started;
+  }
+
   it("the lift done, but short of the top of what the place holds: no graduation either (the engine offers going up first)", async () => {
     const { slot, b, programId, lift, asked } = await strengthStarted();
     const a = await save(wire(slot, b, { entries: [sets(lift.from, 12)], review: { graduations: asked } }));

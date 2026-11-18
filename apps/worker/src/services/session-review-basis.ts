@@ -347,7 +347,9 @@ const GRADUATION_SLACK = 2;
 /**
  * `graduationSessions(data, loadHistory(db, userId), lifts, keepPerLift)` — from the database (ruling 2b-R11): per lift
  * the sessions holding its newest progression entries (ranked by start, ties sharing a rank, a little slack), read by
- * id and handed to `graduationSessions`, which picks exactly as over the whole history.
+ * id and handed to `graduationSessions`, which picks exactly as over the whole history. `notHistory`: sessions that are no
+ * session of their own here — a save's earned check leaves out the watch's own copy of the session being saved, which the
+ * save is about to take over (session-save.ts `earnedGraduations`).
  */
 export async function loadGraduationSessions(
   db: Db,
@@ -355,6 +357,7 @@ export async function loadGraduationSessions(
   data: EngineData,
   lifts: readonly string[],
   keepPerLift: number,
+  notHistory: readonly string[] = [],
 ): Promise<HistorySession[]> {
   if (lifts.length === 0) return [];
   const rows = (await db.all(sql`
@@ -362,6 +365,7 @@ export async function loadGraduationSessions(
     s AS (
       SELECT id, COALESCE(NULLIF(started_at, ''), local_date) AS w
       FROM performed_sessions WHERE user_id = ${userId} AND payload_hash <> ${PENDING_HASH}
+        AND id NOT IN (SELECT value FROM json_each(${JSON.stringify(notHistory)}))
     ),
     e AS (
       SELECT ps.performed_session_id AS sid, ps.entry_index AS ei, ps.exercise_id AS ex, ps.format AS fmt, MIN(ps.set_index) AS first_set

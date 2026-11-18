@@ -396,7 +396,12 @@ export async function prefStatements(db: Db, userId: string, p: PerformedSession
  * the stored history of the lifts asked about (`loadGraduationSessions`, the basis's own read) and this save's done sets as
  * the session (`historyFromPerformed`), judged with the session's place, in the basis's engine data. Only done sets are
  * history, so a lift the session never reached, or stopped short of the top of its range, earns nothing whatever
- * `completed` says.
+ * `completed` says (one top set at the top of what the place holds is the engine's top-out: it earns it, as the review
+ * offers it).
+ *
+ * NOT ITS OWN HISTORY: `notHistory`, the watch's own copy of this very session (the same activity, ingested before the
+ * phone's save, and about to be taken over by it: `write`'s `watchSessions`). Its lighter, often load-less sets of the same
+ * lift would otherwise be judged as the lift's newest entry, and skip a graduation the session earned (review r-m1).
  */
 async function earnedGraduations(
   db: Db,
@@ -405,9 +410,10 @@ async function earnedGraduations(
   p: PerformedSessionWire,
   context: Awaited<ReturnType<typeof loadEngineContext>>,
   lifts: readonly string[],
+  notHistory: readonly string[],
 ): Promise<Array<{ family: string; to: string }>> {
   const data = engineDataFor(context.activeProfiles, [], context.library);
-  const sessions = await loadGraduationSessions(db, userId, data, lifts, Hist.TRIM.progressionEntries);
+  const sessions = await loadGraduationSessions(db, userId, data, lifts, Hist.TRIM.progressionEntries, notHistory);
   return Graduation.offers(data, { block, sessions, locations: [context.location], settings: { unit: context.unit } }, historyFromPerformed(p));
 }
 
@@ -415,7 +421,8 @@ async function earnedGraduations(
  * Accepted graduations on the program's block — only the block the session belonged to, and only where its lift is not
  * already the one asked for (a retried save never doubles a rotation). The candidates are judged with the session's
  * place's gear, as the review offered them. A device's (`earnedOnly`) apply only where the session's own sets earn them
- * (`earnedGraduations`); any other is skipped. Read and decided now; the block's update runs with the rest of the save.
+ * (`earnedGraduations`, with `notHistory` the session's own watch copies); any other is skipped. Read and decided now; the
+ * block's update runs with the rest of the save.
  */
 async function graduationStatements(
   db: Db,
@@ -423,7 +430,7 @@ async function graduationStatements(
   slot: SlotRow,
   p: PerformedSessionWire,
   now: string,
-  earnedOnly = false,
+  earned: { only: boolean; notHistory: readonly string[] } = { only: false, notHistory: [] },
 ): Promise<{ applied: boolean; statements: AtomicStatement[] }> {
   if (p.review.graduations.length === 0) return { applied: true, statements: [] };
   let block = await loadProgramState(db, slot.planId);
@@ -433,10 +440,10 @@ async function graduationStatements(
   const context = await loadEngineContext(db, userId, slot.planId, p.locationId ? { locationId: p.locationId } : {});
   const data = engineDataFor(context.activeProfiles, context.careProfiles, context.library);
   let applied = true;
-  if (earnedOnly) {
+  if (earned.only) {
     const lifts = [...new Set(pending.map((g) => block!.core[g.family]).filter((id): id is string => !!id))];
-    const earned = await earnedGraduations(db, userId, block, p, context, lifts);
-    const kept = pending.filter((g) => earned.some((o) => o.family === g.family && o.to === g.to));
+    const offered = await earnedGraduations(db, userId, block, p, context, lifts, earned.notHistory);
+    const kept = pending.filter((g) => offered.some((o) => o.family === g.family && o.to === g.to));
     if (kept.length < pending.length) applied = false;
     pending = kept;
     if (pending.length === 0) return { applied, statements: [] };
@@ -819,7 +826,11 @@ async function write(
     .where(and(eq(performedSessions.userId, userId), eq(performedSessions.activityId, activityId), eq(performedSessions.source, WATCH_SOURCE)));
   const match = await planMatch(db, userId, slot, performedId, activityId, now);
   const prefs = await prefStatements(db, userId, p, now);
-  const graduation = await graduationStatements(db, userId, slot, p, now, ctx.graduationsEarned === true);
+  const graduation = await graduationStatements(db, userId, slot, p, now, {
+    only: ctx.graduationsEarned === true,
+    // The watch's copies this save takes over are this session, not its history (review r-m1).
+    notHistory: watchSessions.map((s) => s.id),
+  });
   const notes: SaveNote[] = [...match.notes];
   if (!graduation.applied) notes.push("graduation_skipped");
   // The completed slot credits its own (current) day — buildDayInput keys it on effectiveDate — the session its day,
