@@ -798,14 +798,16 @@ export async function receiptStatus(db: Db, userId: string, id: string, madeBy: 
   return { id: r.id, source: r.source, op: r.op, workoutId: r.workoutId, status, createdAt: r.createdAt, expiresAt: r.expiresAt, takenBackAt: r.takenBackAt, compensation };
 }
 
-/** The receipts a proposal's approved ops wrote, by op id (the proposal read's `receipts` and `takeBackable`). */
-export async function receiptsOfProposal(db: Db, userId: string, proposalId: string, now: string): Promise<Array<{ opId: string; receiptId: string; open: boolean }>> {
+/** The receipts a proposal's approved ops wrote, by op id (the proposal read's `receipts` and `takeBackable`) — to a phone,
+ * only those it made (`madeByMatches`, as its take-back: review A MINOR-4); to the laptop, all. */
+export async function receiptsOfProposal(db: Db, userId: string, proposalId: string, now: string, asker: string): Promise<Array<{ opId: string; receiptId: string; open: boolean }>> {
   const t = takeBackReceipts;
-  const rows = await db
-    .select({ id: t.id, sourceKey: t.sourceKey, status: t.status, expiresAt: t.expiresAt })
+  const all = await db
+    .select({ id: t.id, sourceKey: t.sourceKey, status: t.status, expiresAt: t.expiresAt, madeBy: t.madeBy })
     .from(t)
     // `<proposalId>:` up to `<proposalId>;` (the next character): a range the unique (user, source, key) index serves.
     .where(and(eq(t.userId, userId), eq(t.source, "coach_approve"), sql`${t.sourceKey} >= ${`${proposalId}:`}`, sql`${t.sourceKey} < ${`${proposalId};`}`));
+  const rows = all.filter((r) => madeByMatches(r, asker));
   return rows.map((r) => ({ opId: r.sourceKey.slice(proposalId.length + 1), receiptId: r.id, open: r.status === "open" && r.expiresAt > now }));
 }
 

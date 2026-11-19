@@ -50,7 +50,7 @@ import { addDays, newId, nowInstant } from "@rg/domain";
 import { loadPreferences } from "../src/services/calendar-sync.js";
 import { runAtomically } from "../src/services/db.js";
 import { removeFromPlan } from "../src/services/plan-mutations.js";
-import { takeBackBatchOf } from "../src/services/take-back.js";
+import { receiptsOfProposal, takeBackBatchOf } from "../src/services/take-back.js";
 import { seedDevice } from "./native-fixture.js";
 import { at, closeKit, T, takeBackKit, type Kit } from "./take-back-kit.js";
 
@@ -208,6 +208,18 @@ describe("a phone takes back what it made (A MINOR-4)", () => {
     expect((await k.takeBack([a.json.receiptId], undefined, other.token)).json.outcomes[0].outcome).toBe("taken_back");
     const laptop = await k.w.call("POST", "/api/native/take-back", { body: { receiptIds: [laptops], requestId: "req-laptop" } });
     expect(laptop.json.outcomes[0].outcome).toBe("taken_back");
+  });
+});
+
+describe("a proposal's receipts, as the phone reads them (A MINOR-4's sibling)", () => {
+  it("to a phone, only the receipts it made; to the laptop, all", async () => {
+    const pid = "design-run-x";
+    const row = (id: string, opId: string, madeBy: string) => ({ id, userId: k.w.userId, source: "coach_approve", sourceKey: `${pid}:${opId}`, madeBy, workoutId: `w-${id}`, op: "create", groupId: "g", postState: "{}", createdAt: nowInstant(), expiresAt: at(addDays(T, 3), "00:00") });
+    await k.w.db.insert(takeBackReceipts).values([row("tb-a", "op-1", `device:${k.v5.id}`), row("tb-b", "op-2", "session"), row("tb-c", "op-3", "device:another")]);
+    // Another proposal whose id begins the same: never this one's.
+    await k.w.db.insert(takeBackReceipts).values({ ...row("tb-d", "op-1", `device:${k.v5.id}`), sourceKey: `${pid}9:op-1` });
+    expect((await receiptsOfProposal(k.w.db, k.w.userId, pid, nowInstant(), `device:${k.v5.id}`)).map((r) => r.receiptId)).toEqual(["tb-a"]);
+    expect((await receiptsOfProposal(k.w.db, k.w.userId, pid, nowInstant(), "session")).map((r) => r.receiptId).sort()).toEqual(["tb-a", "tb-b", "tb-c"]);
   });
 });
 

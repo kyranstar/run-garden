@@ -71,7 +71,7 @@ import { LIVE_STATUSES } from "../services/coach-runs.js";
 import { designProposalId } from "../services/design-tools/propose.js";
 import { completenessOf, opsSummaryOf, titlesOf } from "../services/design-version.js";
 import { proposalVersion } from "../services/proposal-version.js";
-import { receiptsOfProposal } from "../services/take-back.js";
+import { madeByOf, receiptsOfProposal } from "../services/take-back.js";
 import { deviceCoachGate } from "./coach-device-gate.js";
 import { deviceCoachView } from "../services/device-view.js";
 import { addStatedMemory, STATED_KINDS, statedBodyOf } from "../services/coach-memory.js";
@@ -630,7 +630,7 @@ coachRoutes.get("/proposals/:id", async (c) => {
   // R1 (DESIGN-3 §3.4.4, §3.5 pair 16): what an approve must name — the version — whether its run finished, every op as
   // typed fields, and the take-back receipts its approved ops wrote (open ones take-backable). Two statements more.
   const now = nowInstant();
-  const [version, done, receipts] = await Promise.all([proposalVersion(p), completenessOf(c.get("db"), c.get("userId"), p.id), receiptsOfProposal(c.get("db"), c.get("userId"), p.id, now)]);
+  const [version, done, receipts] = await Promise.all([proposalVersion(p), completenessOf(c.get("db"), c.get("userId"), p.id), receiptsOfProposal(c.get("db"), c.get("userId"), p.id, now, madeByOf(c.get("device")))]);
   // A phone reads what it approves as typed fields and each workout's title (readings stripped): never the cards' steps,
   // paces, notes or the coach's words (review A/MAJOR-1).
   if (c.get("device")) {
