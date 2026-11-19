@@ -503,8 +503,14 @@ sessionRoutes.post("/watch/drain", async (c) => {
  * 409 `{error:"slot_done"}` for another session of a slot whose app session is saved already (ruling 2b-R18);
  * 404 for a slot that is not this user's; 422 `invalid_save`; 503 `busy` while the same session is being saved (the
  * outbox retries); 423 while a restore runs (`requireUser`, or the save's own check).
+ *
+ * A DEVICE's id never holds ':' — 400 `invalid_performed_id`, before anything is read or written (the QA harness re-review's
+ * R2-1). A phone's outbox names its sessions with random UUIDs; every id run-garden derives has a ':' (`watch:<user>:<label>`
+ * for the ingest's watch sessions, `app:<id>` for a save's match and link). Device sign-in serves the owner's account and the
+ * LifeOS QA account, so a device's save of `watch:<ownerId>:<label>` would hold the row the owner's COROS sync later fills.
  */
 sessionRoutes.put("/performed/:id", async (c) => {
+  if (byDevice(c) && c.req.param("id").includes(":")) return c.json({ error: "invalid_performed_id" }, 400);
   const db = c.get("db");
   const userId = c.get("userId");
   let body: unknown;

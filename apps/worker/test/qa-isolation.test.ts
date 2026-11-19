@@ -196,6 +196,29 @@ describe("a QA-device save naming the owner's activity (the review's MAJOR-1)", 
   });
 });
 
+describe("a device save's id holding ':' (the re-review's R2-1)", () => {
+  it("is refused 400 before any write — the owner's future watch-session id among them — from any device; a UUID saves", async () => {
+    const qa = await qaPhone();
+    // The ingest names the owner's watch session `watch:<ownerId>:<label>` (watch-sets.ts): a QA row of that id would take
+    // the owner's sets when the owner's COROS sync stores it, and the QA purge would delete them.
+    const squat = `watch:${w.userId}:lbl-owner-future-1`;
+    const a = await qa.as("PUT", `/api/sessions/performed/${encodeURIComponent(squat)}`, saveBody(squat, qa.hips, qa.build));
+    expect([a.status, a.json]).toEqual([400, { error: "invalid_performed_id" }]);
+    expect(a.writes.filter((s) => !/native_devices/.test(s))).toEqual([]);
+    expect(await w.db.select().from(performedSessions).where(eq(performedSessions.id, squat))).toEqual([]);
+    // Any deterministic namespace (`app:…` too), and the owner's own phone the same: no device's outbox makes such an id.
+    const { token: ownerPhone } = await seedDevice(w.db, w.userId, { scope: "training-v3" });
+    const appShaped = `app:${newId()}`;
+    const b = await device(ownerPhone)("PUT", `/api/sessions/performed/${encodeURIComponent(appShaped)}`, saveBody(appShaped, qa.hips, qa.build));
+    expect([b.status, b.json]).toEqual([400, { error: "invalid_performed_id" }]);
+    expect(b.writes.filter((s) => !/native_devices/.test(s))).toEqual([]);
+    // The outbox's own shape still saves.
+    const own = newId();
+    const c = await qa.as("PUT", `/api/sessions/performed/${own}`, saveBody(own, qa.hips, qa.build));
+    expect([c.status, c.json.status]).toEqual([200, "saved"]);
+  });
+});
+
 describe("another account's session row of the same id, landing mid-save (the review's MINOR-2)", () => {
   it("fails the QA save's whole transaction: 409 conflict, the owner's row and sets as written, nothing of the QA save", async () => {
     const qa = await qaPhone();
@@ -260,6 +283,8 @@ describe("every v3 device route, sent the owner's ids by the QA phone", () => {
       ["POST", `/api/sessions/${qa.hips}/start`, { buildId: owner.buildId }, [200, 404, 409]],
       ["PUT", `/api/sessions/performed/${owner.coros}`, saveBody(owner.coros, qa.hips, qa.build), [409]],
       ["PUT", `/api/sessions/performed/${owner.performedId}`, saveBody(owner.performedId, qa.hips, qa.build), [409]],
+      // The owner's deterministic watch-session id, not yet stored (R2-1): refused for its shape.
+      ["PUT", `/api/sessions/performed/watch:${w.userId}:lbl-future`, saveBody(`watch:${w.userId}:lbl-future`, qa.hips, qa.build), [400]],
       ["PUT", `/api/sessions/performed/${fresh}`, saveBody(fresh, owner.open, { ...qa.build, buildId: owner.buildId }), [404]],
       ["PUT", `/api/sessions/performed/${fresh}`, saveBody(fresh, owner.played, { ...qa.build, buildId: owner.buildId }), [404]],
       ["POST", `/api/plan/workouts/${owner.open}/move`, { toDate: today, toTime: "18:15", from }, [404]],
