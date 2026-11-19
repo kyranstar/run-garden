@@ -1,7 +1,8 @@
 import { and, eq, inArray, isNull, notInArray, sql, type SQL } from "drizzle-orm";
 import { calendarEventSuppressions, corosWriteJobs, plannedWorkouts, scheduleOverrides } from "@rg/database";
 import { appAuthoredRow, docOriginRow, newId, watchAddressOf, type ArchiveReason, type UserPreferences } from "@rg/domain";
-import { chunkIds, type AtomicStatement, type Db } from "./db.js";
+import { chunkIds, runAtomicallyAt, runAtomicallyFirst, runAtomicallyRowsAt, type AlsoInBatch, type AtomicStatement, type Db, type TakeBackBatch } from "./db.js";
+import { receiptNotLanded } from "./receipt-landed.js";
 import { recordedStampFor } from "./coros-stamp.js";
 import { openIntentFor, recordIntent, resolveIntent, type IntentSource } from "./sync-intents.js";
 import { unpushBuild, unpushBuildStatements } from "./watch-push.js";
@@ -116,12 +117,17 @@ export function settleWatchJobsOnArchiveStatements(db: Db, userId: string, worko
  * "still flexible" rule, so a slot the athlete moved or touched between the
  * pass's read and this write stays (audit 2a-model M4). Without it the archive
  * is exactly as it always was.
+ *
+ * `takeBack` (R1: services/take-back.ts) joins the archive in ONE batch with the receipt's claim before it, and its queued
+ * watch writes settled, its suppression and the take-back's check and audit after it: all of them land with the archive, or
+ * none does, and an archive its guard refused writes nothing at all (removed: false). The intent and the copy's way off the
+ * watch follow, as they always have.
  */
 export async function removeFromPlan(
   db: Db,
   userId: string,
   workoutId: string,
-  opts: { now: string; source: IntentSource; prefs: UserPreferences; archiveReason?: ArchiveReason; onlyIf?: SQL },
+  opts: { now: string; source: IntentSource; prefs: UserPreferences; archiveReason?: ArchiveReason; onlyIf?: SQL; takeBack?: TakeBackBatch },
 ): Promise<RemoveResult> {
   const [w] = await db
     .select()
@@ -133,6 +139,28 @@ export async function removeFromPlan(
   const archive = db
     .update(plannedWorkouts)
     .set({ archivedAt: now, updatedAt: now, archiveReason: opts.archiveReason ?? "user_removed" });
+  if (opts.takeBack) {
+    // The claim, then the archive held to the row still unarchived and to the caller's condition (the claim); everything
+    // after it is gated on the archive having landed (the row archived at this instant), so a refused one leaves nothing.
+    const landed = sql`exists (select 1 from ${plannedWorkouts} where ${plannedWorkouts.id} = ${w.id} and ${plannedWorkouts.userId} = ${userId} and ${plannedWorkouts.archivedAt} = ${now})`;
+    const first = opts.takeBack.first({ now, workoutId: w.id });
+    const archived = await runAtomicallyAt(db, [
+      ...first,
+      archive.where(and(eq(plannedWorkouts.id, w.id), eq(plannedWorkouts.userId, userId), isNull(plannedWorkouts.archivedAt), ...(opts.onlyIf ? [opts.onlyIf] : []))).returning({ id: plannedWorkouts.id }),
+      db
+        .update(corosWriteJobs)
+        .set({ status: "superseded", updatedAt: now })
+        .where(and(eq(corosWriteJobs.userId, userId), eq(corosWriteJobs.workoutId, w.id), eq(corosWriteJobs.status, "queued"), inArray(corosWriteJobs.kind, [...WATCH_PLACING_KINDS]), landed)),
+      db.insert(calendarEventSuppressions).select(sql`select ${newId()}, ${w.id}, null, 'user_removed', ${now} where ${landed}`),
+      ...opts.takeBack.after({ now, workoutId: w.id }),
+    ], first.length);
+    if (archived === 0) return { removed: false, effectiveDate: null };
+    await recordIntent(db, { userId, targetKind: "workout", targetId: w.id, kind: "remove_local", source: opts.source });
+    const openMove = await openIntentFor(db, userId, w.id, "move");
+    if (openMove) await resolveIntent(db, openMove.id, now);
+    await enqueueUnpushIfOurs(db, userId, w, now, opts.prefs);
+    return { removed: true, effectiveDate: w.effectiveDate };
+  }
   if (opts.onlyIf) {
     const archived = await archive
       .where(and(eq(plannedWorkouts.id, w.id), opts.onlyIf))
@@ -377,9 +405,11 @@ export async function skipWorkout(
     prefs: Pick<UserPreferences, "corosWritesEnabled">;
     /** A further condition the row must meet as it is skipped (`stillOpen`, the athlete's own route). */
     onlyIf?: SQL;
+    /** R1: statements for the skip's own batch (its take-back receipt) — they land with the skip, or neither does. */
+    alsoInBatch?: AlsoInBatch;
   },
 ): Promise<{ skipped: boolean }> {
-  const [w] = await db
+  const skip = db
     .update(plannedWorkouts)
     .set({ completionState: "skipped", resolutionDate: opts.today, ...(opts.sanctionedBy ? { sanctionedBy: opts.sanctionedBy } : {}), updatedAt: opts.now })
     .where(
@@ -390,8 +420,19 @@ export async function skipWorkout(
         notInArray(plannedWorkouts.completionState, [...FROZEN_STATES]),
         opts.onlyIf,
       ),
-    )
-    .returning();
+    );
+  let w: typeof plannedWorkouts.$inferSelect | undefined;
+  if (opts.alsoInBatch) {
+    // A receipt reads the row as the skip left it: a skip that didn't land fails its receipt, and the batch writes nothing.
+    try {
+      [w] = await runAtomicallyRowsAt<typeof plannedWorkouts.$inferSelect>(db, [skip.returning(), ...opts.alsoInBatch({ now: opts.now, workoutId })], 0);
+    } catch (e) {
+      if (receiptNotLanded(e)) return { skipped: false };
+      throw e;
+    }
+  } else {
+    [w] = await skip.returning();
+  }
   if (!w) return { skipped: false };
   // The row as written: its address and copy name are as they were (a skip touches neither), and `unpushBuild` keeps
   // only a done session's copy.
@@ -402,7 +443,8 @@ export async function skipWorkout(
 export interface UnskipResult {
   restored: boolean;
   resolvedOn: string | null;
-  reason?: "not_found" | "not_skipped";
+  /** `changed`: a guarded unskip (R1's take-back) whose row no longer met its condition at the write. */
+  reason?: "not_found" | "not_skipped" | "changed";
 }
 
 /**
@@ -419,7 +461,19 @@ export async function unskipWorkout(
   db: Db,
   userId: string,
   workoutId: string,
-  opts: { now: string; today: string; source: "app" | "coach" },
+  opts: {
+    now: string;
+    today: string;
+    source: "app" | "coach";
+    /**
+     * R1, a take-back (services/take-back.ts): a condition the row must still meet as it is put back, and the take-back's
+     * statements. Then the unskip is ONE batch — the receipt's claim, the row (held to still being skipped and to `onlyIf`),
+     * its `restore` override gated on the row having been put back at this instant, and the take-back's check and audit — and
+     * a refused one writes nothing (`restored: false`, `reason: "changed"`).
+     */
+    onlyIf?: SQL;
+    takeBack?: TakeBackBatch;
+  },
 ): Promise<UnskipResult> {
   const [w] = await db
     .select()
@@ -436,6 +490,23 @@ export async function unskipWorkout(
   // session skipped early, replaying days no skip ever touched.
   const resolvedOn =
     w.resolutionDate && w.resolutionDate > w.effectiveDate ? w.resolutionDate : w.effectiveDate;
+  if (opts.takeBack || opts.onlyIf) {
+    const landed = sql`exists (select 1 from ${plannedWorkouts} where ${plannedWorkouts.id} = ${w.id} and ${plannedWorkouts.userId} = ${userId} and ${plannedWorkouts.completionState} = 'scheduled' and ${plannedWorkouts.updatedAt} = ${now})`;
+    const first = opts.takeBack ? opts.takeBack.first({ now, workoutId: w.id }) : [];
+    const put = await runAtomicallyAt(db, [
+      ...first,
+      db
+        .update(plannedWorkouts)
+        .set({ completionState: "scheduled", resolutionDate: null, sanctionedBy: null, ...reopenedDocColumns(), updatedAt: now })
+        .where(and(eq(plannedWorkouts.id, w.id), eq(plannedWorkouts.userId, userId), eq(plannedWorkouts.completionState, "skipped"), isNull(plannedWorkouts.archivedAt), ...(opts.onlyIf ? [opts.onlyIf] : [])))
+        .returning({ id: plannedWorkouts.id }),
+      db.insert(scheduleOverrides).select(sql`select ${newId()}, ${w.id}, 'restore', ${resolvedOn}, null, null, ${opts.source}, null, ${now} where ${landed}`),
+      ...(opts.takeBack ? opts.takeBack.after({ now, workoutId: w.id }) : []),
+    ], first.length);
+    if (put === 0) return { restored: false, resolvedOn: null, reason: "changed" };
+    if (docOriginRow(w) && w.effectiveDate >= opts.today) await markMirrorOwed(db, userId, w.id, now);
+    return { restored: true, resolvedOn };
+  }
   // `sanctionedBy` clears with the skip: the garden's mercy was granted for a
   // rest day that is no longer being taken. The workout document, kept as it
   // was while skipped, is derived again from the row (`reopenedDocColumns`).

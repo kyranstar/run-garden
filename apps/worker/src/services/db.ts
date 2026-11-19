@@ -53,6 +53,25 @@ export function insertBatches<T extends object>(rows: readonly T[]): T[][] {
 export type AtomicStatement = BatchItem<"sqlite">;
 
 /**
+ * STATEMENTS A CALLER ADDS TO A WRITE'S OWN BATCH (R1; services/take-back.ts): built with the write's instant and the row it
+ * writes, and run in the same D1 transaction as that write, after it — a take-back receipt beside the write it records, or a
+ * receipt's taken-back mark beside the write that took it back. Each statement reads the row as the write left it (the
+ * write's own `updated_at` is the proof it landed), so they land with the write or not at all. Absent, every writer is
+ * exactly as it was.
+ */
+export type AlsoInBatch = (w: { now: string; workoutId: string }) => AtomicStatement[];
+
+/**
+ * A take-back's statements for the inverse write's batch (services/take-back.ts): `first` before the write — the receipt
+ * claimed while the row still reads as the write it takes back left it — and `after` it — the check that the inverse landed
+ * (failing the whole batch when it didn't) and the audit. The writer's own guard (`onlyIf`) holds it to that claim.
+ */
+export interface TakeBackBatch {
+  first: AlsoInBatch;
+  after: AlsoInBatch;
+}
+
+/**
  * Run `statements` in order as ONE transaction: all of them land, or none does. D1 runs a `batch()` as a single
  * transaction (a statement that fails rolls the whole batch back); the better-sqlite3 driver the tests use has no
  * batch, so there the same statements run inside one native transaction. Each statement still counts against D1's
@@ -129,6 +148,32 @@ export async function runAtomicallyFirst(db: Db, statements: readonly AtomicStat
     });
   });
   return wrote;
+}
+
+/**
+ * `runAtomically`, answering how many rows the statement at `index` wrote (it must end in `.returning(...)`): a guarded write
+ * that statements before it (a take-back's claim) and after it are batched with.
+ */
+export async function runAtomicallyAt(db: Db, statements: readonly AtomicStatement[], index: number): Promise<number> {
+  return (await runAtomicallyRowsAt(db, statements, index)).length;
+}
+
+/** `runAtomicallyAt`, answering the rows themselves (what its `.returning(...)` names). */
+export async function runAtomicallyRowsAt<T = unknown>(db: Db, statements: readonly AtomicStatement[], index: number): Promise<T[]> {
+  const d1 = db as unknown as { batch?: (q: readonly [AtomicStatement, ...AtomicStatement[]]) => Promise<unknown[]> };
+  if (typeof d1.batch === "function") {
+    const results = await d1.batch(statements as [AtomicStatement, ...AtomicStatement[]]);
+    return Array.isArray(results[index]) ? (results[index] as T[]) : [];
+  }
+  const sqlite = db as unknown as { transaction: (run: () => void) => void };
+  let rows: T[] = [];
+  sqlite.transaction(() => {
+    statements.forEach((s, i) => {
+      if (i === index) rows = (s as unknown as { all: () => T[] }).all();
+      else (s as unknown as { run: () => unknown }).run();
+    });
+  });
+  return rows;
 }
 
 /**

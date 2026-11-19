@@ -79,7 +79,8 @@ import { sha256Hex } from "../auth/crypto.js";
 import { libraryForDocs, loadAccountLibrary, type AccountLibrary } from "./account-library.js";
 import { restoreInProgress } from "./account-state.js";
 import { loadOwnProgramNames, recordedStampFor } from "./coros-stamp.js";
-import { chunkIds, runAtomically, type Db } from "./db.js";
+import { chunkIds, runAtomically, type AlsoInBatch, type Db, type TakeBackBatch } from "./db.js";
+import { receiptNotLanded } from "./receipt-landed.js";
 import { judgeDoc } from "./doc-build.js";
 import { separateDayCollisions, windowTimeFor, type RetimedRow } from "./day-placement.js";
 import { placeOrDefault } from "./default-place.js";
@@ -360,6 +361,16 @@ export interface DocWriteSource {
   sourceRef?: string | null;
 }
 
+/**
+ * R1 (services/take-back.ts): a take-back receipt's statements for a document write. `alsoInBatch` runs in the write's own
+ * batch, after it; `afterPlaced` runs once the day's collision pass has placed an untimed row (or re-timed a revised one), so
+ * the receipt holds the row as the owner will see it. Absent, the writers are exactly as they were.
+ */
+export interface DocWriteReceipt {
+  alsoInBatch?: AlsoInBatch;
+  afterPlaced?: AlsoInBatch;
+}
+
 // ── The day a document is checked for ────────────────────────────────────────────────────────────────────────
 
 /**
@@ -572,6 +583,7 @@ export async function createDocWorkout(
   input: { date: string; time?: string | null; doc: unknown; clientId?: string; startNow?: boolean; playedOffline?: boolean; planId?: string },
   ctx: DocWorkoutCtx,
   source: DocWriteSource = {},
+  receipt: DocWriteReceipt = {},
 ): Promise<{ workout: DocWorkoutDto; warnings: DocIssue[]; repeated?: true }> {
   // Played offline (R11): a record of what was done, made with the device's key and at once — never planned.
   if (input.playedOffline && (!input.clientId || !input.startNow)) throw new PlayedOfflineRefusedError("key");
@@ -678,6 +690,7 @@ export async function createDocWorkout(
           }),
         ]
       : []),
+    ...(receipt.alsoInBatch ? receipt.alsoInBatch({ now: ctx.now, workoutId: id }) : []),
   ];
   try {
     await runAtomically(db, writes);
@@ -696,6 +709,7 @@ export async function createDocWorkout(
   if (input.time == null) {
     const moved = await separateDayCollisions(db, userId, [date], ctx.prefs, { from: ctx.today, now: ctx.now });
     time = moved.find((m) => m.workoutId === id)?.to ?? time;
+    if (receipt.afterPlaced) await runAtomically(db, receipt.afterPlaced({ now: ctx.now, workoutId: id }));
   }
   return { workout: dtoOf({ ...row, effectiveTime: time }, doc, derived.estimatedMinutes), warnings };
 }
@@ -865,6 +879,9 @@ export async function reviseDocWorkout(
   input: { doc: unknown; baseRev: number },
   ctx: DocWorkoutCtx,
   source: DocWriteSource = {},
+  /** R1: a take-back receipt's statements (`DocWriteReceipt`); and a take-back's own (`takeBack`: its claim first, its
+   * check and audit after) with `onlyIf`, a further condition the row must meet as it is revised (held to that claim). */
+  receipt: DocWriteReceipt & { onlyIf?: SQL; takeBack?: TakeBackBatch } = {},
 ): Promise<{
   workout: DocWorkoutDto;
   rev: number | null;
@@ -919,7 +936,8 @@ export async function reviseDocWorkout(
   const seconds = derived.estimatedMinutes * 60;
   const booked = bookedSeconds(seconds);
   const text = storedDocText(doc);
-  await runAtomically(db, [
+  const batch = runAtomically(db, [
+    ...(receipt.takeBack ? receipt.takeBack.first({ now: ctx.now, workoutId }) : []),
     db
       .update(pw)
       .set({
@@ -945,6 +963,7 @@ export async function reviseDocWorkout(
           sql`coalesce(${pw.workoutDocRev}, 0) = ${input.baseRev}`,
           notInArray(pw.completionState, [...FROZEN_STATES]),
           or(isNull(pw.contentState), notInArray(pw.contentState, [...LOCKED_CONTENT])),
+          ...(receipt.onlyIf ? [receipt.onlyIf] : []),
         ),
       ),
     // An adopted row's stage rows described the session it was: its document is its content now. Only once the update
@@ -963,7 +982,14 @@ export async function reviseDocWorkout(
         ]
       : []),
     revisionInsert(db, { userId, workoutId, sourceKind: source.sourceKind ?? "athlete_edit", sourceRef: source.sourceRef ?? null, now: ctx.now }),
+    ...(receipt.alsoInBatch ? receipt.alsoInBatch({ now: ctx.now, workoutId }) : []),
+    ...(receipt.takeBack ? receipt.takeBack.after({ now: ctx.now, workoutId }) : []),
   ]);
+  // A receipt that found the revise not landed failed the batch (nothing written): the read below says why, as for any
+  // guard that refused it. (A take-back's own check failing is the take-back's to tell: it rethrows.)
+  await batch.catch((e: unknown) => {
+    if (!receiptNotLanded(e)) throw e;
+  });
   // The whole row, as it now stands: what the watch's hooks below read (its address, its held copy's name).
   const [read] = await db
     .select({
@@ -994,6 +1020,7 @@ export async function reviseDocWorkout(
   const moved = booked !== row.calendarBlockDurationSeconds
     ? await separateDayCollisions(db, userId, [row.effectiveDate], ctx.prefs, { from: ctx.today, now: ctx.now })
     : [];
+  if (receipt.afterPlaced && moved.some((m) => m.workoutId === workoutId)) await runAtomically(db, receipt.afterPlaced({ now: ctx.now, workoutId }));
   const rev = after.workoutDocRev ?? null;
   const workout = dtoOf(
     {

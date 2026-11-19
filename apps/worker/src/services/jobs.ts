@@ -19,7 +19,7 @@ import {
   type CorosWriteResult,
   type UserPreferences,
 } from "@rg/domain";
-import { guardFailed, guardOrFail, rowGone, runAtomically, whileRowThere, type AtomicStatement, type Db } from "./db.js";
+import { guardFailed, guardOrFail, rowGone, runAtomically, whileRowThere, type AlsoInBatch, type AtomicStatement, type Db, type TakeBackBatch } from "./db.js";
 import { cloudPresence } from "./sync-status.js";
 import { applyStudioJobResult } from "./studio-push.js";
 import { intentStatements, openIntentFor, openMoveIntents, recordIntent, resolveIntent } from "./sync-intents.js";
@@ -62,6 +62,15 @@ export interface MoveRequest {
    * the audit is exactly as it always was.
    */
   seen?: { date: string; time: string | null };
+  /**
+   * R1 (services/take-back.ts): statements for the guarded move's own batch, after its audit — a receipt for the move. Only
+   * with `onlyIf` (the guarded move is the one that is a single batch).
+   */
+  alsoInBatch?: AlsoInBatch;
+  /** R1: a take-back's claim before the move's row and its check and audit after — with `onlyIf` held to the claim. */
+  takeBack?: TakeBackBatch;
+  /** The move's instant (a take-back's own, so its claim and its check agree); now when absent. */
+  now?: string;
 }
 
 export interface MoveOutcome {
@@ -164,7 +173,7 @@ export function appOnlySession(w: typeof plannedWorkouts.$inferSelect): boolean 
  * caller's follow-up step.
  */
 export async function applyMove(db: Db, req: MoveRequest): Promise<MoveOutcome> {
-  const now = nowInstant();
+  const now = req.now ?? nowInstant();
   const rows = await db
     .select()
     .from(plannedWorkouts)
@@ -173,6 +182,7 @@ export async function applyMove(db: Db, req: MoveRequest): Promise<MoveOutcome> 
   const workout = rows[0];
   if (!workout) throw new Error("workout_not_found");
   if (workout.category === "race") throw new Error("races_cannot_move");
+  if ((req.alsoInBatch || req.takeBack) && !req.onlyIf) throw new Error("also_in_batch_needs_guard");
 
   const fromDate = workout.effectiveDate;
   const appAuthored = appAuthoredRow(workout);
@@ -372,7 +382,10 @@ async function guardedMove(
       detail: { workoutId: workout.id, fromDate, toDate: req.toDate, toTime: req.toTime, source: req.source, jobId: job?.jobId, ...(req.seen ? { seen: req.seen } : {}) },
       createdAt: now,
     }),
+    ...(req.alsoInBatch ? req.alsoInBatch({ now, workoutId: workout.id }) : []),
+    ...(req.takeBack ? req.takeBack.after({ now, workoutId: workout.id }) : []),
   ];
+  if (req.takeBack) statements.unshift(...req.takeBack.first({ now, workoutId: workout.id }));
   try {
     await runAtomically(db, statements);
   } catch (e) {

@@ -40,6 +40,7 @@ import { RUN_REGIONS } from "./body-exposure.js";
 import { enqueueWatchCreate } from "./coach-apply.js";
 import { separateDayCollisions, windowTimeFor } from "./day-placement.js";
 import { insertBatches, runAtomically, type Db } from "./db.js";
+import type { DocWriteReceipt } from "./doc-workouts.js";
 import { judgeDoc } from "./doc-build.js";
 import {
   accepted,
@@ -372,6 +373,7 @@ export async function createDesignedRun(
   input: { date: string; time: string | null; doc: unknown; clientId: string; planId?: string },
   ctx: DocWorkoutCtx,
   source: DocWriteSource,
+  receipt: DocWriteReceipt = {},
 ): Promise<DesignedRunMade> {
   const id = await keyedRowId(userId, input.clientId);
   const pw = plannedWorkouts;
@@ -460,11 +462,13 @@ export async function createDesignedRun(
     ...(input.time != null
       ? [db.insert(scheduleOverrides).values({ id: newId(), workoutId: id, kind: "time_change", fromDate: date, toDate: date, toTime: input.time, source: "app", createdAt: ctx.now })]
       : []),
+    ...(receipt.alsoInBatch ? receipt.alsoInBatch({ now: ctx.now, workoutId: id }) : []),
   ]);
   let time = row.effectiveTime;
   if (input.time == null) {
     const moved = await separateDayCollisions(db, userId, [date], ctx.prefs, { from: ctx.today, now: ctx.now });
     time = moved.find((m) => m.workoutId === id)?.to ?? time;
+    if (receipt.afterPlaced) await runAtomically(db, receipt.afterPlaced({ now: ctx.now, workoutId: id }));
   }
   // To the watch when approved (decision 1): the athlete's approval is the consent; the job runs as the client drains.
   const queued = ctx.prefs.corosWritesEnabled === true && (await enqueueWatchCreate(db, userId, id, date, made.session, ctx.now, threshold ?? undefined, false, wire)) !== null;
