@@ -103,7 +103,8 @@ async function approveSpec(key: string, op: ReceiptSpec["op"], date: string, ove
     userId: w.userId,
     source: "coach_approve",
     sourceKey: key,
-    madeBy: "session",
+    // The phone's own approve: a phone takes back only what it made (review A MINOR-4).
+    madeBy: `device:${v5.id}`,
     op,
     groupId: over.groupId ?? `g-${key}`,
     dependsOn: [],
@@ -201,7 +202,7 @@ describe("refusals, each writing nothing", () => {
       const a = await takeBack([receiptId]);
       expect([name, a.json.outcomes[0].outcome, a.json.outcomes[0].error]).toEqual([name, "refused", "changed_since"]);
       expect(a.json.outcomes[0].why).toBe("It changed after it was added, so it stays as it is now.");
-      expect(a.json.outcomes[0].now).toMatchObject({ archived_at: null });
+      expect(a.json.outcomes[0].now).toMatchObject({ archived: false });
       expect(await snapshot()).toEqual(before);
     }
   });

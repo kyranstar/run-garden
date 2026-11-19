@@ -11,7 +11,9 @@
  *
  * THE TAKE-BACK (`takeBack`, `POST /api/native/take-back {receiptIds, requestId}`), in order:
  *  1. Idempotency: a receipt already taken back with this `requestId` answers what it did; with another, `already_taken_back`
- *     and what it did. An id that isn't one of the account's receipts is `not_found` (another account's too).
+ *     and what it did — found so at preflight, or at the write (another request took it back meanwhile: review B-7). An id
+ *     that isn't one of the account's receipts is `not_found` (another account's too); so, to a phone, is one it didn't make
+ *     (`made_by`: its own places and approves only — review A MINOR-4; the laptop's session takes back any).
  *  2. Eligibility, per receipt, in words: `expired`; `past` (its day has ended — or a move's earlier day has, which it can't
  *     go back to); `executed` (started, done, a performed session or a completion match: performed work is never touched);
  *     `ineligible` (a race, a programme's session); `has_dependents` (an open receipt that relies on it isn't named);
@@ -28,8 +30,10 @@
  *     receipt's `changed_since`, and the group's later receipts are `not_attempted`: a race after preflight can leave a group
  *     partly taken back, and the answer says so receipt by receipt — never silently.
  *  5. Compensation: what the providers still have to do, read live from their own rows (`compensationOf`): the watch's
- *     delete job (pending, done or failed) and the calendar event still booked (pending until the sync removes it). Never
- *     "undone" while a provider step is pending.
+ *     delete — owed on the sent build while COROS writes are off (pending), or its job: pending while it runs, done only once
+ *     verified, failed else (review B-4, B-6) — and the calendar's event: a create's pending until the sync removes it, a
+ *     move's, skip's or revise's pending while the row's own calendar state is (review B-5). Never "undone" while a
+ *     provider step is pending.
  *  6. One request stays inside the Worker's statement budget: receipts are taken back while their declared cost fits
  *     (`TAKE_BACK_COST`); the rest come back in `remaining`, for the phone to send again with the same `requestId`.
  *
@@ -37,8 +41,8 @@
  * ease, a length change, a remove or a restore, and every plan-level op, write no receipt: an ease replaces a session's
  * content, which no run-garden writer restores, so it is changed on the laptop (CALLS C4).
  */
-import { and, eq, inArray, or, sql, type SQL } from "drizzle-orm";
-import { auditEvents, calendarEventLinks, corosWriteJobs, plannedWorkouts, takeBackReceipts, workoutDocRevisions } from "@rg/database";
+import { and, eq, inArray, isNotNull, or, sql, type SQL } from "drizzle-orm";
+import { auditEvents, calendarEventLinks, corosWriteJobs, plannedWorkouts, sessionBuilds, takeBackReceipts, workoutDocRevisions } from "@rg/database";
 import { addDays, newId, parseStoredWorkoutDoc, todayInZone, type UserPreferences } from "@rg/domain";
 import { sha256Hex } from "../auth/crypto.js";
 import { runWireOf, type Env } from "../env.js";
@@ -58,6 +62,8 @@ import {
   type DocWriteReceipt,
 } from "./doc-workouts.js";
 import { RestoreInProgressError } from "./programs.js";
+import { provisionalRecord } from "./session-build.js";
+import { UNPUSH_OWED_AT_PATH } from "./watch-push.js";
 import { applyMove } from "./jobs.js";
 import { removeFromPlan, unskipWorkout } from "./plan-mutations.js";
 
@@ -131,6 +137,9 @@ export interface ReceiptSpec {
 
 /** Who made a write: the device that signed the request in, or the laptop's session. */
 export const madeByOf = (device: { id: string } | undefined): string => (device ? `device:${device.id}` : "session");
+
+/** Whether `asker` (`madeByOf`) may act on a receipt: a phone, only on what it made; the laptop's session, on any. */
+export const madeByMatches = (r: { madeBy: string }, asker: string): boolean => !asker.startsWith("device:") || r.madeBy === asker;
 
 /**
  * The receipt's insert, for the write's own batch: its `post_state` read from the row at the write's instant (NULL, failing
@@ -267,7 +276,17 @@ export type ReceiptOutcome =
   | { receiptId: string; outcome: "taken_back"; op: ReceiptOp; workoutId: string; at: string; compensation: Compensation[] }
   | { receiptId: string; outcome: "already_taken_back"; op: ReceiptOp; workoutId: string; at: string | null; compensation: Compensation[] }
   | { receiptId: string; outcome: "not_found" }
-  | { receiptId: string; outcome: "refused"; error: Refusal; why: string; receiptIds?: string[]; now?: Record<string, unknown> | null };
+  | { receiptId: string; outcome: "refused"; error: Refusal; why: string; receiptIds?: string[]; now?: SessionNow | null };
+
+/** How a session stands now, in the phone's words (a `changed_since` refusal's `now`; never the row's columns: A MINOR-2). */
+export interface SessionNow {
+  date: string | null;
+  time: string | null;
+  state: string | null;
+  archived: boolean;
+  title: string | null;
+  minutes: number | null;
+}
 
 export interface TakeBackAnswer {
   requestId: string;
@@ -378,28 +397,58 @@ export function takeBackNotLanded(e: unknown): boolean {
   return false;
 }
 
-/** The live state of what the providers still have to undo for these rows (two statements, for any number of rows). */
-export async function compensationOf(db: Db, userId: string, rows: ReadonlyArray<{ workoutId: string; since: string }>): Promise<Map<string, Compensation[]>> {
-  const out = new Map<string, Compensation[]>(rows.map((r) => [r.workoutId, []]));
+/** A watch delete's job, by its status: running is pending, done only once verified (read back), anything else — failed,
+ * needing attention, cancelled, neutralised by a restore, or superseded with no newer delete — failed (review B-4). */
+const WATCH_RUNNING: readonly string[] = ["queued", "claimed", "in_progress", "verifying"];
+const watchStateOf = (status: string): CompensationState => (WATCH_RUNNING.includes(status) ? "pending" : status === "verified" ? "done" : "failed");
+
+/**
+ * The live state of what the providers still have to undo, by receipt (`key`), for its row taken back at `since` by `op`
+ * (three statements, for any number of rows): the watch's delete owed on the sent build (COROS writes off: pending until
+ * `runOwedUnpushes` queues it), else its newest delete job since; the calendar's event, if one is still linked.
+ */
+export async function compensationOf(
+  db: Db,
+  userId: string,
+  rows: ReadonlyArray<{ key: string; workoutId: string; since: string; op: string }>,
+): Promise<Map<string, Compensation[]>> {
+  const out = new Map<string, Compensation[]>(rows.map((r) => [r.key, []]));
   if (rows.length === 0) return out;
-  const ids = rows.map((r) => r.workoutId);
-  const since = new Map(rows.map((r) => [r.workoutId, r.since]));
-  const [jobs, links] = await Promise.all([
+  const ids = [...new Set(rows.map((r) => r.workoutId))];
+  const [jobs, links, owed] = await Promise.all([
     db
       .select({ workoutId: corosWriteJobs.workoutId, status: corosWriteJobs.status, requestedAt: corosWriteJobs.requestedAt })
       .from(corosWriteJobs)
       .where(and(eq(corosWriteJobs.userId, userId), inArray(corosWriteJobs.workoutId, ids), eq(corosWriteJobs.kind, "coach_delete_workout"))),
-    db.select({ workoutId: calendarEventLinks.workoutId, state: calendarEventLinks.state }).from(calendarEventLinks).where(inArray(calendarEventLinks.workoutId, ids)),
+    db
+      .select({ workoutId: calendarEventLinks.workoutId, state: calendarEventLinks.state, rowSync: plannedWorkouts.calendarSyncState })
+      .from(calendarEventLinks)
+      .innerJoin(plannedWorkouts, and(eq(plannedWorkouts.id, calendarEventLinks.workoutId), eq(plannedWorkouts.userId, userId)))
+      .where(inArray(calendarEventLinks.workoutId, ids)),
+    // Owed as `runOwedUnpushes` reads it: a sent build (locked, or a provisional copy's record) holding the owed mark.
+    db
+      .select({ workoutId: sessionBuilds.workoutId })
+      .from(sessionBuilds)
+      .where(
+        and(
+          eq(sessionBuilds.userId, userId),
+          inArray(sessionBuilds.workoutId, ids),
+          or(isNotNull(sessionBuilds.lockedAt), provisionalRecord()),
+          sql`json_extract(${sessionBuilds.payload}, ${UNPUSH_OWED_AT_PATH}) is not null`,
+        ),
+      ),
   ]);
-  for (const id of ids) {
-    const mine = jobs.filter((j) => j.workoutId === id && j.requestedAt >= (since.get(id) ?? "")).sort((a, b) => b.requestedAt.localeCompare(a.requestedAt));
-    const newest = mine[0];
-    if (newest) {
-      const state: CompensationState = ["queued", "claimed", "in_progress", "verifying"].includes(newest.status) ? "pending" : newest.status === "failed" ? "failed" : "done";
-      out.get(id)!.push({ provider: "watch", state });
-    }
-    // An event still linked to the row is on the calendar until the next sync removes it (the suppression asks it to).
-    if (links.some((l) => l.workoutId === id && l.state !== "user_deleted")) out.get(id)!.push({ provider: "calendar", state: "pending" });
+  for (const r of rows) {
+    const list = out.get(r.key)!;
+    const newest = jobs.filter((j) => j.workoutId === r.workoutId && j.requestedAt >= r.since).sort((a, b) => b.requestedAt.localeCompare(a.requestedAt))[0];
+    if (owed.some((o) => o.workoutId === r.workoutId)) list.push({ provider: "watch", state: "pending" });
+    else if (newest) list.push({ provider: "watch", state: watchStateOf(newest.status) });
+    const linked = links.filter((l) => l.workoutId === r.workoutId && l.state !== "user_deleted");
+    if (linked.length === 0) continue;
+    // A create's event is on the calendar until the next sync removes it (the suppression asks it to); a move's, skip's or
+    // revise's stays, and is the row's again once the sync has written it back (its calendar state).
+    const pending = r.op === "create" || linked.some((l) => l.rowSync === "pending");
+    list.push({ provider: "calendar", state: pending ? "pending" : "done" });
   }
   return out;
 }
@@ -443,8 +492,21 @@ async function rowsNow(db: Db, userId: string, ids: readonly string[]): Promise<
   return new Map(rows.map((r) => [r.id, r]));
 }
 
-/** What the row reads now, for the owner: the compare columns, parsed (null when the row is gone). */
-const stateNow = (row: RowNow | undefined): Record<string, unknown> | null => (row ? ((parsedJson(row.state) as Record<string, unknown> | null) ?? null) : null);
+/** How the row stands now, in the phone's words (null when the row is gone): never its columns (A MINOR-2). */
+function stateNow(row: RowNow | undefined): SessionNow | null {
+  const s = row ? (parsedJson(row.state) as Record<string, unknown> | null) : null;
+  if (!s) return null;
+  const text = (v: unknown) => (typeof v === "string" ? v : null);
+  const seconds = typeof s.calendar_block_duration_seconds === "number" ? s.calendar_block_duration_seconds : null;
+  return {
+    date: text(s.effective_date),
+    time: text(s.effective_time),
+    state: text(s.completion_state),
+    archived: s.archived_at !== null && s.archived_at !== undefined,
+    title: text(s.title),
+    minutes: seconds === null ? null : Math.round(seconds / 60),
+  };
+}
 
 /** A receipt's own refusal at preflight, or null. */
 function ownRefusal(r: ReceiptRow, row: RowNow | undefined, today: string, now: string): Refusal | null {
@@ -479,29 +541,21 @@ export async function takeBack(
       .where(and(eq(t.userId, userId), or(inArray(t.id, named), and(eq(t.status, "open"), sql`${t.expiresAt} > ${now}`)))),
     loadPreferences(db, userId),
   ]);
-  const byId = new Map(receipts.map((r) => [r.id, r]));
+  // A phone's own receipts only (A MINOR-4): another maker's is not_found to it, as another account's is.
+  const byId = new Map(receipts.filter((r) => madeByMatches(r, input.madeBy)).map((r) => [r.id, r]));
   const open = receipts.filter((r) => r.status === "open" && r.expiresAt > now);
   const today = todayInZone(prefs.timezone, new Date(now));
   const outcomes = new Map<string, ReceiptOutcome>();
   const asked = named.flatMap((id) => (byId.has(id) ? [byId.get(id)!] : []));
   for (const id of named) if (!byId.has(id)) outcomes.set(id, { receiptId: id, outcome: "not_found" });
+  // Taken back, by this request or another: answered at the end, its compensation read live with the rest.
+  const answered: Array<{ r: ReceiptRow; requestId: string | null; at: string | null }> = [];
 
   // 1. Taken back already: this request's answer again, or another's.
   const done = asked.filter((r) => r.status === "taken_back");
   const live = asked.filter((r) => r.status !== "taken_back");
   const rows = await rowsNow(db, userId, live.map((r) => r.workoutId));
-  const compensated = await compensationOf(db, userId, done.map((r) => ({ workoutId: r.workoutId, since: r.takenBackAt ?? r.createdAt })));
-  for (const r of done) {
-    // The same shape, key for key, as the request that took it back answered (its compensation read live, as then).
-    const compensation = compensated.get(r.workoutId) ?? [];
-    const op = r.op as ReceiptOp;
-    outcomes.set(
-      r.id,
-      r.requestId === input.requestId
-        ? { receiptId: r.id, outcome: "taken_back", op, workoutId: r.workoutId, at: r.takenBackAt ?? now, compensation }
-        : { receiptId: r.id, outcome: "already_taken_back", op, workoutId: r.workoutId, at: r.takenBackAt, compensation },
-    );
-  }
+  for (const r of done) answered.push({ r, requestId: r.requestId, at: r.takenBackAt });
 
   // 2–3. Each receipt's own refusal, then its group's and its dependents'; a group refused in part is refused whole.
   const askedIds = new Set(live.map((r) => r.id));
@@ -545,7 +599,6 @@ export async function takeBack(
   const remaining: string[] = [];
   let left = TAKE_BACK_BUDGET - TAKE_BACK_FIXED;
   let first = true;
-  const applied: Array<{ r: ReceiptRow; at: string }> = [];
   const refuse = (r: ReceiptRow, error: Refusal, now?: RowNow) =>
     outcomes.set(r.id, { receiptId: r.id, outcome: "refused", error, why: REFUSAL_WORDS[error], ...(error === "changed_since" ? { now: stateNow(now) } : {}) });
   for (const members of groups.values()) {
@@ -586,7 +639,11 @@ export async function takeBack(
       left -= cost;
       const done = await inverseOf(db, env, prefs, r, input, today, now, checked.get(r.id)!);
       if ("at" in done) {
-        applied.push({ r, at: done.at });
+        answered.push({ r, requestId: input.requestId, at: done.at });
+      } else if ("by" in done) {
+        // Another request took it back meanwhile (review B-7): what it did, never changed_since. Its group goes on: the
+        // receipt it relied on is back either way.
+        answered.push({ r, requestId: done.by, at: done.takenBackAt });
       } else {
         stopped = true;
         const [again] = done.refusal === "changed_since" ? await rowsNowList(db, userId, r.workoutId) : [undefined];
@@ -595,10 +652,18 @@ export async function takeBack(
     }
   }
 
-  // 5. What the providers still have to do, read live.
-  const live5 = await compensationOf(db, userId, applied.map(({ r, at }) => ({ workoutId: r.workoutId, since: at })));
-  for (const { r, at } of applied) {
-    outcomes.set(r.id, { receiptId: r.id, outcome: "taken_back", op: r.op as ReceiptOp, workoutId: r.workoutId, at, compensation: live5.get(r.workoutId) ?? [] });
+  // 5. What the providers still have to do, read live — for what this request took back, and what another had. The same
+  // shape, key for key, whenever it is asked again.
+  const live5 = await compensationOf(db, userId, answered.map(({ r, at }) => ({ key: r.id, workoutId: r.workoutId, since: at ?? r.createdAt, op: r.op })));
+  for (const { r, requestId, at } of answered) {
+    const compensation = live5.get(r.id) ?? [];
+    const op = r.op as ReceiptOp;
+    outcomes.set(
+      r.id,
+      requestId === input.requestId
+        ? { receiptId: r.id, outcome: "taken_back", op, workoutId: r.workoutId, at: at ?? now, compensation }
+        : { receiptId: r.id, outcome: "already_taken_back", op, workoutId: r.workoutId, at, compensation },
+    );
   }
   return { requestId: input.requestId, outcomes: named.flatMap((id) => (outcomes.has(id) ? [outcomes.get(id)!] : [])), remaining };
 }
@@ -681,7 +746,7 @@ async function inverseOf(
   today: string,
   at: string,
   checked: Exclude<Checked, { refusal: Refusal }>,
-): Promise<{ at: string } | { refusal: Refusal }> {
+): Promise<{ at: string } | { by: string | null; takenBackAt: string | null } | { refusal: Refusal }> {
   const takeBack = takeBackBatchOf(db, r, input.requestId, input.madeBy, at);
   const onlyIf = claimedBy(r, input.requestId, at);
   const pre = parsedJson(r.preState) as Record<string, unknown> | null;
@@ -731,11 +796,12 @@ async function inverseOf(
     .from(takeBackReceipts)
     .where(eq(takeBackReceipts.id, r.id))
     .limit(1);
-  return now?.status === "taken_back" && now.requestId === input.requestId && now.takenBackAt === at ? { at } : { refusal: "changed_since" };
+  if (now?.status !== "taken_back") return { refusal: "changed_since" };
+  return now.requestId === input.requestId && now.takenBackAt === at ? { at } : { by: now.requestId, takenBackAt: now.takenBackAt };
 }
 
 /** One receipt as the phone reads it (`GET /api/native/receipts/:id`): its state and the providers' work, live. */
-export async function receiptStatus(db: Db, userId: string, id: string): Promise<null | {
+export async function receiptStatus(db: Db, userId: string, id: string, madeBy: string): Promise<null | {
   id: string;
   source: string;
   op: string;
@@ -747,9 +813,9 @@ export async function receiptStatus(db: Db, userId: string, id: string): Promise
   compensation: Compensation[];
 }> {
   const [r] = await db.select().from(takeBackReceipts).where(and(eq(takeBackReceipts.id, id), eq(takeBackReceipts.userId, userId))).limit(1);
-  if (!r) return null;
+  if (!r || !madeByMatches(r, madeBy)) return null;
   const status: ReceiptStatus = r.status === "open" && r.expiresAt <= new Date().toISOString() ? "expired" : (r.status as ReceiptStatus);
-  const compensation = r.status === "taken_back" ? ((await compensationOf(db, userId, [{ workoutId: r.workoutId, since: r.takenBackAt ?? r.createdAt }])).get(r.workoutId) ?? []) : [];
+  const compensation = r.status === "taken_back" ? ((await compensationOf(db, userId, [{ key: r.id, workoutId: r.workoutId, since: r.takenBackAt ?? r.createdAt, op: r.op }])).get(r.id) ?? []) : [];
   return { id: r.id, source: r.source, op: r.op, workoutId: r.workoutId, status, createdAt: r.createdAt, expiresAt: r.expiresAt, takenBackAt: r.takenBackAt, compensation };
 }
 

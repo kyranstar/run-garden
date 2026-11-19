@@ -1,13 +1,14 @@
 /**
  * TAKE-BACK (R1; the LifeOS migration's DESIGN-3 §3.4.3, §3.5 pairs 6–7): one route for places and approvals, bound to
  * their receipts (services/take-back.ts). Behind `requireUser`: a `training-v5` device or the laptop's cookie, the account's
- * own receipts only.
+ * own receipts only — a phone's, only those it made (its places and approves: `made_by`); the laptop's, any.
  *
  *   POST /api/native/take-back  { receiptIds: [1–12], requestId } → { requestId, outcomes: [per receipt, in the order named],
  *        remaining } — 200 whatever each receipt's outcome: `taken_back` (with what the providers still have to do, read
- *        live), `already_taken_back`, `not_found` (not a receipt of this account's), or `refused` with its reason and words
- *        (expired, past, executed, ineligible, has_dependents, group_incomplete, changed_since with how it stands now,
- *        group_refused, not_attempted). `remaining`: named and eligible, left for the next request (the statement budget):
+ *        live), `already_taken_back`, `not_found` (not a receipt of this account's, or not this phone's), or `refused` with
+ *        its reason and words (expired, past, executed, ineligible, cant_restore, has_dependents, group_incomplete,
+ *        changed_since with how it stands now — `{date, time, state, archived, title, minutes}` — group_refused,
+ *        not_attempted). `remaining`: named and eligible, left for the next request (the statement budget):
  *        send them again with the same requestId. 400 bad_take_back for a body outside its shape.
  *   GET  /api/native/receipts/:id → { id, source, op, workoutId, status, createdAt, expiresAt, takenBackAt, compensation }
  *        — the receipt as it stands and the providers' work, live (`no-store`; 404 not_found; 503 during a restore).
@@ -42,7 +43,7 @@ nativeTakeBackRoutes.get("/receipts/:id", requireUser, async (c) => {
   const db = c.get("db");
   const userId = c.get("userId");
   if (await restoreInProgress(db, userId)) return c.json({ error: "restore_in_progress", retryable: true }, 503);
-  const r = await receiptStatus(db, userId, c.req.param("id")!);
+  const r = await receiptStatus(db, userId, c.req.param("id")!, madeByOf(c.get("device")));
   if (!r) return c.json({ error: "not_found" }, 404);
   return c.json(r);
 });
