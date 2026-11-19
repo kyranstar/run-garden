@@ -17,7 +17,10 @@
 import { and, eq } from "drizzle-orm";
 import { coachRuns } from "@rg/database";
 import type { Db } from "./db.js";
-import { endedLine } from "./coach-runs.js";
+import { endedLine, readRunState } from "./coach-runs.js";
+
+/** What a phone says of a proposal whose run ended without its finish. */
+export const UNFINISHED_LINE = "The coach stopped before it finished this: ask again, or open it on the laptop.";
 import { designProposalId } from "./design-tools/propose.js";
 import { allDesignedOps, type AnyDesignedOp } from "./design-approve.js";
 import { isDocWorkoutOp, isPlanAdjustOp, opIdOf } from "./proposal-kinds.js";
@@ -94,11 +97,15 @@ export async function completenessOf(db: Db, userId: string, proposalId: string)
   const runId = proposalId.startsWith(prefix) ? proposalId.slice(prefix.length) : null;
   if (!runId) return { complete: false, missing: { status: "unknown", error: null, line: null } };
   const [run] = await db
-    .select({ status: coachRuns.status, error: coachRuns.error })
+    .select({ status: coachRuns.status, error: coachRuns.error, state: coachRuns.state })
     .from(coachRuns)
     .where(and(eq(coachRuns.id, runId), eq(coachRuns.userId, userId)))
     .limit(1);
-  if (run?.status === "finished") return { complete: true };
+  // POSITIVELY (review B-1): finished, AND through the finish tool. A run that ended `finished` in words — a words-only last
+  // turn, or a tool refused on its last call (its step cap reached) — proposed what was reviewed, unfinished.
+  const endedBy = run ? readRunState(run.state)?.endedBy : undefined;
+  if (run?.status === "finished" && endedBy === "finish") return { complete: true };
+  if (run?.status === "finished") return { complete: false, missing: { status: "unfinished", error: null, line: UNFINISHED_LINE } };
   const status = run?.status ?? "unknown";
   return { complete: false, missing: { status, error: run?.error ?? null, line: run ? endedLine(status, run.error ?? null, undefined) : null } };
 }

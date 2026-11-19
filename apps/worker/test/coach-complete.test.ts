@@ -56,7 +56,8 @@ async function proposalEnded(status: string, error: string | null = null) {
   const id = designProposalId(main);
   const [p] = await w.db.select().from(coachProposals).where(eq(coachProposals.id, id));
   await w.db.update(coachProposals).set({ status: "pending", ops: (p!.ops as DesignedOp[]).map((o) => ({ ...o, review: REVIEW })) }).where(eq(coachProposals.id, id));
-  await w.db.update(coachRuns).set({ status, error }).where(eq(coachRuns.id, main));
+  // A finished run ended through its finish tool, as a real one does (`state.endedBy`, review B-1).
+  await w.db.update(coachRuns).set({ status, error, ...(status === "finished" ? { state: JSON.stringify({ v: 1, settings: { ceilingMicros: 1_500_000, maxCalls: 12 }, system: null, messages: [], endedBy: "finish" }) } : {}) }).where(eq(coachRuns.id, main));
   return { id, opId: (p!.ops as DesignedOp[])[0]!.by.runId };
 }
 

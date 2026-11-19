@@ -78,7 +78,8 @@ async function designed(drafts: Array<{ doc: object; target: DocWorkoutTarget }>
   const id = designProposalId(main.id);
   const [p] = await w.db.select().from(coachProposals).where(eq(coachProposals.id, id));
   await w.db.update(coachProposals).set({ status: "pending", ops: (p!.ops as DesignedOp[]).map((o) => ({ ...o, review: REVIEW })) }).where(eq(coachProposals.id, id));
-  await w.db.update(coachRuns).set({ status: ended, ...(ended === "stopped_cap" ? { error: "step_cap" } : {}) }).where(eq(coachRuns.id, main.id));
+  // A finished run ended through its finish tool, as a real one does (`state.endedBy`, review B-1).
+  await w.db.update(coachRuns).set({ status: ended, ...(ended === "stopped_cap" ? { error: "step_cap" } : {}), ...(ended === "finished" ? { state: JSON.stringify({ v: 1, settings: { ceilingMicros: 1_500_000, maxCalls: 12 }, system: null, messages: [], endedBy: "finish" }) } : {}) }).where(eq(coachRuns.id, main.id));
   return { id, opIds, runId: main.id };
 }
 

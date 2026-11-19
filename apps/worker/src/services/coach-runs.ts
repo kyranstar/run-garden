@@ -478,6 +478,12 @@ export interface PendingCall {
 export interface RunState {
   v: 1;
   settings: RunSettings;
+  /**
+   * How a finished main run ended (R1 review B-1): `finish`, through the finish tool — the only end that makes its proposal
+   * complete (design-version.ts) — or `words`, as a finish in words (a words-only turn, or one on its last call, or a tool
+   * refused on its last call), which proposes what was reviewed but is never a phone's to approve. Absent: not ended so.
+   */
+  endedBy?: "finish" | "words";
   /** A sub-run's brief from the run that started it (the orchestration sets it); its opening context carries it. */
   brief?: string;
   /** The opening system blocks, built on the first step; null until then. */
@@ -691,6 +697,7 @@ export function readRunState(text: string | null): RunState | null {
     ...(typeof s.awaitingAt === "number" ? { awaitingAt: s.awaitingAt } : {}),
     ...(typeof s.repairs === "number" ? { repairs: s.repairs } : {}),
     ...(typeof s.textOnly === "number" ? { textOnly: s.textOnly } : {}),
+    ...(s.endedBy === "finish" || s.endedBy === "words" ? { endedBy: s.endedBy } : {}),
     ...(s.lastRefused && typeof s.lastRefused === "object"
       ? { lastRefused: typeof s.lastRefused.words === "string" ? { words: s.lastRefused.words } : {} }
       : {}),
@@ -3342,6 +3349,7 @@ async function runTools(
     if (tool?.control === "finish" && ok) {
       state.pending = [];
       state.results = [];
+      if (run.role === "main") state.endedBy = "finish";
       // A designer's own last line, as it wrote it: its set's outcome quotes it if its workout is left out.
       const said = (input as { summary?: unknown } | null)?.summary;
       // (Kept whole up to the finish's ceiling: only the main coach reads it — its trail line is its workout's, M3.)
@@ -3462,6 +3470,8 @@ async function closeProposalAtFinish(s: StepCtx, proposalId: string): Promise<"p
  */
 async function finishInWords(s: StepCtx, said: string, spent: number, o: { lastTurn?: boolean } = {}): Promise<StepEnd> {
   const { state, run } = s;
+  // Not through the finish tool: whatever it proposes is unfinished for a phone (review B-1).
+  if (run.role === "main") state.endedBy = "words";
   // In the athlete's words (round 2, I1), clipped where they read it (§2.1) at its last sentence end inside the line;
   // the whole kept in the payload.
   const plain = said.length > 0 ? athleteText(said) : "";
