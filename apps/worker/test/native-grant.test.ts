@@ -1,7 +1,8 @@
 /**
  * THE LAPTOP'S GRANT OF A DEVICE'S NEXT SCOPE, IN PLACE (the lead's v0.15 ruling; stage 2b RG-NOTES §3). The signed-in
- * owner's laptop moves one ACTIVE device of the account from its scope to the next named one — v1 → v2 → v3, one step a
- * grant, never a downgrade — through `POST /api/native/devices/:id/grant {scope}`, cookie only:
+ * owner's laptop moves one ACTIVE device of the account from its scope to the next named one — v1 → v2 → v3 → v4 (kit
+ * v0.16, DESIGN-2c §3), one step a grant, never a downgrade — through `POST /api/native/devices/:id/grant {scope}`, cookie
+ * only:
  *
  *  - it keeps the device's id (so its token), account, label, state, expiry and every other column exactly, and writes
  *    only that row's scope and one audit row, in one transaction; a resend is 200 `granted: false` and writes nothing;
@@ -48,6 +49,7 @@ const LA = "America/Los_Angeles";
 const V1 = "training-slice-v1";
 const V2 = "training-v2";
 const V3 = "training-v3";
+const V4 = "training-v4";
 const D = "2026-11-18";
 const instant = (date: string, hhmm: string) => DateTime.fromISO(`${date}T${hhmm}`, { zone: LA }).toUTC().toISO()!;
 const EXPIRES = "2026-12-10T08:00:00.000Z";
@@ -154,43 +156,49 @@ describe("a grant moves an active device to its next scope, in place", () => {
     expect([deviceRow(d.id).scope, audits()]).toEqual([V2, []]);
   });
 
-  it("the ladder is one step a grant: v1 → v2, then v2 → v3", async () => {
+  it("the ladder is one step a grant: v1 → v2, then v2 → v3, then v3 → v4", async () => {
     const d = await phone({ scope: V1 });
     expect((await grant(d.id, { scope: V3 })).json).toEqual({ error: "not_next_scope", scope: V1, next: V2 });
     expect((await grant(d.id, { scope: V2 })).json).toEqual({ ok: true, scope: V2, granted: true });
+    expect((await grant(d.id, { scope: V4 })).json).toEqual({ error: "not_next_scope", scope: V2, next: V3 });
     expect((await grant(d.id, { scope: V3 })).json).toEqual({ ok: true, scope: V3, granted: true });
-    expect(audits().map((a) => [a.detail.from, a.detail.to])).toEqual([[V1, V2], [V2, V3]]);
-    // At the top there is no next: v3 asking v3 is the idempotent answer, never a refusal.
-    expect((await grant(d.id, { scope: V3 })).json).toEqual({ ok: true, scope: V3, granted: false });
+    expect((await grant(d.id, { scope: V4 })).json).toEqual({ ok: true, scope: V4, granted: true });
+    expect(audits().map((a) => [a.detail.from, a.detail.to])).toEqual([[V1, V2], [V2, V3], [V3, V4]]);
+    // At the top there is no next: v4 asking v4 is the idempotent answer, never a refusal.
+    expect((await grant(d.id, { scope: V4 })).json).toEqual({ ok: true, scope: V4, granted: false });
+    // And v4 asking v3 is refused: a grant never moves a phone down.
+    expect((await grant(d.id, { scope: V3 })).json).toEqual({ error: "not_next_scope", scope: V4, next: null });
   });
 
   it("the laptop's list says each device's scope and the grant it can offer (none while pending, none at the top)", async () => {
     await phone({ scope: V1, label: "Old phone" });
     await phone({ scope: V2, label: "Running phone" });
     await phone({ scope: V3, label: "New phone" });
+    await phone({ scope: V4, label: "Newest phone" });
     await phone({ scope: V2, label: "Pending phone", state: "pending", confirmedAt: null });
     await phone({ scope: "training-v0", label: "Odd phone" });
     const listed = (await w.call("GET", "/api/native/devices")).json.devices as Array<{ label: string; scope: string; nextScope: string | null }>;
     expect(Object.fromEntries(listed.map((d) => [d.label, [d.scope, d.nextScope]]))).toEqual({
       "Old phone": [V1, V2],
       "Running phone": [V2, V3],
-      "New phone": [V3, null],
+      "New phone": [V3, V4],
+      "Newest phone": [V4, null],
       "Pending phone": [V2, null],
       "Odd phone": ["training-v0", null],
     });
   });
 
-  it("a new pairing's code says what a phone paired now can do: the mint answers the scope a redeem writes (the newest, v3)", async () => {
+  it("a new pairing's code says what a phone paired now can do: the mint answers the scope a redeem writes (the newest, v4)", async () => {
     const minted = await w.call("POST", "/api/native/pairings", { body: {} });
-    expect([minted.status, minted.json.scope]).toEqual([200, V3]);
+    expect([minted.status, minted.json.scope]).toEqual([200, V4]);
     const paired = await w.call("POST", "/api/native/pair", { body: { code: minted.json.code, label: "Fresh phone" }, cookie: false });
     expect(paired.status, paired.text).toBe(200);
-    expect(q(`select scope from native_devices where label = 'Fresh phone'`)).toEqual([{ scope: V3 }]);
+    expect(q(`select scope from native_devices where label = 'Fresh phone'`)).toEqual([{ scope: V4 }]);
     // Nothing to grant it at the top; the laptop can step it down in place.
     const id = q(`select id from native_devices where label = 'Fresh phone'`)[0].id as string;
     expect((await w.call("POST", `/api/native/devices/${id}/confirm`, { body: { check: paired.json.check } })).status).toBe(200);
     const listed = (await w.call("GET", "/api/native/devices")).json.devices.find((d: { id: string }) => d.id === id);
-    expect([listed.scope, listed.nextScope, listed.previousScope]).toEqual([V3, null, V2]);
+    expect([listed.scope, listed.nextScope, listed.previousScope]).toEqual([V4, null, V3]);
   });
 });
 
@@ -300,10 +308,11 @@ describe("what a grant refuses, writing nothing", () => {
     const v2 = await phone({ scope: V2 });
     const odd = await phone({ scope: "training-v0" });
     const held = everything();
-    expect((await grant(v3.id, { scope: V2 })).json).toEqual({ error: "not_next_scope", scope: V3, next: null });
-    expect((await grant(v3.id, { scope: V1 })).json).toEqual({ error: "not_next_scope", scope: V3, next: null });
+    expect((await grant(v3.id, { scope: V2 })).json).toEqual({ error: "not_next_scope", scope: V3, next: V4 });
+    expect((await grant(v3.id, { scope: V1 })).json).toEqual({ error: "not_next_scope", scope: V3, next: V4 });
     expect((await grant(v2.id, { scope: V1 })).json).toEqual({ error: "not_next_scope", scope: V2, next: V3 });
-    for (const name of ["training-v4", "__proto__", "constructor", "toString", "", "TRAINING-V3"]) {
+    // v2 → v4 skips a rung: refused, as an unknown name is.
+    for (const name of [V4, "training-v5", "__proto__", "constructor", "toString", "", "TRAINING-V3"]) {
       const a = await grant(v2.id, { scope: name });
       expect([name, a.status, a.json]).toEqual([name, 409, { error: "not_next_scope", scope: V2, next: V3 }]);
     }
@@ -385,8 +394,12 @@ describe("the laptop's step-down: one rung down, in place", () => {
     expect(everything()).toEqual(held);
     const top = await phone({ scope: V3 });
     const bottom = await phone({ scope: V1 });
+    const newest = await phone({ scope: V4 });
     const held2 = everything();
     expect((await reduce(top.id, V1)).json).toEqual({ error: "not_previous_scope", scope: V3, previous: V2 });
+    // v4 → v2 is two rungs: refused, the phone kept at v4.
+    expect((await reduce(newest.id, V2)).json).toEqual({ error: "not_previous_scope", scope: V4, previous: V3 });
+    expect((await reduce(newest.id, V1)).json).toEqual({ error: "not_previous_scope", scope: V4, previous: V3 });
     expect((await reduce(top.id, V3)).json).toEqual({ ok: true, scope: V3, reduced: false });
     expect((await reduce(bottom.id, "training-v0")).json).toEqual({ error: "not_previous_scope", scope: V1, previous: null });
     expect((await reduce(top.id, "__proto__")).json).toEqual({ error: "not_previous_scope", scope: V3, previous: V2 });
@@ -450,12 +463,66 @@ describe("the laptop's step-down: one rung down, in place", () => {
     expect(reducedAudits()).toHaveLength(1);
   });
 
-  it("the laptop's list says the step-down it can offer: from v3 only — none at v2 or v1, none while pending", async () => {
+  it("the laptop's list says the step-down it can offer: from v4 and v3, one rung — none at v2 or v1, none while pending", async () => {
     await phone({ scope: V1, label: "Old phone" });
     await phone({ scope: V2, label: "Running phone" });
     await phone({ scope: V3, label: "New phone" });
+    await phone({ scope: V4, label: "Newest phone" });
     await phone({ scope: V3, label: "Pending phone", state: "pending", confirmedAt: null });
     const listed = (await w.call("GET", "/api/native/devices")).json.devices as Array<{ label: string; previousScope: string | null }>;
-    expect(Object.fromEntries(listed.map((d) => [d.label, d.previousScope]))).toEqual({ "Old phone": null, "Running phone": null, "New phone": V2, "Pending phone": null });
+    expect(Object.fromEntries(listed.map((d) => [d.label, d.previousScope]))).toEqual({
+      "Old phone": null,
+      "Running phone": null,
+      "New phone": V2,
+      "Newest phone": V3,
+      "Pending phone": null,
+    });
+  });
+});
+
+/**
+ * STAGE 2C's RUNG (kit v0.16, DESIGN-2c §3): the laptop grants a v3 phone `training-v4` in place — the same token, account,
+ * label, state and expiry — and steps a v4 phone back to v3 in place; the three plan reads answer the same token only while
+ * it holds v4, judged on each request. Neither the grant, the step-down nor any read moves the expiry (the lead's v0.17
+ * ruling: no renewal on a v4 read).
+ */
+describe("v3 → v4 in place, and v4 → v3", () => {
+  const reduce = (id: string, scope: string) => w.call("POST", `/api/native/devices/${id}/reduce`, { body: { scope } });
+  const reads = (token: string) => [
+    () => w.call("GET", `/api/native/days?from=${D}&to=${D}`, { bearer: token }),
+    () => w.call("GET", "/api/native/history", { bearer: token }),
+    () => w.call("GET", `/api/native/sessions/${newId()}/ahead`, { bearer: token }),
+  ];
+
+  it("v3: the three reads are 403; granted v4: they answer the same token at once, its row the same but its scope", async () => {
+    const d = await phone({ scope: V3 });
+    for (const read of reads(d.token)) expect((await read()).json).toEqual({ error: "out_of_scope" });
+    const before = deviceRow(d.id);
+    const a = await grant(d.id, { scope: V4 });
+    expect([a.status, a.json], a.text).toEqual([200, { ok: true, scope: V4, granted: true }]);
+    expect(deviceRow(d.id)).toEqual({ ...before, scope: V4 });
+    expect(audits()).toEqual([{ userId: w.userId, kind: "native_device_scope_granted", detail: { deviceId: d.id, label: "Running phone", from: V3, to: V4 } }]);
+    const answers = [];
+    for (const read of reads(d.token)) answers.push((await read()).status);
+    expect(answers).toEqual([200, 200, 404]);
+    expect((await w.call("GET", "/api/native/me", { bearer: d.token })).json.device).toEqual({ label: "Running phone", expiresAt: EXPIRES, scope: V4 });
+    // No read moved the expiry, nor anything of the row (its last use was this hour's already).
+    expect(deviceRow(d.id)).toEqual({ ...before, scope: V4 });
+  });
+
+  it("v4 → v3: the reads are refused at once, v3's own routes still answer; granted again, they answer again", async () => {
+    const d = await phone({ scope: V4 });
+    const made = await w.call("POST", "/api/workouts", { body: { doc: calmDoc(), date: D, time: "18:00", clientId: `v4-${newId()}` } });
+    const id = made.json.workout.id as string;
+    expect((await reads(d.token)[0]!()).status).toBe(200);
+    const before = deviceRow(d.id);
+    const a = await reduce(d.id, V3);
+    expect([a.status, a.json], a.text).toEqual([200, { ok: true, scope: V3, reduced: true }]);
+    expect(deviceRow(d.id)).toEqual({ ...before, scope: V3 });
+    for (const read of reads(d.token)) expect((await read()).json).toEqual({ error: "out_of_scope" });
+    expect((await w.call("GET", `/api/workouts/${id}/doc`, { bearer: d.token })).status).toBe(200);
+    expect((await grant(d.id, { scope: V4 })).json).toEqual({ ok: true, scope: V4, granted: true });
+    expect((await reads(d.token)[0]!()).status).toBe(200);
+    expect(deviceRow(d.id).expires_at).toBe(EXPIRES);
   });
 });

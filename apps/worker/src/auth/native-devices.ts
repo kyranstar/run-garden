@@ -573,8 +573,9 @@ async function stepScope(
 
 /**
  * THE LAPTOP'S GRANT OF A DEVICE'S NEXT SCOPE, IN PLACE (the lead's v0.15 ruling): `stepScope` up the ladder
- * (`NEXT_DEVICE_SCOPE`: v1 → v2 → v3, one step a grant; never a skip or a downgrade), auditing `SCOPE_GRANTED_KIND`. The
- * route is 404 while device sign-in is off: nothing widens a device then.
+ * (`NEXT_DEVICE_SCOPE`: v1 → v2 → v3 → v4, one step a grant; never a skip or a downgrade), auditing `SCOPE_GRANTED_KIND`.
+ * The route is 404 while device sign-in is off: nothing widens a device then. It never touches the expiry: a grant is no
+ * renewal (the lead's v0.16 and v0.17 rulings).
  */
 export async function grantNextScope(db: Db, userId: string, id: string, to: string, now: string): Promise<GrantOutcome> {
   const r = await stepScope(db, userId, id, to, now, { toward: nextOf, kind: SCOPE_GRANTED_KIND });
@@ -584,9 +585,9 @@ export async function grantNextScope(db: Db, userId: string, id: string, to: str
 }
 
 /**
- * THE LAPTOP'S STEP-DOWN, IN PLACE (stage 2b review r-m4): `stepScope` down the ladder (`PREVIOUS_DEVICE_SCOPE`: v3 → v2
- * only, review r2-m2; v2 → v1 is `not_previous_scope`, Revoke being how plan edits stop), auditing `SCOPE_REDUCED_KIND`
- * — an undo of the v3 grant, and a rollback that needs no Revoke: the
+ * THE LAPTOP'S STEP-DOWN, IN PLACE (stage 2b review r-m4): `stepScope` down the ladder (`PREVIOUS_DEVICE_SCOPE`: v4 → v3
+ * and v3 → v2, one rung a step-down, review r2-m2; v2 → v1 is `not_previous_scope`, Revoke being how plan edits stop),
+ * auditing `SCOPE_REDUCED_KIND` — an undo of a grant, and a rollback that needs no Revoke: the
  * phone keeps its pairing, token and expiry, and on its next request is judged by the lower scope. It answers while device
  * sign-in is off, as Revoke does: narrowing a device never widens one.
  */

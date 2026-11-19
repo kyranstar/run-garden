@@ -223,7 +223,7 @@ describe("the run's tokens", () => {
     const qa = await createQaUser(db, env, ownerId);
     const minted = await mintQaPairing(db, env, qa, { tokens: true });
     if ("refused" in minted) throw new Error("refused");
-    expect(minted).toMatchObject({ code: expect.stringMatching(/^[0-9A-HJKMNP-TV-Z]{8}$/), scope: "training-v3", planToken: await qaPlanToken(env, qa.userId) });
+    expect(minted).toMatchObject({ code: expect.stringMatching(/^[0-9A-HJKMNP-TV-Z]{8}$/), scope: "training-v4", planToken: await qaPlanToken(env, qa.userId) });
     expect(await verifyHarnessToken(env, minted.harnessToken)).toBe(qa.userId);
     // Without `tokens` (the harness token's door), the code alone.
     const bare = await mintQaPairing(db, env, qa, { tokens: false });

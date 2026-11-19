@@ -182,7 +182,7 @@ describe("the owner's routes: create, seed, mint, read, purge", () => {
   it("status says none; create, seed and mint; status and state say what is there", async () => {
     expect((await owner("GET", "/status")).json).toMatchObject({ qa: null });
     const { minted, fixtures } = await setUp();
-    expect(minted).toMatchObject({ code: expect.stringMatching(/^[0-9A-HJKMNP-TV-Z]{8}$/), scope: "training-v3", planToken: expect.stringMatching(/^[0-9a-f]{64}$/), harnessToken: expect.stringMatching(/^rgq_/) });
+    expect(minted).toMatchObject({ code: expect.stringMatching(/^[0-9A-HJKMNP-TV-Z]{8}$/), scope: "training-v4", planToken: expect.stringMatching(/^[0-9a-f]{64}$/), harnessToken: expect.stringMatching(/^rgq_/) });
     expect(fixtures.map((f) => f.title)).toEqual(["QA Hips and back", "QA Mobility", "QA Mobility", "QA Easy run", "QA Core reset"]);
     const status = (await owner("GET", "/status")).json;
     expect(status).toMatchObject({ qa: { userId: expect.any(String), accountTag: expect.stringMatching(/^[0-9a-f]{8}$/) }, today, devices: [] });
@@ -404,7 +404,7 @@ describe("the phone's whole flow on the QA account, as the on-device suite runs 
     const token = paired.json.token as string;
     const as = (method: string, path: string, body?: unknown) => w.call(method, path, { bearer: token, ...(body === undefined ? {} : { body }) });
 
-    expect((await as("GET", "/api/native/me")).json.device.scope).toBe("training-v3");
+    expect((await as("GET", "/api/native/me")).json.device.scope).toBe("training-v4");
     const day = (await as("GET", "/api/native/today")).json;
     expect(day.sessions.map((s: { title: string }) => s.title)).toEqual(["QA Hips and back", "QA Mobility", "QA Easy run"]);
 
@@ -444,7 +444,7 @@ describe("the phone's whole flow on the QA account, as the on-device suite runs 
     expect(overrides.filter((o) => o.kind === "time_change").map((o) => o.toTime).sort()).toEqual([hips.time, to].sort());
     expect(state.performed).toEqual([expect.objectContaining({ id: performedId, workoutId: hips.id, completed: true, source: "app" })]);
     expect(state.matches).toEqual([expect.objectContaining({ workoutId: hips.id, activityId: performedId, method: "app_session", undoneAt: null })]);
-    expect(state.devices).toEqual([expect.objectContaining({ state: "active", scope: "training-v3", label: "LifeOS phone" })]);
+    expect(state.devices).toEqual([expect.objectContaining({ state: "active", scope: "training-v4", label: "LifeOS phone" })]);
     expect(state.providers).toMatchObject({ connections: 0, corosWriteJobs: 0, calendarEventLinks: 0, studioPlanPushes: 0, syncRuns: 0 });
     expect(fetched).toEqual([]);
 

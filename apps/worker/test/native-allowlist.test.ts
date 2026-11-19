@@ -6,7 +6,8 @@
  * a route added later fails here until someone classifies it:
  *
  *  - `device`: on the scope's list. For `training-slice-v1` only the slice's eight; for `training-v2` those and stage
- *    2a's four; for `training-v3` v2's twelve and stage 2b's two document routes. A device of that scope reaches the
+ *    2a's four; for `training-v3` v2's twelve and stage 2b's two document routes; for `training-v4` v3's fourteen and
+ *    stage 2c's three plan reads, each probed with a query in its rule's grammar. A device of that scope reaches the
  *    handler.
  *  - `gated`: behind `requireUser`. A device of that scope is refused 403 `out_of_scope` before the handler runs.
  *  - `open`: not behind `requireUser` (sign-in, health, assets, the bridge's 410, a switch's 404 …). The device token is
@@ -19,7 +20,8 @@
  * reached `requireUser` (a spy on the real function says), each device must be on its scope's list or get 403
  * `out_of_scope`; wherever it did not, each device's answer must be the anonymous one. v1's list is pinned as it was
  * before v2 existed, and v2's is v1's, the same entries, plus four; v3's is v2's in v2's order with Build's and the save's
- * body rules widened (kit v0.15), plus two. Synthetic data only; `fetch` stubbed.
+ * body rules widened (kit v0.15), plus two; v4's is v3's, the very same entries, plus three, each with a query rule (kit
+ * v0.16, DESIGN-2c §2.5) — and every pair before them has none. Synthetic data only; `fetch` stubbed.
  */
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { eq } from "drizzle-orm";
@@ -50,8 +52,21 @@ vi.mock("../src/services/calendar-sync.js", async (importOriginal) => ({
 }));
 
 const { default: worker, mountedRoutes } = await import("../src/index.js");
-const { DEVICE_SCOPES, deviceBuildBody, deviceDocBody, deviceDrainBody, deviceFeedbackSaveBody, deviceMoveBody, deviceRouteOf, deviceSaveBody, emptyBody, emptyObjectBody } =
-  await import("../src/auth/device-scope.js");
+const {
+  DEVICE_SCOPES,
+  deviceAheadQuery,
+  deviceBuildBody,
+  deviceDaysQuery,
+  deviceDocBody,
+  deviceDrainBody,
+  deviceFeedbackSaveBody,
+  deviceHistoryQuery,
+  deviceMoveBody,
+  deviceRouteOf,
+  deviceSaveBody,
+  emptyBody,
+  emptyObjectBody,
+} = await import("../src/auth/device-scope.js");
 
 vi.setConfig({ testTimeout: 600_000 });
 
@@ -75,11 +90,14 @@ const V2_PAIRS = [
   "POST /api/plan/workouts/:id/unskip",
   "POST /api/sessions/watch/drain",
 ];
-/** Each scope's pairs: v3 is v2 and stage 2b's document read and edit (kit v0.15). */
+/** v3: v2 and stage 2b's document read and edit (kit v0.15). */
+const V3_PAIRS = [...V2_PAIRS, "GET /api/workouts/:id/doc", "PUT /api/workouts/:id/doc"];
+/** Each scope's pairs: v4 is v3 and stage 2c's three plan reads (kit v0.16, DESIGN-2c §2). */
 const DEVICE_PAIRS: Record<Scope, readonly string[]> = {
   "training-slice-v1": V1_PAIRS,
   "training-v2": V2_PAIRS,
-  "training-v3": [...V2_PAIRS, "GET /api/workouts/:id/doc", "PUT /api/workouts/:id/doc"],
+  "training-v3": V3_PAIRS,
+  "training-v4": [...V3_PAIRS, "GET /api/native/days", "GET /api/native/history", "GET /api/native/sessions/:id/ahead"],
 };
 /**
  * A probe's body where `{}` is outside the pair's body rule: a move in its grammar (the route then answers 404), and the
@@ -90,6 +108,13 @@ const PROBE_BODIES: Record<string, string> = {
   "POST /api/sessions/watch/drain": JSON.stringify({ workoutId: "probe-id" }),
   // A document edit in v3's grammar (the route then answers 404 for an id that isn't the account's).
   "PUT /api/workouts/:id/doc": JSON.stringify({ doc: {}, baseRev: 0 }),
+};
+/**
+ * A probe's query where a pair's query rule refuses none (DESIGN-2c §2.5): `/days` takes exactly `from` and `to` (the route
+ * then answers the days, or 400 for days outside its horizon). `/history` and `/ahead` take none here.
+ */
+const PROBE_QUERIES: Record<string, string> = {
+  "GET /api/native/days": "?from=2026-11-18&to=2026-11-18",
 };
 
 const keyOf = (r: { method: string; path: string }) => `${r.method} ${r.path}`;
@@ -228,6 +253,45 @@ describe("every mounted route is classified", () => {
       ["PUT", String(/^\/api\/workouts\/[^/]+\/doc$/), deviceDocBody],
     ]);
   });
+
+  it("v4's list is v3's fourteen, the very same entries in v3's order, then the three plan reads, each with its query rule", () => {
+    const v3 = DEVICE_SCOPES["training-v3"];
+    const v4 = DEVICE_SCOPES["training-v4"];
+    expect(v4).toHaveLength(v3.length + 3);
+    // A released scope is never widened, and v4 holds v3 exactly: the same objects, so no body rule of v3's moves.
+    v3.forEach((r, i) => expect(v4[i]).toBe(r));
+    expect(v4.slice(v3.length).map((r) => [r.method, String(r.pattern), r.body ?? null, r.query ?? null])).toEqual([
+      ["GET", String(/^\/api\/native\/days$/), null, deviceDaysQuery],
+      ["GET", String(/^\/api\/native\/history$/), null, deviceHistoryQuery],
+      ["GET", String(/^\/api\/native\/sessions\/[^/]+\/ahead$/), null, deviceAheadQuery],
+    ]);
+    // Only v4's three hold a query rule: every pair of v1–v3 behaves exactly as before, its query never checked.
+    for (const scope of SCOPES) for (const r of DEVICE_SCOPES[scope].filter((x) => !v4.slice(v3.length).includes(x))) expect(r.query).toBeUndefined();
+  });
+});
+
+describe("the gate's query rule (DESIGN-2c §2.5): the shape only, the route checks the values", () => {
+  const q = (s: string) => new URLSearchParams(s);
+  it("/days: exactly the keys from and to, each once, each YYYY-MM-DD", () => {
+    for (const ok of ["from=2026-11-18&to=2026-11-18", "to=2026-12-01&from=2026-11-18", "from=2026-11-18&to=2026-11-18&", "from=2026%2D11%2D18&to=2026-11-18", "from=2026-02-30&to=9999-99-99"]) {
+      expect([ok, deviceDaysQuery(q(ok))]).toEqual([ok, true]);
+    }
+    for (const bad of ["", "from=2026-11-18", "to=2026-11-18", "from=2026-11-18&to=2026-11-18&x=1", "from=2026-11-18&from=2026-11-18&to=2026-11-18", "from=2026-1-1&to=2026-11-18", "from=2026-11-18&to=2026-11-18T00", "from=&to=2026-11-18", "from=2026-11-18&to= 2026-11-18", "FROM=2026-11-18&to=2026-11-18", "from=2026-11-18&to=2026-11-18&to=2026-11-19", "from[]=2026-11-18&to=2026-11-18", "from=+2026-11-18&to=2026-11-18"]) {
+      expect([bad, deviceDaysQuery(q(bad))]).toEqual([bad, false]);
+    }
+  });
+  it("/history: keys among before and limit, each at most once; before YYYY-MM-DD, limit 1–99 with no leading zero", () => {
+    for (const ok of ["", "before=2026-11-18", "limit=1", "limit=30", "limit=99", "before=2026-11-18&limit=7", "limit=7&before=2026-11-18"]) {
+      expect([ok, deviceHistoryQuery(q(ok))]).toEqual([ok, true]);
+    }
+    for (const bad of ["limit=0", "limit=01", "limit=100", "limit=-1", "limit=1.5", "limit=", "before=2026-1-1", "before=", "before=2026-11-18&before=2026-11-17", "limit=1&limit=2", "after=2026-11-18", "before=2026-11-18&x=", "x"]) {
+      expect([bad, deviceHistoryQuery(q(bad))]).toEqual([bad, false]);
+    }
+  });
+  it("/ahead: no query at all", () => {
+    expect(deviceAheadQuery(q(""))).toBe(true);
+    for (const bad of ["x=1", "date=2026-11-18", "&x", "x"]) expect([bad, deviceAheadQuery(q(bad))]).toEqual([bad, false]);
+  });
 });
 
 describe("a device token of each scope against every route, every method", () => {
@@ -242,10 +306,11 @@ describe("a device token of each scope against every route, every method", () =>
       const url = concrete(path);
       for (const method of METHODS) {
         const body = PROBE_BODIES[`${method} ${path}`];
-        const anonymous = await probe(method, url, undefined, body);
+        const target = `${url}${PROBE_QUERIES[`${method} ${path}`] ?? ""}`;
+        const anonymous = await probe(method, target, undefined, body);
         probes += 1;
         for (const scope of SCOPES) {
-          const device = await probe(method, url, tokens[scope], body);
+          const device = await probe(method, target, tokens[scope], body);
           probes += 1;
           const allowed = onSlice(scope, method, url);
           const label = `${scope} ${method} ${url}`;

@@ -94,7 +94,7 @@ describe("minting, on laptop web (cookie only)", () => {
     const a = await mint();
     expect(a.status, a.text).toBe(200);
     // `scope`: what a phone paired with it will be able to do (PAIRING_SCOPE), so the laptop says so beside the code.
-    expect(a.json).toEqual({ code: expect.stringMatching(CROCKFORD), expiresAt: later(5 * MIN), scope: "training-v3" });
+    expect(a.json).toEqual({ code: expect.stringMatching(CROCKFORD), expiresAt: later(5 * MIN), scope: "training-v4" });
     const row = await pairing();
     expect(row).toEqual({ userId: w.userId, codeHmac: expect.stringMatching(/^[0-9a-f]{64}$/), createdAt: nowInstant(), expiresAt: later(5 * MIN), tries: 0, usedAt: null });
     // Keyed: neither the code nor its plain hash is stored, and the code was never bound into a statement.
@@ -133,7 +133,7 @@ describe("redeeming, from the phone (unauthenticated)", () => {
       {
         id,
         userId: w.userId,
-        scope: "training-v3", // PAIRING_SCOPE (stage 2b RG-NOTES §3.5, §8): a new pairing is minted at the newest scope
+        scope: "training-v4", // PAIRING_SCOPE (stage 2b RG-NOTES §3.5, §8; DESIGN-2c §3): a new pairing is minted at the newest scope
         label: "Kitchen iPhone",
         state: "pending",
         checkNumber: a.json.check,
@@ -253,7 +253,7 @@ describe("confirming on the laptop", () => {
     expect(list.json).toEqual({
       enabled: true,
       // Its scope as stored, and no grant offered while it is pending (kit v0.15).
-      devices: [{ id, label: "Kitchen iPhone", state: "pending", check, createdAt: nowInstant(), confirmedAt: null, lastUsedAt: null, expiresAt: later(10 * MIN), expiresSoon: false, scope: "training-v3", nextScope: null, previousScope: null }],
+      devices: [{ id, label: "Kitchen iPhone", state: "pending", check, createdAt: nowInstant(), confirmedAt: null, lastUsedAt: null, expiresAt: later(10 * MIN), expiresSoon: false, scope: "training-v4", nextScope: null, previousScope: null }],
     });
     vi.setSystemTime(new Date(Date.now() + 2 * MIN));
     const a = await w.call("POST", `/api/native/devices/${id}/confirm`, { body: { check } });
