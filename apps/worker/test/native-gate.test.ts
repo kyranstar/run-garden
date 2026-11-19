@@ -219,8 +219,8 @@ describe("an active device", () => {
       const on = await w.call(method, "/api/coach/memory/m-1", { bearer: v5.token, ...(body ? { body } : {}) });
       expect([method, on.status, on.json, on.writes]).toEqual([method, 423, { error: "restore_in_progress" }, []]);
     }
-    // A read still answers a v5 phone during the restore.
-    expect((await w.call("GET", "/api/coach/memory", { bearer: v5.token })).status).toBe(200);
+    // A read still answers a v5 phone during the restore (the coach designer on, as in production).
+    expect((await w.call("GET", "/api/coach/memory", { bearer: v5.token, env: { COACH_DESIGNER: "1" } })).status).toBe(200);
   });
 
   it("Build carries exactly {}: a check, an override or a swap is 403 out_of_scope and builds nothing; {} builds", async () => {

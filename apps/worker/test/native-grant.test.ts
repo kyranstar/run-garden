@@ -542,9 +542,11 @@ describe("v3 → v4 in place, and v4 → v3", () => {
  */
 describe("v4 → v5 in place, and v5 → v4", () => {
   const reduce = (id: string, scope: string) => w.call("POST", `/api/native/devices/${id}/reduce`, { body: { scope } });
+  // The coach designer on, as in production: what the scope decides is then the only refusal.
+  const on = { COACH_DESIGNER: "1" };
   const coach = (token: string) => [
-    () => w.call("GET", "/api/coach/spend", { bearer: token }),
-    () => w.call("GET", "/api/coach/memory", { bearer: token }),
+    () => w.call("GET", "/api/coach/spend", { bearer: token, env: on }),
+    () => w.call("GET", "/api/coach/memory", { bearer: token, env: on }),
   ];
 
   it("v4: the coach's routes are 403; granted v5: they answer the same token at once, its row the same but its scope", async () => {
