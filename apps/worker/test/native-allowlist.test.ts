@@ -60,7 +60,11 @@ const {
   deviceApproveBody,
   deviceConversationQuery,
   deviceDeclineBody,
+  deviceLibraryQuery,
   deviceMemoryPatchBody,
+  devicePlaceBody,
+  deviceSharingBody,
+  deviceTakeBackBody,
   deviceNudgesQuery,
   deviceRunAnswerBody,
   deviceRunCreateBody,
@@ -108,6 +112,15 @@ const V4_PAIRS = [...V3_PAIRS, "GET /api/native/days", "GET /api/native/history"
 /** v5: v4 and R1's (kit v0.20, DESIGN-3 §3.5): the coach designer's runs, conversation, proposals, drain, memory, nudges and spend. */
 const V5_PAIRS = [
   ...V4_PAIRS,
+  "GET /api/native/templates",
+  "GET /api/native/templates/:id",
+  "GET /api/native/library",
+  "GET /api/native/library/:id",
+  "POST /api/native/templates/:id/place",
+  "POST /api/native/take-back",
+  "GET /api/native/receipts/:id",
+  "GET /api/native/sharing",
+  "PUT /api/native/sharing",
   "POST /api/coach/runs",
   "POST /api/coach/runs/:id/step",
   "GET /api/coach/runs/current",
@@ -148,6 +161,9 @@ const PROBE_BODIES: Record<string, string> = {
   "POST /api/coach/runs/:id/undo-answer": JSON.stringify({ handle: "probe-handle" }),
   "POST /api/coach/proposals/:id/approve": JSON.stringify({ opIds: ["probe-op"], version: "0".repeat(64) }),
   "PATCH /api/coach/memory/:id": JSON.stringify({ pinned: true }),
+  "POST /api/native/templates/:id/place": JSON.stringify({ date: "2026-11-20", clientId: "probe-place" }),
+  "POST /api/native/take-back": JSON.stringify({ receiptIds: ["probe-receipt"], requestId: "probe-request" }),
+  "PUT /api/native/sharing": JSON.stringify({ toTraining: false, disclosureVersion: "probe" }),
 };
 /**
  * A probe's query where a pair's query rule refuses none (DESIGN-2c §2.5): `/days` takes exactly `from` and `to` (the route
@@ -315,6 +331,15 @@ describe("every mounted route is classified", () => {
     // A released scope is never widened: v5 holds v4 exactly, the same objects, so no rule of v4's moves.
     v4.forEach((r, i) => expect(v5[i]).toBe(r));
     expect(v5.slice(v4.length).map((r) => [r.method, String(r.pattern), r.body ?? null, r.query ?? null])).toEqual([
+      ["GET", String(/^\/api\/native\/templates$/), null, noQuery],
+      ["GET", String(/^\/api\/native\/templates\/[^/]+$/), null, noQuery],
+      ["GET", String(/^\/api\/native\/library$/), null, deviceLibraryQuery],
+      ["GET", String(/^\/api\/native\/library\/[^/]+$/), null, noQuery],
+      ["POST", String(/^\/api\/native\/templates\/[^/]+\/place$/), devicePlaceBody, null],
+      ["POST", String(/^\/api\/native\/take-back$/), deviceTakeBackBody, null],
+      ["GET", String(/^\/api\/native\/receipts\/[^/]+$/), null, noQuery],
+      ["GET", String(/^\/api\/native\/sharing$/), null, noQuery],
+      ["PUT", String(/^\/api\/native\/sharing$/), deviceSharingBody, null],
       ["POST", String(/^\/api\/coach\/runs$/), deviceRunCreateBody, null],
       ["POST", String(/^\/api\/coach\/runs\/[^/]+\/step$/), emptyBody, deviceAfterSeqQuery],
       ["GET", String(/^\/api\/coach\/runs\/current$/), null, noQuery],
@@ -366,6 +391,28 @@ describe("v5's body rules (DESIGN-3 §3.5): the shapes only, the routes check th
     expect([deviceMemoryPatchBody(j({ pinned: true })), deviceMemoryPatchBody(j({ body: "x", confirm: true })), deviceMemoryPatchBody(j({})), deviceMemoryPatchBody(j({ kind: "rule" }))]).toEqual([true, true, false, false]);
     expect([emptyBody(""), emptyBody("{}"), emptyBody(j({ afterSeq: 1 }))]).toEqual([true, true, false]);
   });
+  it("place, take-back and switch A: exactly their keys", () => {
+    for (const ok of [{ date: "2026-11-20", clientId: "c1" }, { date: "2026-11-20", time: "18:15", clientId: "c1" }, { date: "2026-11-20", time: null, clientId: "c1" }]) expect([j(ok), devicePlaceBody(j(ok))]).toEqual([j(ok), true]);
+    for (const bad of [{ date: "2026-11-20" }, { clientId: "c1" }, { date: "20-11-2026", clientId: "c1" }, { date: "2026-11-20", time: "6pm", clientId: "c1" }, { date: "2026-11-20", clientId: "c1", doc: {} }, { date: "2026-11-20", clientId: "" }]) {
+      expect([j(bad), devicePlaceBody(j(bad))]).toEqual([j(bad), false]);
+    }
+    const ids = (n: number) => Array.from({ length: n }, (_, i) => `tb_${i}`);
+    expect([deviceTakeBackBody(j({ receiptIds: ids(1), requestId: "r" })), deviceTakeBackBody(j({ receiptIds: ids(12), requestId: "r" }))]).toEqual([true, true]);
+    for (const bad of [{ receiptIds: [], requestId: "r" }, { receiptIds: ids(13), requestId: "r" }, { receiptIds: ["a", "a"], requestId: "r" }, { receiptIds: ids(1) }, { receiptIds: ids(1), requestId: "r", force: true }, { receiptIds: [1], requestId: "r" }]) {
+      expect([j(bad), deviceTakeBackBody(j(bad))]).toEqual([j(bad), false]);
+    }
+    expect([deviceSharingBody(j({ toTraining: true, disclosureVersion: "2026-11-19.1" })), deviceSharingBody(j({ toTraining: false, disclosureVersion: "1" }))]).toEqual([true, true]);
+    for (const bad of [{ toTraining: "yes", disclosureVersion: "1" }, { toTraining: true }, { toTraining: true, disclosureVersion: "1", fromTraining: true }, { toTraining: true, disclosureVersion: "a b" }]) {
+      expect([j(bad), deviceSharingBody(j(bad))]).toEqual([j(bad), false]);
+    }
+  });
+
+  it("the library's query: keys among q, family, region, equipment, limit 1–100 and cursor, each once", () => {
+    const q = (s: string) => new URLSearchParams(s);
+    for (const ok of ["", "q=hip", "family=mobility&region=hips&equipment=band", "limit=1", "limit=100", "cursor=50&limit=50"]) expect([ok, deviceLibraryQuery(q(ok))]).toEqual([ok, true]);
+    for (const bad of ["limit=0", "limit=101", "limit=01", "cursor=-1", "q=", "q=a&q=b", "family=Mobility", "location=home", "safe=1", "x=1"]) expect([bad, deviceLibraryQuery(q(bad))]).toEqual([bad, false]);
+  });
+
   it("the queries: afterSeq digits once; the conversation's id once; nudges' seen once; none elsewhere", () => {
     const q = (s: string) => new URLSearchParams(s);
     expect(["", "afterSeq=0", "afterSeq=123456789"].map((s) => deviceAfterSeqQuery(q(s)))).toEqual([true, true, true]);

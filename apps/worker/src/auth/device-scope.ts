@@ -339,7 +339,7 @@ export const deviceSharingBody: BodyRule = (raw) => {
 /**
  * Ask your training coach, from the phone (3b; `frame` 3c): keys among `scope`, `request`, `focus`, `conversationId`,
  * `nudge` and `frame` — never `rehearsal` (the developer's lane) or `savesBatchId` (the laptop's saves flow). The route
- * checks every value, the frame's exact keys and switch A among them (400, 403 `sharing_off`).
+ * checks every value, the frame's exact keys and switch A among them (400, 409 `sharing_off`).
  */
 export const deviceRunCreateBody: BodyRule = (raw) => {
   const p = parsed(raw);
@@ -458,6 +458,18 @@ const TRAINING_V4: readonly DeviceRoute[] = [
  */
 const TRAINING_V5: readonly DeviceRoute[] = [
   ...TRAINING_V4,
+  // 3a: saved workouts and moves, read trimmed; one put on the plan, with its receipt.
+  { method: "GET", pattern: /^\/api\/native\/templates$/, query: noQuery },
+  { method: "GET", pattern: new RegExp(`^/api/native/templates/${SEG}$`), query: noQuery },
+  { method: "GET", pattern: /^\/api\/native\/library$/, query: deviceLibraryQuery },
+  { method: "GET", pattern: new RegExp(`^/api/native/library/${SEG}$`), query: noQuery },
+  { method: "POST", pattern: new RegExp(`^/api/native/templates/${SEG}/place$`), body: devicePlaceBody },
+  // Take-back, bound to its receipts; a receipt's state and its provider work, read live.
+  { method: "POST", pattern: /^\/api\/native\/take-back$/, body: deviceTakeBackBody },
+  { method: "GET", pattern: new RegExp(`^/api/native/receipts/${SEG}$`), query: noQuery },
+  // Switch A (off until the owner turns it on, on the phone).
+  { method: "GET", pattern: /^\/api\/native\/sharing$/, query: noQuery },
+  { method: "PUT", pattern: /^\/api\/native\/sharing$/, body: deviceSharingBody },
   // 3b: the coach designer's runs. `current` before `:id`, which would take it for an id.
   { method: "POST", pattern: /^\/api\/coach\/runs$/, body: deviceRunCreateBody },
   { method: "POST", pattern: new RegExp(`^/api/coach/runs/${SEG}/step$`), query: deviceAfterSeqQuery, body: emptyBody },

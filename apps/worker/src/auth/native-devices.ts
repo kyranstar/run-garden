@@ -3,13 +3,13 @@
  * web holds a device token, `rgd_` and 32 random bytes, in its Keychain. The Worker keeps only the token's SHA-256
  * (`native_devices.id`), and the pairing code only as an HMAC (`native_pairings`).
  */
-import { and, asc, eq, gt, isNull, like, lt, ne, or, sql } from "drizzle-orm";
-import { auditEvents, nativeDevices, nativePairings, nativePairLimits, users } from "@rg/database";
+import { and, asc, eq, gt, isNull, like, lt, ne, or, sql, type SQL } from "drizzle-orm";
+import { auditEvents, nativeDevices, nativeDeviceSharing, nativePairings, nativePairLimits, users } from "@rg/database";
 import { newId, nowInstant } from "@rg/domain";
 import type { Env } from "../env.js";
-import { runAtomicallyClaim, type Db } from "../services/db.js";
+import { runAtomicallyClaim, type AtomicStatement, type Db } from "../services/db.js";
 import { hmacSha256Hex, randomToken, sha256Hex } from "./crypto.js";
-import { isDeviceScope, NEXT_DEVICE_SCOPE, PAIRING_SCOPE, PREVIOUS_DEVICE_SCOPE, type DeviceScope } from "./device-scope.js";
+import { DEVICE_SCOPE_V5, isDeviceScope, NEXT_DEVICE_SCOPE, PAIRING_SCOPE, PREVIOUS_DEVICE_SCOPE, type DeviceScope } from "./device-scope.js";
 import { QA_EMAIL, qaPossible } from "./qa-identity.js";
 
 /**
@@ -517,6 +517,8 @@ export type ReduceOutcome =
 interface Step {
   toward: (scope: string) => DeviceScope | null;
   kind: string;
+  /** Statements for the step's own transaction, gated on the same row condition (`still`): a step-down's switch A off. */
+  alongside?: (from: string, to: DeviceScope, still: SQL | undefined) => AtomicStatement[];
 }
 
 /**
@@ -564,6 +566,7 @@ async function stepScope(
     const detail = JSON.stringify({ deviceId: id, label: row.label, from, to: toward });
     const claimed = await runAtomicallyClaim(db, [
       db.insert(auditEvents).select(sql`SELECT ${newId()}, ${userId}, ${step.kind}, ${detail}, ${now} WHERE EXISTS (SELECT 1 FROM ${d} WHERE ${still})`),
+      ...(step.alongside ? step.alongside(from, toward, still) : []),
       db.update(d).set({ scope: toward }).where(still).returning({ id: d.id }),
     ]);
     if (claimed > 0) return { ok: true, scope: toward, changed: true };
@@ -593,7 +596,20 @@ export async function grantNextScope(db: Db, userId: string, id: string, to: str
  * sign-in is off, as Revoke does: narrowing a device never widens one.
  */
 export async function reduceScope(db: Db, userId: string, id: string, to: string, now: string): Promise<ReduceOutcome> {
-  const r = await stepScope(db, userId, id, to, now, { toward: previousOf, kind: SCOPE_REDUCED_KIND });
+  const r = await stepScope(db, userId, id, to, now, {
+    toward: previousOf,
+    kind: SCOPE_REDUCED_KIND,
+    // Below v5 a phone sends no frame: its switch A turns off with the step, so a grant back starts sharing nothing (R1).
+    alongside: (from, _to, still) =>
+      from === DEVICE_SCOPE_V5
+        ? [
+            db
+              .update(nativeDeviceSharing)
+              .set({ toTraining: false, setAt: now })
+              .where(and(eq(nativeDeviceSharing.deviceId, id), eq(nativeDeviceSharing.userId, userId), sql`exists (select 1 from ${nativeDevices} where ${still})`)),
+          ]
+        : [],
+  });
   if (r.ok) return { ok: true, scope: r.scope, reduced: r.changed };
   if (r.error === "not_one_step") return { ok: false, error: "not_previous_scope", scope: r.scope, previous: r.toward };
   return r;

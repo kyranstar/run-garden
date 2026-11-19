@@ -47,6 +47,8 @@ import { musicRoutes } from "./routes/music.js";
 import { todayBodyRoutes } from "./routes/today-body.js";
 import { growthRoutes } from "./routes/growth.js";
 import { nativeRoutes } from "./routes/native.js";
+import { nativeLibraryRoutes } from "./routes/native-library.js";
+import { nativeTakeBackRoutes } from "./routes/native-take-back.js";
 import { qaRoutes } from "./routes/qa.js";
 import { notQaAccount } from "./auth/qa-identity.js";
 import { makeDb, chunkIds, type Db } from "./services/db.js";
@@ -159,6 +161,9 @@ app.route("/api/saves", savesRoutes);
 app.route("/api/my-saves", mySavesRoutes);
 // Native device sign-in (SLICE-CONTRACT revision 2 §10): pairing and the laptop's devices, and the phone's own reads.
 // Not under /api/devices: that is the deleted bridge's 410, below.
+// R1 (training-v5): the phone's library and the receipt-bound take-back, beside the device's own routes.
+app.route("/api/native", nativeLibraryRoutes);
+app.route("/api/native", nativeTakeBackRoutes);
 app.route("/api/native", nativeRoutes);
 // The LifeOS QA account (the phone QA harness): the owner's cookie only (404 for anyone else), and the harness token's own
 // door under /api/qa/run.

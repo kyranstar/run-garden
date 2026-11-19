@@ -60,7 +60,8 @@ import { corosReadAt, deviceDays, matchesOfRows, readExtraActivities, readPlanRo
 import { DocTooLargeRefusal, NoDocumentError, NotAheadError, previewAhead, SessionNotFoundError } from "../services/session-build.js";
 import type { AppContext } from "../auth/middleware.js";
 import { requireUser } from "../auth/middleware.js";
-import { emptyBody, PAIRING_SCOPE } from "../auth/device-scope.js";
+import { deviceSharingBody, emptyBody, PAIRING_SCOPE } from "../auth/device-scope.js";
+import { setSharing, sharingOf } from "../services/device-sharing.js";
 import {
   confirmDevice,
   grantNextScope,
@@ -371,6 +372,28 @@ nativeRoutes.get("/sessions/:id/ahead", requireUser, async (c) => {
     if (e instanceof DocTooLargeRefusal) return c.json({ error: "too_large" }, 409);
     throw e;
   }
+});
+
+/**
+ * SWITCH A (R1; DESIGN-3 §3.12; services/device-sharing.ts): `GET /sharing` → `{toTraining, disclosureVersion, setAt}`, off
+ * until the owner turns it on; `PUT /sharing {toTraining, disclosureVersion}` sets it, from the phone's sharing screen, with
+ * the version of the words the owner was shown. The phone's own: a cookie is 403 `device_only` (the laptop has no LifeOS day
+ * to share). Never read in the background: the phone asks in the foreground, as for every v5 route.
+ */
+nativeRoutes.get("/sharing", requireUser, async (c) => {
+  c.header("Cache-Control", "no-store");
+  const device = c.get("device");
+  if (!device) return c.json({ error: "device_only" }, 403);
+  return c.json(await sharingOf(c.get("db"), c.get("userId"), device.id));
+});
+
+nativeRoutes.put("/sharing", requireUser, async (c) => {
+  const device = c.get("device");
+  if (!device) return c.json({ error: "device_only" }, 403);
+  const raw = await c.req.text();
+  if (!deviceSharingBody(raw)) return c.json({ error: "bad_sharing" }, 400);
+  const choice = JSON.parse(raw) as { toTraining: boolean; disclosureVersion: string };
+  return c.json(await setSharing(c.get("db"), c.get("userId"), device.id, choice, nowInstant()));
 });
 
 nativeRoutes.post("/sign-out", requireUser, async (c) => {

@@ -330,6 +330,16 @@ export const ROUTE_CLASSES: Record<string, Classified> = {
   "GET /api/native/days": V4_DEVICE,
   "GET /api/native/history": V4_DEVICE,
   "GET /api/native/sessions/:id/ahead": V4_DEVICE,
+  // R1 (routes/native-library.ts, native-take-back.ts, native.ts): the library, take-back and switch A.
+  "GET /api/native/templates": V5_DEVICE,
+  "GET /api/native/templates/:id": V5_DEVICE,
+  "GET /api/native/library": V5_DEVICE,
+  "GET /api/native/library/:id": V5_DEVICE,
+  "POST /api/native/templates/:id/place": V5_DEVICE,
+  "POST /api/native/take-back": V5_DEVICE,
+  "GET /api/native/receipts/:id": V5_DEVICE,
+  "GET /api/native/sharing": V5_DEVICE,
+  "PUT /api/native/sharing": V5_DEVICE,
   "POST /api/native/sign-out": "device",
   // The LifeOS QA account (routes/qa.ts): the owner's cookie only — a device of any scope, the QA account's own included,
   // is refused — and the harness token's own door, which no device token opens.
