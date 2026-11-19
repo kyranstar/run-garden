@@ -130,6 +130,8 @@ function scopeRefusal(e: unknown, step: "grant" | "reduce"): string {
 function renewRefusal(e: unknown): string {
   const body = e instanceof ApiError ? (e.body as { error?: string } | null) : null;
   if (body?.error === "device_revoked" || body?.error === "device_expired") return "That phone was revoked or has expired: pair it again.";
+  // A restore holds every write (the worker's 423 `restore_in_progress`): said as the app says it elsewhere.
+  if (e instanceof ApiError && e.status === 423) return "A restore is running — try again when it's done.";
   // Renew is 404 while device sign-in is off, as the grant is, and for a phone no longer paired.
   if (e instanceof ApiError && e.status === 404) return "Device sign-in is off, or that phone is no longer paired.";
   return "Couldn't renew that phone. Try again.";
@@ -218,8 +220,8 @@ export function DevicesSection({ timezone }: { timezone?: string | null } = {}) 
         const soon = daysLeft(d.expiresAt, timezone) <= WARN_DAYS;
         /** Renew is offered then, while device sign-in is on (the route is 404 while it is off). */
         const canRenew = data.enabled && soon;
-        /** The question this row is asking, if any: its one line, and what its first button sends. */
-        const question =
+        /** The question this row is asking, if any: its one line, and what its first button sends (`label`: its accessible name). */
+        const question: { line: string; yes: string; label?: string; send: () => void } | null =
           asking?.id !== d.id
             ? null
             : asking.step === "grant" && next
@@ -227,7 +229,7 @@ export function DevicesSection({ timezone }: { timezone?: string | null } = {}) 
               : asking.step === "reduce" && down
                 ? { line: down.line, yes: "Stop", send: () => (resetAnswers(), reduce.mutate({ id: d.id, scope: d.previousScope! })) }
                 : asking.step === "renew" && canRenew
-                  ? { line: RENEW.line, yes: RENEW.button, send: () => (resetAnswers(), renew.mutate(d.id)) }
+                  ? { line: RENEW.line, yes: RENEW.button, label: `${RENEW.button} ${d.label}`, send: () => (resetAnswers(), renew.mutate(d.id)) }
                   : null;
         return (
           <div key={d.id} className="setting-row">
@@ -243,7 +245,7 @@ export function DevicesSection({ timezone }: { timezone?: string | null } = {}) 
             <span className="setting-row-end">
               {question ? (
                 <>
-                  <button type="button" className="btn btn-small btn-primary" disabled={busy} onClick={question.send}>
+                  <button type="button" className="btn btn-small btn-primary" disabled={busy} aria-label={question.label} onClick={question.send}>
                     {question.yes}
                   </button>
                   <button type="button" className="btn btn-small" disabled={busy} onClick={() => setAsking(null)}>
@@ -253,7 +255,13 @@ export function DevicesSection({ timezone }: { timezone?: string | null } = {}) 
               ) : (
                 <>
                   {canRenew ? (
-                    <button type="button" className="btn btn-small" disabled={busy} onClick={() => setAsking({ id: d.id, step: "renew" })}>
+                    <button
+                      type="button"
+                      className="btn btn-small"
+                      disabled={busy}
+                      aria-label={`${RENEW.button} ${d.label}`}
+                      onClick={() => setAsking({ id: d.id, step: "renew" })}
+                    >
                       {RENEW.button}
                     </button>
                   ) : null}

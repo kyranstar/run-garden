@@ -114,6 +114,22 @@ sessions, rest days and which sessions were done (`apps/worker/src/routes/lifeos
   limited to a session's id, title, sport, category, time, planned minutes, state and the matched activity's start.
   No health readings, no activities' telemetry, `Cache-Control: no-store`.
 
+## Paired phones: their expiry and Renew (every scope)
+
+A phone paired from the laptop (native device sign-in, `apps/worker/src/auth/native-devices.ts`) works for 30 days from
+its confirmation, whatever scope it holds (`training-slice-v1` through `training-v4`). The laptop's **Renew**
+(`POST /api/native/devices/:id/renew`, Settings → Devices, offered from 7 days out) sets that to 30 days from the server's
+acceptance — never +30 on the old expiry:
+
+- **Cookie only.** A device token never renews itself or another: it is refused by its scope's list and again by the route.
+- **The account's own, and live.** Only an active, unexpired device of the signed-in account; revoked, expired (an expiry
+  of exactly now included) and pending devices are refused.
+- **Audited and idempotent.** One `native_device_renewed` audit `{deviceId, label, from, to}` per renew; a repeat within
+  10 minutes writes nothing, and the expiry never moves back.
+- **Nothing else changes.** Scope, token, state, label, confirmation and last use are kept.
+- **Off with the switch.** 404 while the kill switch (`NATIVE_DEVICES`) is off; 423 during a restore.
+- **Never by itself.** Nothing renews in the background: no read, grant or step-down moves the expiry.
+
 ## LifeOS reads through its device (`training-v4`)
 
 The paired phone's own credential (native device sign-in) reads the plan and the record behind it, replacing the plan
@@ -123,11 +139,8 @@ token above once LifeOS has moved over (stage 2c; the token's section goes at cl
 - **Its own named consent.** v4 is a scope of its own, never a widened one: the laptop grants it in place to a v3 phone
   (Settings → Devices, *Allow reading your plan and history*, whose line says what it reads and never reads) and steps
   it back to v3 in place; new pairings mint it. Revoke and the kill switch (`NATIVE_DEVICES`) stop it as every device.
-  Neither the grant, the step-down nor any read moves the device's 30-day expiry: only the laptop's **Renew** does
-  (`POST /api/native/devices/:id/renew`, Settings → Devices, offered from 7 days out), which sets it to 30 days from the
-  server's acceptance — cookie only (a device token never renews itself), for an active, unexpired device of the account,
-  audited (`native_device_renewed`), idempotent within 10 minutes, never moving it back, and changing nothing else. 404
-  while the kill switch is off. Nothing renews in the background.
+  Neither the grant, the step-down nor any read moves the device's 30-day expiry: only the laptop's Renew does, as for
+  every scope (*Paired phones: their expiry and Renew*, above).
 - **Bounded, by shape at the gate and by value in the route.** Each pair holds a query rule (exact keys, each once, each
   in its grammar; anything else is 403 `out_of_scope` before the route): `/days?from&to`, at most 14 days within
   today − 90 … today + 14 on the account's clock; `/history?before&limit`, pages of whole days until they reach `limit`

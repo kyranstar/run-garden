@@ -267,11 +267,14 @@ describe("Settings → Devices", () => {
     await mount();
     // Renew leads the row's buttons while the phone is inside the warning; its grant and Revoke are still there.
     expect([...rowOf("Old phone").querySelectorAll("button")].map(words)).toEqual(["Renew", "Allow fitting and feedback", "Revoke"]);
+    // Two phones can be near expiry at once: each Renew button's accessible name says which (review NIT-4).
+    expect(button("Renew", rowOf("Old phone")).getAttribute("aria-label")).toBe("Renew Old phone");
     await click(button("Renew", rowOf("Old phone")));
     expect(calls.filter((c) => c.method === "POST")).toEqual([]);
     const asking = rowOf("Old phone");
     expect(words(asking)).toContain(RENEW_LINE);
     expect([...asking.querySelectorAll("button")].map(words)).toEqual(["Renew", "Not now"]);
+    expect(button("Renew", asking).getAttribute("aria-label")).toBe("Renew Old phone");
     // The other phone isn't asked anything.
     expect(words(rowOf("Running phone"))).not.toContain(RENEW_LINE);
     await click(button("Renew", asking));
@@ -317,6 +320,8 @@ describe("Settings → Devices", () => {
       [{ status: 409, body: { error: "device_revoked" } }, "That phone was revoked or has expired: pair it again."],
       [{ status: 409, body: { error: "device_expired" } }, "That phone was revoked or has expired: pair it again."],
       [{ status: 404, body: { error: "not_found" } }, "Device sign-in is off, or that phone is no longer paired."],
+      // A restore holds every write (the worker's 423): said as the app says it elsewhere (review NIT-3).
+      [{ status: 423, body: { error: "restore_in_progress" } }, "A restore is running — try again when it's done."],
       [{ status: 500, body: { error: "x" } }, "Couldn't renew that phone. Try again."],
     ];
     for (const [refusal, says] of refusals) {
