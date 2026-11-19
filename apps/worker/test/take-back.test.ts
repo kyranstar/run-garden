@@ -325,7 +325,7 @@ describe("races, retries and the account", () => {
     expect([...done, ...a.json.remaining].sort()).toEqual([...ids].sort());
     const b = await takeBack(ids, "req-many");
     expect(b.statements.length).toBeLessThanOrEqual(45);
-    expect(b.json.outcomes.every((o: { outcome: string }) => o.outcome === "taken_back" || b.json.remaining.includes((o as { receiptId: string }).receiptId))).toBe(true);
+    expect(b.json.outcomes.every((o: { outcome: string; receiptId: string }) => o.outcome === "taken_back" || b.json.remaining.includes(o.receiptId))).toBe(true);
   });
 });
 

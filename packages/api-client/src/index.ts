@@ -356,6 +356,92 @@ export interface NativeDevicesResponse {
   devices: NativeDeviceDto[];
 }
 
+// ── A `training-v5` phone's library, take-back, switch A and coach answers (R1, DESIGN-3 §3.5): the wire's shapes ──────────
+
+/** `GET /api/native/templates`: the account's saved workouts, without documents. */
+export interface NativeTemplatesResponse {
+  templates: Array<{ id: string; name: string; minutes: number | null; discipline: string | null; pinned: boolean; uses: number; lastUsedAt: string | null; updatedAt: string }>;
+}
+
+/** One verdict for the switched-on profiles together; never a profile's name. */
+export type NativeVerdict = "ok" | "caution" | "never";
+
+/** `GET /api/native/library`'s row, exactly these keys. */
+export interface NativeLibraryRow {
+  id: string;
+  name: string;
+  family: string;
+  regions: string[];
+  equipment: { all: string[]; oneOf: string[] };
+  difficulty: number;
+  summary: string;
+  lastDoneOn: string | null;
+  pinned: boolean;
+  excluded: boolean;
+  verdict: NativeVerdict;
+}
+
+export interface NativeLibraryResponse {
+  items: NativeLibraryRow[];
+  matched: number;
+  /** The next page's cursor, or null at the end. */
+  next: string | null;
+}
+
+/** `POST /api/native/templates/:id/place`'s answer: the row written and its take-back receipt (`repeated` for a resend). */
+export interface NativePlaceResponse {
+  workoutId: string;
+  receiptId: string;
+  date: string;
+  time: string;
+  repeated?: true;
+}
+
+export type NativeCompensation = { provider: "watch" | "calendar"; state: "pending" | "done" | "failed" };
+export type NativeTakeBackRefusal = "expired" | "past" | "executed" | "ineligible" | "has_dependents" | "group_incomplete" | "changed_since" | "group_refused" | "not_attempted";
+export type NativeTakeBackOutcome =
+  | { receiptId: string; outcome: "taken_back"; op: "create" | "revise" | "move" | "skip"; workoutId: string; at: string; compensation: NativeCompensation[] }
+  | { receiptId: string; outcome: "already_taken_back"; op: "create" | "revise" | "move" | "skip"; workoutId: string; at: string | null; compensation: NativeCompensation[] }
+  | { receiptId: string; outcome: "not_found" }
+  | { receiptId: string; outcome: "refused"; error: NativeTakeBackRefusal; why: string; receiptIds?: string[]; now?: Record<string, unknown> | null };
+
+/** `POST /api/native/take-back`'s answer: each receipt's outcome in the order named, and those left for the next request. */
+export interface NativeTakeBackResponse {
+  requestId: string;
+  outcomes: NativeTakeBackOutcome[];
+  remaining: string[];
+}
+
+/** `GET /api/native/receipts/:id`. */
+export interface NativeReceiptResponse {
+  id: string;
+  source: "place" | "coach_approve";
+  op: "create" | "revise" | "move" | "skip";
+  workoutId: string;
+  status: "open" | "taken_back" | "expired";
+  createdAt: string;
+  expiresAt: string;
+  takenBackAt: string | null;
+  compensation: NativeCompensation[];
+}
+
+/** `GET`/`PUT /api/native/sharing`: switch A on this phone. */
+export interface NativeSharingState {
+  toTraining: boolean;
+  disclosureVersion: string | null;
+  setAt: string | null;
+}
+
+/** A designed proposal's read, R1's fields beside its manifest. */
+export interface DesignProposalVersionFields {
+  version: string;
+  complete: boolean;
+  missing?: { status: string; error: string | null; line: string | null };
+  opsSummary: Array<{ opId: string; op: "add" | "revise" | "move" | "skip" | "ease" | "other"; workoutId?: string; day: string; start?: string; minutesBefore?: number; minutesAfter?: number; category?: string; outcome?: string }>;
+  receipts: Array<{ opId: string; receiptId: string }>;
+  takeBackable: string[];
+}
+
 // ── A `training-v4` phone's plan reads (stage 2c, DESIGN-2c §2): the shapes the worker answers, for the harness and tests ──
 
 /** A planned session on one of the phone's days (`GET /api/native/days`). */
