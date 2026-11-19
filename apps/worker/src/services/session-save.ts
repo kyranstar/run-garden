@@ -41,7 +41,7 @@
  * Never writes to COROS (an app session is never pushed to the watch in 2b). Every write waits for the restore
  * marker to be clear. Every statement stays under D1's 100 bound variables.
  */
-import { and, eq, gte, inArray, isNotNull, isNull, lte, ne, or, sql } from "drizzle-orm";
+import { and, eq, gte, inArray, isNotNull, isNull, lte, ne, or, sql, type SQL } from "drizzle-orm";
 import { DateTime } from "luxon";
 import {
   activities,
@@ -122,6 +122,36 @@ export class InvalidSaveError extends Error {
     super("invalid_save");
   }
 }
+
+/**
+ * THE SESSION ROW'S OWNER, KEPT — or NULL, failing the batch: the `user_id` an app save's or a review's session upsert
+ * sets on conflict (the QA harness review's MINOR-2). A performed id is the client's, and device sign-in serves two
+ * accounts (the owner's and the LifeOS QA account), whose per-user save locks don't serialise each other. A row of the same
+ * id another account wrote between this save's reads and its write fails the whole transaction — its content, its sets,
+ * everything after — and the save answers `conflict` (`foreignSession`). On this account's own row it changes nothing.
+ */
+export const ownSessionOrFail = (userId: string): SQL =>
+  sql`case when ${performedSessions.userId} = ${userId} then ${performedSessions.userId} else null end`;
+
+const FOREIGN_SESSION = /NOT NULL constraint failed: performed_sessions\.user_id/;
+
+/** The error a batch answers when its session upsert met another account's row (`ownSessionOrFail`; D1 may wrap it). */
+export function foreignSession(e: unknown): boolean {
+  for (let x: unknown = e, i = 0; x && i < 4; i++, x = (x as { cause?: unknown }).cause) {
+    if (x instanceof Error && FOREIGN_SESSION.test(x.message)) return true;
+  }
+  return false;
+}
+
+/** The session's own sets: those of THIS account's row of the id (with `ownSessionOrFail`, never another's). */
+export const ownSessionSets = (db: Db, userId: string, performedId: string): SQL =>
+  inArray(
+    performedSets.performedSessionId,
+    db
+      .select({ id: performedSessions.id })
+      .from(performedSessions)
+      .where(and(eq(performedSessions.id, performedId), eq(performedSessions.userId, userId))),
+  );
 
 export interface SaveCtx {
   now: string;
@@ -588,12 +618,21 @@ export async function savePerformedSession(db: Db, userId: string, performedId: 
     return saveWatchReview(db, userId, p, hash, { ...ctx, today });
   }
 
-  const [slot] = await db
-    .select()
+  // The slot, and in the same read whether another account's activity holds the session's id. The id is the client's, and
+  // device sign-in serves the owner's account and the LifeOS QA account (auth/middleware.ts): a save naming the other's
+  // activity — its COROS activity, an app session of its — would otherwise join it as this session's own (the QA harness
+  // review's MAJOR-1). No statement more: a typical save stays within its cost (session-save-cost.test.ts).
+  const [found] = await db
+    .select({
+      slot: plannedWorkouts,
+      foreign: sql<number>`exists (select 1 from ${activities} where ${activities.id} = ${performedId} and ${activities.userId} <> ${userId})`,
+    })
     .from(plannedWorkouts)
     .where(and(eq(plannedWorkouts.id, p.workoutId), eq(plannedWorkouts.userId, userId)))
     .limit(1);
+  const slot = found?.slot;
   if (!slot || !appAuthoredRow(slot)) throw new SessionNotFoundError();
+  if (found?.foreign) return { status: "conflict" };
   // A device's save of an unwritten course outline (`SaveCtx.refuseUnwritten`): refused before anything is written, its build
   // named or not. No statement for a row that isn't a programme's outline, so every other save runs as it did.
   if (ctx.refuseUnwritten && (await courseOf(db, userId, slot))) throw new NotWrittenError();
@@ -639,7 +678,14 @@ export async function savePerformedSession(db: Db, userId: string, performedId: 
       // A restore can begin while this one read; checked again just before the first write.
       if (await restoreInProgress(db, userId)) return { status: "restoring" };
       if (await savedByAnother(db, userId, slot.id, performedId)) return { status: "slot_done" };
-      written = await write(db, userId, p, hash, slot, builtOn, existing?.activityId ?? null, ctx);
+      try {
+        written = await write(db, userId, p, hash, slot, builtOn, existing?.activityId ?? null, ctx);
+      } catch (e) {
+        // Another account's save of the same id committed between this one's reads and its write (`foreignSessionGuard`):
+        // nothing of this one landed.
+        if (foreignSession(e)) return { status: "conflict" };
+        throw e;
+      }
     } finally {
       await releaseMergeLocks(db, userId, merge);
     }
@@ -715,15 +761,27 @@ async function planLiveMatch(db: Db, userId: string, slot: SlotRow, performedId:
     .from(workoutCompletionMatches)
     .where(and(eq(workoutCompletionMatches.workoutId, slot.id), isNull(workoutCompletionMatches.undoneAt)))
     .limit(1);
-  const [act] = await db.select({ completionMatchId: activities.completionMatchId }).from(activities).where(eq(activities.id, activityId)).limit(1);
-  // The activity's own live match on ANOTHER slot (a pointer to an undone or vanished match is no match).
+  // The account's own activity only (every activity read and write here is this account's: the QA harness review's MAJOR-1).
+  const [act] = await db
+    .select({ completionMatchId: activities.completionMatchId })
+    .from(activities)
+    .where(and(eq(activities.id, activityId), eq(activities.userId, userId)))
+    .limit(1);
+  // The activity's own live match on ANOTHER slot (a pointer to an undone or vanished match is no match) — a match OF this
+  // activity, reached through the account's own activity row.
   const elsewhere =
     act?.completionMatchId && act.completionMatchId !== held?.id
       ? (
           await db
             .select({ id: workoutCompletionMatches.id, workoutId: workoutCompletionMatches.workoutId, method: workoutCompletionMatches.method })
             .from(workoutCompletionMatches)
-            .where(and(eq(workoutCompletionMatches.id, act.completionMatchId), isNull(workoutCompletionMatches.undoneAt)))
+            .where(
+              and(
+                eq(workoutCompletionMatches.id, act.completionMatchId),
+                eq(workoutCompletionMatches.activityId, activityId),
+                isNull(workoutCompletionMatches.undoneAt),
+              ),
+            )
             .limit(1)
         ).find((m) => m.workoutId !== slot.id)
       : undefined;
@@ -746,7 +804,7 @@ async function planLiveMatch(db: Db, userId: string, slot: SlotRow, performedId:
     const [displaced] = await db
       .select({ startTime: activities.startTime, startTimeLocal: activities.startTimeLocal })
       .from(activities)
-      .where(eq(activities.id, other.activityId))
+      .where(and(eq(activities.id, other.activityId), eq(activities.userId, userId)))
       .limit(1);
     if (displaced) alsoFrom.push(localDayOf(displaced));
     statements.push(
@@ -754,7 +812,7 @@ async function planLiveMatch(db: Db, userId: string, slot: SlotRow, performedId:
       db
         .update(activities)
         .set({ completionMatchId: null, updatedAt: now })
-        .where(and(eq(activities.id, other.activityId), eq(activities.completionMatchId, other.id))),
+        .where(and(eq(activities.id, other.activityId), eq(activities.userId, userId), eq(activities.completionMatchId, other.id))),
       // Its watch session no longer performed this slot (the slot's pre-check is not its to carry).
       db
         .update(performedSessions)
@@ -795,7 +853,10 @@ async function planLiveMatch(db: Db, userId: string, slot: SlotRow, performedId:
         target: workoutCompletionMatches.id,
         set: { workoutId: slot.id, activityId, confidence: 1, method: "app_session", undoneAt: null },
       }),
-    db.update(activities).set({ completionMatchId: matchId, updatedAt: now }).where(eq(activities.id, activityId)),
+    db
+      .update(activities)
+      .set({ completionMatchId: matchId, updatedAt: now })
+      .where(and(eq(activities.id, activityId), eq(activities.userId, userId))),
   );
   return { matched: true, notes: other || elsewhere ? ["superseded_auto_match"] : [], statements, alsoFrom };
 }
@@ -926,10 +987,16 @@ async function write(
     updatedAt: now,
   };
   const { id: _id, userId: _u, createdAt: _c, ...changed } = sessionRow;
-  statements.push(db.insert(performedSessions).values(sessionRow).onConflictDoUpdate({ target: performedSessions.id, set: changed }));
+  // Another account's row of the id fails the batch (`ownSessionOrFail`): nothing below lands on it.
+  statements.push(
+    db
+      .insert(performedSessions)
+      .values(sessionRow)
+      .onConflictDoUpdate({ target: performedSessions.id, set: { ...changed, userId: ownSessionOrFail(userId) } }),
+  );
 
   // 2. Its sets and checks — a retry clears what an earlier attempt left first.
-  statements.push(db.delete(performedSets).where(eq(performedSets.performedSessionId, performedId)));
+  statements.push(db.delete(performedSets).where(ownSessionSets(db, userId, performedId)));
   statements.push(db.delete(conditionChecks).where(and(eq(conditionChecks.userId, userId), eq(conditionChecks.performedSessionId, performedId))));
   for (const batch of insertBatches(setRows(performedId, p))) statements.push(db.insert(performedSets).values(batch));
   for (const batch of insertBatches(checkRows)) statements.push(db.insert(conditionChecks).values(batch));
@@ -938,7 +1005,12 @@ async function write(
   for (const w of watchSessions) statements.push(...removeWatchSessionStatements(db, w.id));
   if (joined) {
     // COROS keeps its metrics and its id; the row takes the app's title and discipline (they last: completion.ts).
-    statements.push(db.update(activities).set({ title, sport: discipline, updatedAt: now }).where(eq(activities.id, activityId)));
+    statements.push(
+      db
+        .update(activities)
+        .set({ title, sport: discipline, updatedAt: now })
+        .where(and(eq(activities.id, activityId), eq(activities.userId, userId))),
+    );
   } else {
     const row = {
       id: activityId,
@@ -973,7 +1045,8 @@ async function write(
             title,
             updatedAt: now,
           },
-          setWhere: eq(activities.source, "app"),
+          // And only this account's own row of the id (the save refused another's: the QA harness review's MAJOR-1).
+          setWhere: and(eq(activities.source, "app"), eq(activities.userId, userId)),
         }),
     );
   }
@@ -1017,7 +1090,12 @@ async function write(
   statements.push(gardenChangeStatement(db, userId, replayFrom));
 
   // Commit marker: everything above lands with it, or none of it does.
-  statements.push(db.update(performedSessions).set({ payloadHash: hash, updatedAt: now }).where(eq(performedSessions.id, performedId)));
+  statements.push(
+    db
+      .update(performedSessions)
+      .set({ payloadHash: hash, updatedAt: now })
+      .where(and(eq(performedSessions.id, performedId), eq(performedSessions.userId, userId))),
+  );
   await runAtomically(db, statements);
   return { outcome: { status: "saved", performedId, activityId, matched: match.matched, notes }, replayFrom };
 }

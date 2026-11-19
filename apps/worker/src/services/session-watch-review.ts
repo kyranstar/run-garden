@@ -64,7 +64,10 @@ import { claimUserLock, releaseUserLock } from "./locks.js";
 import { liveProvisionalRecord, pushJobId, SessionNotFoundError, SETTLED_PUSH, type BuildPayload } from "./session-build.js";
 import {
   claimMergeLocks,
+  foreignSession,
   InvalidSaveError,
+  ownSessionOrFail,
+  ownSessionSets,
   prefStatements,
   releaseMergeLocks,
   reviewLibrary,
@@ -632,6 +635,8 @@ export async function saveWatchReview(db: Db, userId: string, p: PerformedSessio
       .from(performedSessions)
       .where(eq(performedSessions.id, p.id))
       .limit(1);
+    // Another account's row of the id, settled or not, is never this one's (as session-save.ts's `settled`).
+    if (existing && existing.userId !== userId) return { status: "conflict" };
     if (existing && existing.payloadHash !== PENDING_HASH) {
       return existing.userId === userId && existing.payloadHash === hash ? { status: "same_payload" } : { status: "conflict" };
     }
@@ -640,7 +645,13 @@ export async function saveWatchReview(db: Db, userId: string, p: PerformedSessio
     try {
       if (await restoreInProgress(db, userId)) return { status: "restoring" };
       if (await claimedAlready(db, userId, slot.id, r.activity.id, p.id)) return { status: "slot_done" };
-      await runAtomically(db, await reviewStatements(db, userId, p, hash, r, ctx.now));
+      try {
+        await runAtomically(db, await reviewStatements(db, userId, p, hash, r, ctx.now));
+      } catch (e) {
+        // Another account's session of the same id landed meanwhile (`ownSessionOrFail`): nothing of this one did.
+        if (foreignSession(e)) return { status: "conflict" };
+        throw e;
+      }
     } finally {
       await releaseMergeLocks(db, userId, merge);
     }
@@ -749,9 +760,15 @@ async function reviewStatements(db: Db, userId: string, p: PerformedSessionWire,
     updatedAt: now,
   };
   const { id: _id, userId: _u, createdAt: _c, ...changed } = row;
-  statements.push(db.insert(performedSessions).values(row).onConflictDoUpdate({ target: performedSessions.id, set: changed }));
+  // Another account's row of the id fails the batch (`ownSessionOrFail`, the QA harness review's MINOR-2).
+  statements.push(
+    db
+      .insert(performedSessions)
+      .values(row)
+      .onConflictDoUpdate({ target: performedSessions.id, set: { ...changed, userId: ownSessionOrFail(userId) } }),
+  );
   // Its sets and checks — a retry clears what an earlier attempt left first.
-  statements.push(db.delete(performedSets).where(eq(performedSets.performedSessionId, p.id)));
+  statements.push(db.delete(performedSets).where(ownSessionSets(db, userId, p.id)));
   statements.push(db.delete(conditionChecks).where(and(eq(conditionChecks.userId, userId), eq(conditionChecks.performedSessionId, p.id))));
   statements.push(...setStatements(db, setRows(p.id, p)));
   const checks = p.checks.map((c) => ({
@@ -779,13 +796,23 @@ async function reviewStatements(db: Db, userId: string, p: PerformedSessionWire,
       .where(and(eq(performedSessions.userId, userId), eq(performedSessions.activityId, r.activity.id), eq(performedSessions.source, WATCH_SOURCE))),
   );
   // The activity takes the slot's title and the build's discipline; the import keeps them (completion.ts).
-  statements.push(db.update(activities).set({ title: r.slot.title, sport: discipline, updatedAt: now }).where(eq(activities.id, r.activity.id)));
+  statements.push(
+    db
+      .update(activities)
+      .set({ title: r.slot.title, sport: discipline, updatedAt: now })
+      .where(and(eq(activities.id, r.activity.id), eq(activities.userId, userId))),
+  );
   // The slot is done (its match completed it already).
   statements.push(db.update(plannedWorkouts).set({ contentState: "done", updatedAt: now }).where(and(eq(plannedWorkouts.id, r.slot.id), eq(plannedWorkouts.userId, userId))));
   statements.push(...prefs, ...sessionAnswerStatements(db, userId, p.id, p, "watch_review", now, await reviewLibrary(db, userId, p)));
   const activityDay = (r.activity.startTimeLocal ?? p.localDate).slice(0, 10);
   statements.push(gardenChangeStatement(db, userId, [r.slot.effectiveDate, p.localDate, activityDay].sort()[0]!));
   // Commit marker: everything above lands with it, or none of it does.
-  statements.push(db.update(performedSessions).set({ payloadHash: hash, updatedAt: now }).where(eq(performedSessions.id, p.id)));
+  statements.push(
+    db
+      .update(performedSessions)
+      .set({ payloadHash: hash, updatedAt: now })
+      .where(and(eq(performedSessions.id, p.id), eq(performedSessions.userId, userId))),
+  );
   return statements;
 }
