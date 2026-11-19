@@ -76,7 +76,7 @@ import { markSessionDone } from "../services/mark-done.js";
 import { applyMove } from "../services/jobs.js";
 import { provisionalRecord } from "../services/session-build.js";
 import { removeFromPlan, skipWorkout, unskippedAlready, unskipWorkout } from "../services/plan-mutations.js";
-import { gardenSees, isExtraSession, recentGardenEvents, REQUEST_GARDEN_STEP, resimulateFrom } from "../services/garden-sync.js";
+import { extraSessionsOn, gardenSees, isExtraSession, recentGardenEvents, REQUEST_GARDEN_STEP, resimulateFrom } from "../services/garden-sync.js";
 import {
   contentClaims,
   openMoveIntents,
@@ -1298,13 +1298,13 @@ planRoutes.get("/week", async (c) => {
   ]);
 
   // A run, lift or yoga session that completed no plan row is on no day's rows; the owner (2026-11-18) could not find
-  // a 7-mile COROS run anywhere on the Plan. Each day lists its own (by the session's local day), in the order done.
+  // a 7-mile COROS run anywhere on the Plan. Each day lists its own (by the session's local day), in the order done — the
+  // same rule the phone's days list them by (`extraSessionsOn`).
   const extrasOn = (date: string) =>
-    acts
-      .filter((a) => (a.startTimeLocal ?? a.startTime).slice(0, 10) === date && isExtraSession(a))
+    extraSessionsOn(acts, date)
       .map((a) => ({
         id: a.id,
-        sport: a.sport as "run" | "strength" | "yoga",
+        sport: a.sport,
         title: a.title && !looksLikeCodeTitle(a.title) ? a.title : sportLabel(a.sport),
         durationSeconds: a.durationSeconds,
         distanceMeters: a.distanceMeters,

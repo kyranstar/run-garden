@@ -123,6 +123,21 @@ export function isExtraSession(a: {
   return a.completionMatchId === null && (a.sport === "run" || a.sport === "strength" || a.sport === "yoga") && gardenSees(a);
 }
 
+/** An activity's day: its own local start's, or its UTC start's when it has none (run-garden's one rule for dating one). */
+export const activityDate = (a: { startTime: string; startTimeLocal: string | null }): string => (a.startTimeLocal ?? a.startTime).slice(0, 10);
+
+/**
+ * A DAY'S EXTRA SESSIONS (`isExtraSession`), in the order given: the activities dated `date` by `activityDate` that completed
+ * no planned workout. The Plan's days (`/api/plan/week`) and the phone's (`/api/native/days`) list exactly these, and never
+ * as answering a planned session: an extra has no match by definition.
+ */
+export function extraSessionsOn<A extends Parameters<typeof isExtraSession>[0]>(
+  acts: readonly A[],
+  date: string,
+): Array<A & { sport: "run" | "strength" | "yoga" }> {
+  return acts.filter((a): a is A & { sport: "run" | "strength" | "yoga" } => activityDate(a) === date && isExtraSession(a));
+}
+
 /** `gardenSees` as SQL, for the reads that stop at their first row in the database. Three binds. */
 export function gardenSeesSql(): SQL {
   return and(
