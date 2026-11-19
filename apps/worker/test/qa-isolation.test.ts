@@ -1,16 +1,18 @@
 /**
  * THE DEVICE BRANCH SERVES TWO ACCOUNTS, AND NEITHER REACHES THE OTHER'S ROWS (the QA harness review's MAJOR-1 and MINOR-2).
  * Device sign-in admits the owner's phone and the LifeOS QA account's (auth/middleware.ts). Every id a device sends is the
- * client's, so every route the v3 scope lists must refuse one that names the owner's rows — a workout, a build, a performed
- * session, an activity (the owner's COROS activity among them), a document revision — with 404 or 409, and write nothing
- * of the owner's. The owner's account is real here, played through its own phone: a document workout built, started and
- * saved (its build, its performed session, its app activity, its match and source link), a COROS activity automatically
- * matched to another, and the rest of the registry filled. Its table hashes are taken before and compared after.
+ * client's, so every route the newest scope lists (v4: v3's, and stage 2c's three plan reads) must refuse one that names
+ * the owner's rows — a workout, a build, a performed session, an activity (the owner's COROS activity among them), a
+ * document revision — with 404 or 409, and write nothing of the owner's; and a read naming no id (`/today`, `/days`,
+ * `/history`) answers the QA account's own and never a row of the owner's. The owner's account is real here, played
+ * through its own phone: a document workout built, started and saved (its build, its performed session, its app activity,
+ * its match and source link), a COROS activity automatically matched to another, an unmatched run (an extra), a session
+ * said done, a slot ahead, and the rest of the registry filled. Its table hashes are taken before and compared after.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { and, eq, inArray, ne } from "drizzle-orm";
 import { schema } from "@rg/database";
-import { newId, nowInstant, performedSessionSaveSchema } from "@rg/domain";
+import { addDays, newId, nowInstant, performedSessionSaveSchema } from "@rg/domain";
 import { DEVICE_SCOPES } from "../src/auth/device-scope.js";
 import { nativeRoutes } from "../src/routes/native.js";
 import { planRoutes } from "../src/routes/plan.js";
@@ -24,7 +26,7 @@ import { qaDoc } from "../src/services/qa-account.js";
 import { foreignSession } from "../src/services/session-save.js";
 import { seedFullAccount } from "./account-fixture.js";
 import { pinMiddayToday } from "./helpers.js";
-import { nativeWorld, seedDevice, type Answer, type NativeWorld } from "./native-fixture.js";
+import { nativeWorld, seedDevice, seedSlot, type Answer, type NativeWorld } from "./native-fixture.js";
 
 const { activities, activitySourceLinks, performedSessions, performedSets, plannedWorkouts, workoutCompletionMatches } = schema;
 
@@ -96,6 +98,10 @@ interface Owner {
   lifted: string;
   corosMatch: string;
   phone: string;
+  /** An unmatched COROS run of the owner's yesterday (an extra), a session said done, and an engine slot ahead. */
+  extra: string;
+  said: string;
+  ahead: string;
 }
 
 /** The owner's real account: three document workouts today, one played and saved on the owner's own phone, one completed by
@@ -129,10 +135,24 @@ async function ownerAccount(opts: { fill?: boolean } = {}): Promise<Owner> {
     id: newId(), activityId: coros, provider: "coros", providerActivityId: "coros-owner-1", sourceCreatedAt: at, sourceUpdatedAt: null,
     firstSeenAt: at, lastSeenAt: at, contentFingerprint: "owner-fp", normalizerVersion: "coros-1", sourceVersion: null, rawSummary: null,
   });
+  // An unmatched run yesterday (an extra: /days and /history would list it, were it the reader's), a session said done,
+  // and an engine slot two days ahead (/ahead would preview it).
+  const extra = newId();
+  const yesterday = addDays(today, -1);
+  await w.db.insert(activities).values({
+    id: extra, userId: w.userId, source: "coros", corosActivityId: "coros-owner-2", startTime: `${yesterday}T15:00:00.000Z`,
+    startTimeLocal: `${yesterday}T07:00:00`, sport: "run", durationSeconds: 3000, distanceMeters: 10000, title: "Owner extra", createdAt: at, updatedAt: at,
+  });
+  const said = (await createDocWorkout(w.db, w.userId, { date: today, time: "09:00", doc: qaDoc("Owner said") }, ctx)).workout.id;
+  await w.db
+    .update(plannedWorkouts)
+    .set({ effectiveDate: yesterday, originalPlanDate: yesterday, completionState: "completed", sanctionedBy: "athlete_said_done", resolutionDate: yesterday })
+    .where(eq(plannedWorkouts.id, said));
+  const ahead = await seedSlot(w.db, w.userId, addDays(today, 2));
   // The rest of the registry, synthetic (its rows are not the engine's to build from: an owner build after it would fail).
   if (opts.fill !== false) await seedFullAccount(w.db, w.userId);
   const [rev] = await w.db.select({ rev: plannedWorkouts.workoutDocRev }).from(plannedWorkouts).where(eq(plannedWorkouts.id, open.id));
-  return { played: played.id, open: open.id, openRev: rev!.rev ?? 0, buildId: b.buildId, performedId, coros, lifted: lifted.id, corosMatch, phone };
+  return { played: played.id, open: open.id, openRev: rev!.rev ?? 0, buildId: b.buildId, performedId, coros, lifted: lifted.id, corosMatch, phone, extra, said, ahead };
 }
 
 /** The QA account, seeded, and its phone paired: the phone's caller, and today's QA Hips and back, built and started. */
@@ -261,12 +281,12 @@ describe("another account's session row of the same id, landing mid-save (the re
   });
 });
 
-describe("every v3 device route, sent the owner's ids by the QA phone", () => {
+describe("every v4 device route, sent the owner's ids by the QA phone", () => {
   it("answers 404 or 409 — or, for the routes naming none, the QA account's own — and the owner's hashes are unchanged", async () => {
     const owner = await ownerAccount();
     const qa = await qaPhone();
     const before = await tableHashes(w.db, w.userId);
-    const ownerIds = [owner.played, owner.open, owner.lifted, owner.buildId, owner.performedId, owner.coros, owner.corosMatch];
+    const ownerIds = [owner.played, owner.open, owner.lifted, owner.buildId, owner.performedId, owner.coros, owner.corosMatch, owner.extra, owner.said, owner.ahead, w.userId];
     const fresh = newId();
     const from = { date: today, time: "17:00" };
 
@@ -274,6 +294,13 @@ describe("every v3 device route, sent the owner's ids by the QA phone", () => {
     const cases: Array<[string, string, unknown, number[]]> = [
       ["GET", "/api/native/me", undefined, [200]],
       ["GET", "/api/native/today", undefined, [200]],
+      // Stage 2c's reads name no account: the QA account's own days and record, never a row of the owner's.
+      ["GET", `/api/native/days?from=${addDays(today, -3)}&to=${addDays(today, 3)}`, undefined, [200]],
+      ["GET", "/api/native/history", undefined, [200]],
+      ["GET", `/api/native/history?before=${addDays(today, 1)}&limit=30`, undefined, [200]],
+      ["GET", `/api/native/sessions/${owner.ahead}/ahead`, undefined, [404]],
+      ["GET", `/api/native/sessions/${owner.open}/ahead`, undefined, [404]],
+      ["GET", `/api/native/sessions/${owner.said}/ahead`, undefined, [404]],
       ["GET", `/api/sessions/${owner.open}`, undefined, [404]],
       ["GET", `/api/sessions/${owner.played}`, undefined, [404]],
       ["GET", `/api/sessions/${owner.played}/review-basis`, undefined, [404]],
@@ -297,9 +324,9 @@ describe("every v3 device route, sent the owner's ids by the QA phone", () => {
       ["PUT", `/api/workouts/${owner.open}/doc`, { doc: qaDoc("Owner core"), baseRev: owner.openRev }, [404]],
       ["POST", "/api/native/sign-out", undefined, [200]],
     ];
-    // Every route the v3 scope lists has its case: a route added to the list without one fails here.
-    for (const r of DEVICE_SCOPES["training-v3"]) {
-      expect(cases.some(([m, p]) => m === r.method && r.pattern.test(p)), `${r.method} ${r.pattern}`).toBe(true);
+    // Every route the newest scope lists has its case: a route added to the list without one fails here.
+    for (const r of DEVICE_SCOPES["training-v4"]) {
+      expect(cases.some(([m, p]) => m === r.method && r.pattern.test(p.split("?")[0]!)), `${r.method} ${r.pattern}`).toBe(true);
     }
     for (const [method, path, body, expected] of cases) {
       const a = await qa.as(method, path, body);
