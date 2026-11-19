@@ -71,12 +71,18 @@ import {
   courseConfigSchema,
   docOriginRow,
   doseSummary,
+  doseText,
+  humanizeWorkoutTitle,
   newId,
+  NO_EQUIPMENT_PLACE,
   parseStoredWorkoutDoc,
+  RUN_EFFORT_LABELS,
+  secondsText,
   sessionLead,
   todayInZone,
   workoutMusicSchema,
   type AdaptiveConfig,
+  type LeadBuild,
   type SessionLead,
   type UserPreferences,
   type Weight,
@@ -116,7 +122,7 @@ import {
 } from "@rg/session-engine";
 import { sha256Hex } from "../auth/crypto.js";
 import type { Env } from "../env.js";
-import { loadAccountLibrary, PUBLIC_LIBRARY, type AccountLibrary } from "./account-library.js";
+import { libraryForDocs, loadAccountLibrary, PUBLIC_LIBRARY, type AccountLibrary } from "./account-library.js";
 import { restoreInProgress } from "./account-state.js";
 import { loadPreferences } from "./calendar-sync.js";
 import { markDoneOffer } from "./course-number.js";
@@ -148,8 +154,11 @@ import {
   type DocSlot,
   type GatedDoc,
 } from "./doc-build.js";
-import { NO_EQUIPMENT } from "./default-place.js";
-import { courseDefinition, docSlotKeys, DocTooLargeError, makeLibraryIndex, videosOfSource, type DocIssue, type PracticeVideo, type ValidateCtx } from "@rg/workout";
+import { NO_EQUIPMENT, placeChoices } from "./default-place.js";
+import { exerciseNameMap, resolveCodesInText } from "./exercise-catalog.js";
+import { pausedOn } from "./program-slots.js";
+import { sessionContent } from "./session-kind.js";
+import { courseDefinition, deriveDoc, docSlotKeys, DocTooLargeError, makeLibraryIndex, videosOfSource, type DocIssue, type PracticeVideo, type ValidateCtx } from "@rg/workout";
 import { doneCleanlyOf, doneStats } from "./library-view.js";
 import { mirrorFollowsDay, mirrorOnDayBuild } from "./mirror.js";
 
@@ -2554,4 +2563,206 @@ export async function recordCheck(
     workoutId: null,
   });
   return { id, profileId: input.profileId, date: ctx.today, value: input.value, feelingOff: input.feelingOff };
+}
+
+// ── What's in it, ahead of a session's day (stage 2c; DESIGN-2c §2.3) ─────────────────────────────────────────────
+//
+// `GET /api/native/sessions/:id/ahead`: one session on a later day, as the phone's details show it before its day — read
+// only when the person opens them. BUILT IN MEMORY, NEVER STORED: none of the writers a Build runs is reached here — no
+// `beginWrite` (no pre-checks recorded), no `storeBuild` (no `session_builds` row, preview or not), no `saveProgramState`
+// (no block started or rotated), no row content or `session_params`, no mirror or watch, no outline written
+// (`openCourseOutline` is never called) and no note. Whatever the basis, the session is answered as run-garden would make
+// it now, captioned by the phone as such.
+
+/** How *What's in it* was made: the session's document, the engine's build, a course's next session, a run's stages, or none. */
+export type AheadBasis = "document" | "engine" | "course" | "stages" | "none";
+
+export interface AheadMove {
+  /** The library's id for a move of the library's; null for a free move or a run segment. */
+  exerciseId: string | null;
+  name: string;
+  /** In words, as the session sheet says a dose ("3 × 8 @ 20 kg", "3 × 8 · 20 kg", "30 s each side"). */
+  dose: string;
+}
+
+export interface AheadPreview {
+  workoutId: string;
+  date: string;
+  /** The account's today, which the session's day is after. */
+  today: string;
+  basis: AheadBasis;
+  /** As stored (what the phone matches on), and its words when they differ. */
+  title: string;
+  label?: string;
+  minutes: number | null;
+  place: { id: string; name: string } | null;
+  moves: AheadMove[];
+  /** A run's stage summary, its codes in words (`stages` only). */
+  summary: string | null;
+  /** The document's revision while the row holds one. */
+  docRev: number | null;
+  /** A run's expected distance (`stages` only). */
+  distanceMeters: number | null;
+}
+
+/** The session is today's or a past day's: today's is the Open path's (`GET /api/sessions/:id`), a past one History's. */
+export class NotAheadError extends Error {
+  constructor(
+    readonly date: string,
+    readonly today: string,
+  ) {
+    super("not_ahead");
+  }
+}
+
+/** A document's moves, in its order: a library move by its name, a free move, a run segment; rests left out. */
+function docMoves(doc: WorkoutDoc, library: readonly ExerciseRecord[]): AheadMove[] {
+  const index = makeLibraryIndex(library);
+  return doc.parts.flatMap((part) => {
+    const rounds = part.rounds && part.rounds > 1 ? `${part.rounds} rounds · ` : "";
+    return part.items.flatMap((item): AheadMove[] => {
+      if (item.kind === "exercise") return [{ exerciseId: item.libraryId, name: index(item.libraryId)?.name ?? item.libraryId, dose: `${rounds}${doseSummary(item.dose)}` }];
+      if (item.kind === "free_exercise") return [{ exerciseId: null, name: item.name, dose: `${rounds}${doseSummary(item.dose)}` }];
+      if (item.kind === "run") {
+        const t = item.target;
+        const amount = [t.durationSec !== undefined ? secondsText(t.durationSec) : null, t.distanceM !== undefined ? (t.typed ?? `${Math.round(t.distanceM)} m`) : null, t.open ? "until the lap button" : null];
+        return [{ exerciseId: null, name: `${RUN_EFFORT_LABELS[item.effort]} run`, dose: amount.filter((x): x is string => x !== null).join(" · ") }];
+      }
+      return [];
+    });
+  });
+}
+
+/** The place a document names: one of the athlete's own, by its name; "No equipment"; else none (the document names none). */
+async function docPlace(db: Db, userId: string, doc: WorkoutDoc): Promise<AheadPreview["place"]> {
+  const id = doc.setting?.placeId;
+  if (!id) return null;
+  if (id === NO_EQUIPMENT_PLACE) return { id, name: "No equipment" };
+  const named = (await placeChoices(db, userId)).find((p) => p.id === id);
+  return { id, name: named?.name ?? id };
+}
+
+/** An engine build's moves, in the build's order, each dose read as the session sheet reads it (`sessionLead`'s rule). */
+function buildMoves(build: Pick<BuildPayload, "items" | "steps" | "targets" | "exercises">): AheadMove[] {
+  const lead = build as unknown as LeadBuild;
+  return lead.items.map((item) => {
+    const ex = lead.exercises[item.exerciseId];
+    return {
+      exerciseId: item.exerciseId,
+      name: ex?.name ?? item.exerciseId,
+      dose: doseText({
+        sets: item.sets,
+        steps: lead.steps.filter((s) => s.slotKey === item.slotKey && s.kind !== "rest"),
+        target: lead.targets[item.exerciseId] ?? null,
+        perSide: (ex?.laterality ?? "bilateral") !== "bilateral",
+      }),
+    };
+  });
+}
+
+/**
+ * THE ENGINE'S BUILD OF A SLOT AHEAD, IN MEMORY: `dayInputs` with an empty request (reads only: a day ahead's checks are
+ * the request's, none, never recorded; the laptop's choices for the day's preview stand, as in Build), then — when the
+ * stored preview is still the one those inputs make (its hash and engine), that preview as stored, which is what Build `{}`
+ * would answer; else `composeBuild`, the engine's pure function. Never stored. Null when the slot's programme is gone.
+ */
+async function engineAhead(db: Db, userId: string, row: SlotRow, ctx: BuildCtx): Promise<{ build: StoredBuild["build"] | Composed["build"]; view: SessionView } | null> {
+  const builds = await loadBuilds(db, userId, row.id);
+  let inputs: DayInputs;
+  try {
+    inputs = await dayInputs(db, userId, row, builds, {}, ctx);
+  } catch (e) {
+    if (e instanceof SessionNotFoundError) return null;
+    throw e;
+  }
+  const { previous, inputsHash, version } = inputs;
+  if (previous && previous.inputsHash === inputsHash && previous.engineVersion === version) return storedOf(previous);
+  return composeBuild({
+    date: inputs.date,
+    programId: row.planId,
+    context: inputs.context,
+    block: inputs.block,
+    history: inputs.history.sessions,
+    summary: inputs.history.summary,
+    checks: inputs.checks,
+    overrides: inputs.overrides,
+    swaps: inputs.swaps,
+  });
+}
+
+/**
+ * *What's in it* for one session ahead of its day (see the section's header), by what the row is (`sessionContent`):
+ *  - `document`: the session's own document — its moves, the minutes the document read derives (`GET /api/workouts/:id/doc`),
+ *    the place it names;
+ *  - `engine`: a programme's or on-demand slot, as the engine would build it now (`engineAhead`);
+ *  - `course`: an unwritten course outline, the document its course would write now (`coursePreviewDoc`, a read) — or
+ *    `none` when the course can't make one (paused that day, stopped or stopping, its definition gone);
+ *  - `stages`: a run with a stage summary (a COROS plan's or the coach's), its summary resolved as the web resolves it;
+ *  - `none`: anything else.
+ * Throws `SessionNotFoundError` (not the account's, archived, a rest row), `NotAheadError` (today or past), and
+ * `NoDocumentError` as Build does.
+ */
+export async function previewAhead(db: Db, userId: string, workoutId: string, ctx: BuildCtx): Promise<AheadPreview> {
+  const [found] = await db
+    .select({ row: plannedWorkouts, planKind: programs.kind })
+    .from(plannedWorkouts)
+    .leftJoin(programs, and(eq(programs.id, plannedWorkouts.planId), eq(programs.userId, plannedWorkouts.userId)))
+    .where(and(eq(plannedWorkouts.id, workoutId), eq(plannedWorkouts.userId, userId)))
+    .limit(1);
+  if (!found || found.row.archivedAt !== null || found.row.category === "rest") throw new SessionNotFoundError();
+  const { row, planKind } = found;
+  if (row.effectiveDate <= ctx.today) throw new NotAheadError(row.effectiveDate, ctx.today);
+  const shown = humanizeWorkoutTitle(row.title, row.category, row.qualitySubtype);
+  const estimate = row.sourceEstimatedDurationSeconds ?? row.fallbackEstimatedDurationSeconds;
+  const base = {
+    workoutId: row.id,
+    date: row.effectiveDate,
+    today: ctx.today,
+    title: row.title,
+    ...(shown !== row.title ? { label: shown } : {}),
+  };
+  const answer = (basis: AheadBasis, over: Partial<Pick<AheadPreview, "minutes" | "place" | "moves" | "summary" | "distanceMeters">> = {}): AheadPreview => ({
+    ...base,
+    basis,
+    minutes: estimate == null ? null : Math.round(estimate / 60),
+    place: null,
+    moves: [],
+    summary: null,
+    docRev: row.workoutDoc !== null ? (row.workoutDocRev ?? null) : null,
+    distanceMeters: null,
+    ...over,
+  });
+  const ofDoc = async (basis: "document" | "course", doc: WorkoutDoc): Promise<AheadPreview> => {
+    const library = await libraryForDocs(db, userId, [doc]);
+    const place = await docPlace(db, userId, doc);
+    return answer(basis, { minutes: Math.round(deriveDoc(doc, library.all).estimatedMinutes), place, moves: docMoves(doc, library.all) });
+  };
+
+  const content = sessionContent({ ...row, planKind, hasDoc: row.workoutDoc !== null, hasStages: row.stageSummary !== null });
+  if (content === "document") {
+    const doc = parseStoredWorkoutDoc(row.workoutDoc);
+    return doc ? ofDoc("document", doc) : answer("none");
+  }
+  if (content === "engine") {
+    const built = await engineAhead(db, userId, row, ctx);
+    if (!built) return answer("none");
+    return answer("engine", {
+      minutes: built.view.minutes,
+      place: { id: built.view.location.id, name: built.view.location.name },
+      moves: buildMoves(built.build),
+    });
+  }
+  if (content === "outline") {
+    const course = await courseOf(db, userId, row);
+    const p = course?.program;
+    const finishing = (p?.config as { finishing?: unknown } | null | undefined)?.finishing;
+    if (!course || !p || p.status !== "active" || pausedOn(p.pausedUntil, row.effectiveDate) || finishing !== undefined) return answer("none");
+    const doc = await coursePreviewDoc(db, userId, course);
+    return doc ? ofDoc("course", doc) : answer("none");
+  }
+  if (content === "stages") {
+    const summary = resolveCodesInText(row.stageSummary!, await exerciseNameMap(db));
+    return answer("stages", { summary, distanceMeters: row.expectedDistanceMeters ?? null });
+  }
+  return answer("none");
 }
