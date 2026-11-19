@@ -53,13 +53,14 @@ syncRoutes.get("/status", async (c) => {
   // Cloud-direct COROS (spec §5): when a cloud connection exists, presence
   // means "connection healthy", not Mac liveness — the line speaks it.
   // The sleep connection rides the same read (audit C2): the line says when COROS expired it — no statement more.
-  const { coros: cloud, sleepNeedsReconnect } = await corosConnectionsForSyncLine(db, userId);
+  const { coros: cloud, sleepNeedsReconnect, sleepRefused } = await corosConnectionsForSyncLine(db, userId);
   return c.json({
     ...status,
     cloud: cloud.connected || cloud.status === "error"
       ? { connected: cloud.connected, lastSyncAt: cloud.lastSyncAt, error: cloud.lastErrorCategory }
       : null,
     sleepNeedsReconnect,
+    sleepRefused,
   });
 });
 

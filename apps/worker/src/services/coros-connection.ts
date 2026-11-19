@@ -6,7 +6,7 @@ import { decryptSecret, encryptSecret } from "../auth/crypto.js";
 import { notQaAccount } from "../auth/qa-identity.js";
 import type { Env } from "../env.js";
 import type { Db } from "./db.js";
-import { sleepNeedsReconnect } from "./coros-mcp.js";
+import { SLEEP_REFUSED_CATEGORY, sleepNeedsReconnect } from "./coros-mcp.js";
 
 /**
  * The cloud COROS connection (cloud-direct spec §1): one provider_connections
@@ -203,16 +203,24 @@ export async function corosConnectionStatus(db: Db, userId: string): Promise<Cor
 
 /**
  * The sync line's two connections in ONE statement (it is polled every 30 s): the COROS connection's status, and
- * whether COROS expired the sleep connection (`coros_mcp`; audit C2 — five weeks with only Settings saying so).
+ * whether COROS expired the sleep connection (`coros_mcp`; audit C2 — five weeks with only Settings saying so) — and
+ * whether it refused it (`sleepRefused`, `credentials_rejected`), so the line says to check the COROS phone app's
+ * sign-in first (the 2026-11-19 fix).
  */
-export async function corosConnectionsForSyncLine(db: Db, userId: string): Promise<{ coros: CorosConnectionStatus; sleepNeedsReconnect: boolean }> {
+export async function corosConnectionsForSyncLine(
+  db: Db,
+  userId: string,
+): Promise<{ coros: CorosConnectionStatus; sleepNeedsReconnect: boolean; sleepRefused: boolean }> {
   const rows = await db
     .select()
     .from(providerConnections)
     .where(and(eq(providerConnections.userId, userId), inArray(providerConnections.provider, [PROVIDER, "coros_mcp"])));
+  const sleep = rows.find((r) => r.provider === "coros_mcp");
+  const reconnect = sleepNeedsReconnect(sleep?.status);
   return {
     coros: statusOf(rows.find((r) => r.provider === PROVIDER)),
-    sleepNeedsReconnect: sleepNeedsReconnect(rows.find((r) => r.provider === "coros_mcp")?.status),
+    sleepNeedsReconnect: reconnect,
+    sleepRefused: reconnect && sleep?.lastErrorCategory === SLEEP_REFUSED_CATEGORY,
   };
 }
 

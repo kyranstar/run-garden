@@ -41,6 +41,23 @@ describe("the sync line", () => {
     expect(render({ ...sleepless(null), cloud: null })).toContain("Sleep sync stopped — reconnect in Settings");
     expect(render({ ...status(null), sleepNeedsReconnect: false })).not.toContain("Sleep");
   });
+
+  // The 2026-11-19 incident: COROS refused every sleep call ("identity mismatched … Verify COROS App login status") until
+  // the owner signed in to the COROS phone app again. A refused grant (`sleepRefused`) says to check that first; an expired
+  // one, or an older server that doesn't say why, keeps today's words.
+  it("a refused sleep connection says to check the COROS app's sign-in, then reconnect; any other reason keeps its words", () => {
+    const render = (s: SyncStatusDto) => renderToStaticMarkup(createElement(SyncStatusLine, { status: s }));
+    const refused = "Sleep sync stopped — check the COROS app on your phone is signed in, then reconnect in Settings";
+    expect(render({ ...status(null), sleepNeedsReconnect: true, sleepRefused: true })).toContain(refused);
+    expect(render({ ...status(null), cloud: null, sleepNeedsReconnect: true, sleepRefused: true })).toContain(refused);
+    for (const other of [{ sleepRefused: false }, {}]) {
+      const said = render({ ...status(null), sleepNeedsReconnect: true, ...other });
+      expect(said).toContain("Sleep sync stopped — reconnect in Settings");
+      expect(said).not.toContain("COROS app");
+    }
+    // Healthy, it says nothing of sleep whatever the flag.
+    expect(render({ ...status(null), sleepNeedsReconnect: false, sleepRefused: false })).not.toContain("Sleep");
+  });
 });
 
 /**

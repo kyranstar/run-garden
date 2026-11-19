@@ -1930,6 +1930,11 @@ export interface SyncStatusDto {
   cloud?: { connected: boolean; lastSyncAt: string | null; error: string | null } | null;
   /** COROS expired the sleep connection: no sleep comes in until it is reconnected (Settings). */
   sleepNeedsReconnect?: boolean;
+  /**
+   * …and why: COROS refused the grant (`credentials_rejected`) rather than let it expire — the line then says to check the
+   * COROS phone app's sign-in before reconnecting. Absent from an older server.
+   */
+  sleepRefused?: boolean;
 }
 
 /**

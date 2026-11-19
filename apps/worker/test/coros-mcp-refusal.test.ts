@@ -363,7 +363,9 @@ describe("every surface says reconnect", () => {
 
     const cookie = `${SESSION_COOKIE}=${await createSession(db, userId)}`;
     const res = await mountRoutes(db, "/api/sync", syncRoutes).request("/api/sync/status", { headers: { Cookie: cookie } }, ENV);
-    expect(((await res.json()) as { sleepNeedsReconnect?: boolean }).sleepNeedsReconnect).toBe(true);
+    // Refused (`credentials_rejected`), so the line says to check the COROS app's sign-in first (the 2026-11-19 fix).
+    const said = (await res.json()) as { sleepNeedsReconnect?: boolean; sleepRefused?: boolean };
+    expect([said.sleepNeedsReconnect, said.sleepRefused]).toEqual([true, true]);
 
     const d = await buildDossier(db, userId, prefs, today);
     expect(d.text).toContain(`no data since ${lastNight} — ${SLEEP_RECONNECT_WORDS}.`);

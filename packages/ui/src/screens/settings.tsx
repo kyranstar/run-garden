@@ -960,6 +960,13 @@ function BackfillRow() {
  * Needing a reconnect reads `error`; its category says why: COROS refused the
  * grant in place of data (`credentials_rejected`, from 2026-11-18) or let it
  * expire (`needs_reauth`). Neither ever reads "synced".
+ *
+ * A refused grant says to check the COROS phone app first (the 2026-11-19
+ * incident): COROS's MCP refused every call — "identity mismatched …
+ * Verify COROS App login status, or confirm whether the current App account
+ * aligns with the MCP authorized account" — and what fixed it was signing in
+ * to the COROS app on the phone again. Reconnecting alone may not. Every
+ * other reason keeps its words.
  */
 export function CorosSleepRow({
   conn,
@@ -980,7 +987,7 @@ export function CorosSleepRow({
         <strong>Sleep from COROS</strong>
         <p className="faint">
           {refused
-            ? "COROS stopped accepting this connection. Reconnect."
+            ? "COROS stopped accepting this connection. Check that the COROS app on your phone is signed in to the same COROS account, then Reconnect."
             : needsReauth
             ? "Sleep sync stopped — COROS expired the connection. Reconnect to resume."
             : connected

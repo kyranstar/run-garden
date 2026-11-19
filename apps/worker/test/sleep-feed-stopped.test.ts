@@ -133,8 +133,9 @@ describe("GET /api/sync/status", () => {
     const cookie = `${SESSION_COOKIE}=${await createSession(db, userId)}`;
     const status = async () =>
       (await (await mountRoutes(db, "/api/sync", syncRoutes).request("/api/sync/status", { headers: { Cookie: cookie } }, ENV)).json()) as Record<string, unknown>;
-    expect((await status()).sleepNeedsReconnect).toBe(false);
+    expect([(await status()).sleepNeedsReconnect, (await status()).sleepRefused]).toEqual([false, false]);
     await sleepConnection(true);
-    expect((await status()).sleepNeedsReconnect).toBe(true);
+    // Expired (`needs_reauth`), not refused: the line keeps its own words.
+    expect([(await status()).sleepNeedsReconnect, (await status()).sleepRefused]).toEqual([true, false]);
   });
 });

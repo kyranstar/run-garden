@@ -741,8 +741,13 @@ export function SyncStatusLine({
   const staleSessions = status.contentStaleSessions ?? [];
   const staleLine = `Your watch has an earlier version of ${contentStale} session${contentStale === 1 ? "" : "s"}`;
   // COROS expired the sleep connection (audit C2): five weeks with only Settings saying so. Where a clean sync would
-  // read, this does — anything louder about COROS itself still leads.
-  const sleepLine = status.sleepNeedsReconnect ? "Sleep sync stopped — reconnect in Settings" : null;
+  // read, this does — anything louder about COROS itself still leads. COROS refusing it (`sleepRefused`) says to check the
+  // COROS phone app's sign-in first: on 2026-11-19 that, not a reconnect, was the fix.
+  const sleepLine = !status.sleepNeedsReconnect
+    ? null
+    : status.sleepRefused
+      ? "Sleep sync stopped — check the COROS app on your phone is signed in, then reconnect in Settings"
+      : "Sleep sync stopped — reconnect in Settings";
   // THE WATCH CATCHING UP (the watch mirrors the plan §3.9): while sessions have a push or a delete on its way, the line
   // says how many — and nothing of it once the jobs have run (a delete can wait for the hourly; the line stays till then).
   const updating = status.watchUpdatingCount ?? 0;
