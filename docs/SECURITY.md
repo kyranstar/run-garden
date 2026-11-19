@@ -117,7 +117,7 @@ sessions, rest days and which sessions were done (`apps/worker/src/routes/lifeos
 ## Paired phones: their expiry and Renew (every scope)
 
 A phone paired from the laptop (native device sign-in, `apps/worker/src/auth/native-devices.ts`) works for 30 days from
-its confirmation, whatever scope it holds (`training-slice-v1` through `training-v4`). The laptop's **Renew**
+its confirmation, whatever scope it holds (`training-slice-v1` through `training-v5`). The laptop's **Renew**
 (`POST /api/native/devices/:id/renew`, Settings → Devices, offered from 7 days out) sets that to 30 days from the server's
 acceptance — never +30 on the old expiry:
 
@@ -156,6 +156,46 @@ token above once LifeOS has moved over (stage 2c; the token's section goes at cl
   source; a played session its logged sets, the moves it reached and its note. Never heart rate, pace, laps, elevation,
   training load, cadence, power, routes or location, telemetry, the watch's feel rating, the device's name, the
   body-check readings, the garden, coach text, email or connections. `Cache-Control: no-store`.
+
+## LifeOS uses the library and coach through its device (`training-v5`)
+
+R1 (the LifeOS migration's DESIGN-3, kit v0.20): v4's reads, unchanged, and the library, take-back and the coach designer,
+on the `training-v5` scope only (`apps/worker/src/auth/device-scope.ts`; routes in `routes/native-library.ts`,
+`routes/native-take-back.ts`, `routes/native.ts`, `routes/coach-runs.ts`, `routes/coach.ts`).
+
+- **Its own named consent, and it shares nothing.** v5 is a scope of its own: the laptop grants it in place to a v4 phone
+  (Settings → Devices, *Allow your library and coach*, whose line names everything it allows, that coach use counts
+  toward the week's AI limit, and that it shares nothing about the owner's day) and steps it back to v4 in place (*Stop
+  library and coach*: what it added stays). New pairings mint it. Revoke and the kill switch stop it as every device.
+- **Every training write is run-garden's own.** A saved workout is put on the plan through the Studio's own create (judged
+  for its day, its watch copy owed and its calendar booked as a Studio save's); a coach proposal's ops are applied only by
+  an approve naming its op ids and the proposal's `version` (a phone's approve without them is 403 at the gate, a stale
+  version 409 `proposal_changed`, nothing written), and never one whose run didn't finish (409 `incomplete`). A phone
+  approves the designer's proposals only, never the thread coach's. No automatic training writes, no notifications.
+- **Receipt-bound take-back.** Each place and each approved new or revised workout, move and skip writes a take-back receipt
+  (`take_back_receipts`, migration 0040) in the same batch as the write, holding the row's compare columns as the write
+  left them. `POST /api/native/take-back` claims a receipt only while its row still reads exactly that, and in the same
+  batch writes the inverse through run-garden's own writer (an archive, never a delete; a revision back as a new
+  revision; a move back; an unskip) and checks it landed — so a later edit, a started, done, performed or matched session,
+  a day gone, a race or a programme's session, a group not named whole, a dependent, or a receipt past its 8 days refuses
+  it in words and writes nothing. Retries are idempotent by `requestId`. What the watch and the calendar still have to undo
+  is read live (`GET /api/native/receipts/:id`) and said as pending until done. The account's own receipts only.
+- **The day frame: built, and off until the owner turns it on.** Switch A is per phone (`native_device_sharing`, a sign-in's
+  bookkeeping: never exported, restored or copied; delete-all removes it; a step-down below v5 turns it off), set only by
+  the phone with the disclosure version the owner accepted. A run with a `frame` is refused 409 `sharing_off` unless the
+  phone's switch is on under that very version; the frame is typed fields only (days, today's energy word, free windows as
+  clock times, the day's end, how full each day is, coverage, the consent) with exact keys at every level — no free text
+  of LifeOS's day reaches run-garden. It is kept with the run, read into its opening context as data and shown on the
+  laptop's run view. A phone run is marked `via: lifeos` from the device that signed it in, never from the body.
+- **What the coach remembers.** A phone reads, edits and deletes the account's memory as the laptop does; it may add one
+  stated line (≤ 140 characters, note, fact or rule) only on the owner's tap and only with switch A on, kept with
+  provenance `lifeos`; it never supersedes what the owner confirmed.
+- **The library, trimmed.** A move's row and page carry one verdict for the switched-on profiles together (ok, caution,
+  never) — never a profile's name, its notes, the account's saved-post links or its corrections. Templates are listed
+  without their documents. Every read is `no-store` and 503 during a restore.
+- **The QA account's phone has no coach.** After `requireUser` (where the QA account's switches go off), every coach route
+  answers 404 `coach_off` to it — no run, no model call, no `llm_usage` row. Its library, place and take-back work on its
+  fixtures only. The $20 weekly cutoff is unchanged; a call's 32,000-token ceiling is reserved at its worst case first.
 
 ## One provider, no third-party egress
 
