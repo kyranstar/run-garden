@@ -126,8 +126,9 @@ token above once LifeOS has moved over (stage 2c; the token's section goes at cl
   Neither the grant, the step-down nor any read moves the device's 30-day expiry.
 - **Bounded, by shape at the gate and by value in the route.** Each pair holds a query rule (exact keys, each once, each
   in its grammar; anything else is 403 `out_of_scope` before the route): `/days?from&to`, at most 14 days within
-  today − 90 … today + 14 on the account's clock; `/history?before&limit`, pages of whole days, at most 30 rows, back
-  one year; `/sessions/:id/ahead`, no query, one session on a later day.
+  today − 90 … today + 14 on the account's clock; `/history?before&limit`, pages of whole days until they reach `limit`
+  (1–30) rows — so a page can carry up to `limit` − 1 + 60, a single day being cut at 60 — back one year;
+  `/sessions/:id/ahead`, no query, one session on a later day.
 - **Reads only.** None writes anything — no outline, build or preview stored, no block, check, garden, reconcile, match,
   provider job, audit or note, no `waitUntil` — beyond the gate's own hourly `last_used_at`. *What's in it* for an engine
   slot is built in memory and never stored. While a restore replaces the account each answers 503

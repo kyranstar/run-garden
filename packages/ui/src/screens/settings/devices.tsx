@@ -75,9 +75,11 @@ export const STEP_DOWNS: Readonly<Record<string, { button: string; line: string 
     button: "Stop fitting and feedback",
     line: "It will no longer fit workouts to the day or record Not for me and harder-move switches. It stays paired.",
   },
+  // What v4 does today, and no more (review N1): until LifeOS reads Today and Train as planned through the pairing
+  // (stage 2c-3), stepping a phone down changes only these reads.
   "training-v4": {
     button: "Stop reading your plan and history",
-    line: "It will no longer read your plan or history. On that phone, Today's training and Train as planned stop updating until you allow it again. It stays paired.",
+    line: "It will no longer be able to read your coming weeks and your history. It stays paired.",
   },
 };
 

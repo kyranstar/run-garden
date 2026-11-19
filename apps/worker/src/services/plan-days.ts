@@ -345,6 +345,14 @@ const deviceExtra = (a: ExtraActivity & { sport: DeviceExtra["sport"] }): Device
 });
 
 /**
+ * The training rows the phone's days show: each day's first `DAY_SESSIONS_CAP`, in the days' order. Only these are read
+ * for their matches (review N2), so a capped day costs what a full one does, however many rows it stores.
+ */
+export function shownRows(rows: readonly PlanRow[], from: string, to: string): PlanRow[] {
+  return eachDay(rows, from, to, (_date, _rest, sessions) => sessions.slice(0, DAY_SESSIONS_CAP)).flat();
+}
+
+/**
  * The phone's days `from`…`to`: each day once, in order, with its tense against `today`, its sessions and its extras. An
  * extra is listed only on a day gone or today: a day ahead has none to list (a session can't be done ahead of its day).
  */

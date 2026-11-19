@@ -550,14 +550,22 @@ describe("what it costs", () => {
     expect(count(a)).toBe(7);
   });
 
-  it("plus 1 for each further chunk of 90 training rows", async () => {
+  it("plus 1 for each further chunk of 90 training rows shown", async () => {
+    for (let i = 0; i < 196; i += 1) await row({ effectiveDate: addDays(T, i % 14), effectiveTime: "05:00" });
+    const a = await days(T, addDays(T, 13));
+    expect(a.status).toBe(200);
+    // 196 rows, 14 a day: three chunks of matches.
+    expect(count(a)).toBe(9);
+    expect(a.json.days.every((d: { partial: unknown }) => d.partial === null)).toBe(true);
+  });
+
+  it("a day over 30 sessions is capped and said so, and the rows left out are read for no match (review N2)", async () => {
     for (let i = 0; i < 200; i += 1) await row({ effectiveDate: T, effectiveTime: "05:00" });
     const a = await days(T, addDays(T, 13));
     expect(a.status).toBe(200);
-    // 200 rows: three chunks of matches.
-    expect(count(a)).toBe(9);
-    // Capped at 30 a day and said so.
     expect(a.json.days[0].partial).toBe("capped");
     expect(a.json.days[0].sessions).toHaveLength(30);
+    // The 30 shown: one chunk of matches, so 7 statements, however many are stored.
+    expect(count(a)).toBe(7);
   });
 });

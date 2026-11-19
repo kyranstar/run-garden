@@ -65,3 +65,16 @@ moved.
   `Retry-After` header, which the codebase uses nowhere.
 - **Extras' garden credit** (the v0.17 ruling): nothing in 2c reads or changes the garden; an extra is listed as done work
   (`extras` on `/days`, `extra: true` on `/history`) and never as a session's answer. No garden field is added.
+
+## After review (ACCEPT WITH MINORS), rebased onto main `e897903a`
+
+- **MINOR-1 fixed** (test-first, the reviewer's probe): `/history`'s activity read holds each row's own day to the page in
+  SQL, the days read whole are reckoned at UTC + 14 from the last start read, and `next` is never at or after `before`.
+- **N1:** the v4 step-down says only what v4 does today ("It will no longer be able to read your coming weeks and your
+  history. It stays paired."), until LifeOS 2c-3 reads Today and Train as planned through the pairing.
+- **N2:** `/days` reads matches only for the rows it shows (each day's first 30).
+- **N3:** `docs/SECURITY.md` says what a page holds: whole days until `limit`, up to `limit` − 1 + 60 rows.
+- **Not taken:** N4 (every outline ahead previews the next session, as the web's Build does: 2c-2's words), N5 (`doneBy`
+  follows the matched activity, the design's rule: the lead's call), N6 (one restore check before the reads, as the plan
+  read's), N7 (`stages` rarer than `document`: truthful), N8 (no upper bound on `before`: harmless, and a bound could refuse
+  a phone whose day runs ahead of the account's). MINOR-2 is LifeOS's (its 2b E2E and fixture ladder stop at v3).

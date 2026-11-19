@@ -31,7 +31,7 @@ const PREVIOUS: Record<string, string | null> = { "training-slice-v1": null, "tr
 const V4_CAN = "Can play, save, move and fit workouts, record your feedback, and read your plan and history.";
 const V4_GRANT =
   "It will also be able to read your training plan, from three months back to two weeks ahead, and what you've done in the last year: titles, times, distances and the sets you logged. Never heart rate, pace, routes or health readings. You can stop it here any time.";
-const V4_STOP = "It will no longer read your plan or history. On that phone, Today's training and Train as planned stop updating until you allow it again. It stays paired.";
+const V4_STOP = "It will no longer be able to read your coming weeks and your history. It stays paired.";
 /** An active phone at `scope` (v2 unless said), with the steps the worker offers it. */
 const active = (over: Partial<NativeDeviceDto> = {}): NativeDeviceDto => {
   const scope = over.scope ?? "training-v2";
@@ -357,7 +357,7 @@ describe("Settings → Devices", () => {
     expect([...after.querySelectorAll("button")].map(words)).toEqual(["Stop reading your plan and history", "Revoke"]);
   });
 
-  it("a v4 phone's step-down: one line saying what stops (Today's training and Train as planned) and that it stays paired; Stop sends v3", async () => {
+  it("a v4 phone's step-down: one line saying what stops (what v4 does today: reading the coming weeks and history) and that it stays paired; Stop sends v3", async () => {
     worker({ devices: [active({ label: "Newest phone", scope: "training-v4" })] });
     await mount();
     expect([...rowOf("Newest phone").querySelectorAll("button")].map(words)).toEqual(["Stop reading your plan and history", "Revoke"]);

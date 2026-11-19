@@ -51,7 +51,7 @@ import { restoreInProgress } from "../services/account-state.js";
 import { loadPreferences } from "../services/calendar-sync.js";
 import { unwrittenCourseOutline } from "../services/course-sessions.js";
 import { HISTORY_DAYS, HISTORY_LIMIT_MAX, historyPage } from "../services/history.js";
-import { corosReadAt, deviceDays, matchesOfRows, readExtraActivities, readPlanRows } from "../services/plan-days.js";
+import { corosReadAt, deviceDays, matchesOfRows, readExtraActivities, readPlanRows, shownRows } from "../services/plan-days.js";
 import { DocTooLargeRefusal, NoDocumentError, NotAheadError, previewAhead, SessionNotFoundError } from "../services/session-build.js";
 import type { AppContext } from "../auth/middleware.js";
 import { requireUser } from "../auth/middleware.js";
@@ -276,8 +276,8 @@ export const DAYS_AHEAD = 14;
  * latest}` outside today − 90 … today + 14 — refused, never clamped, so an answer is always whole.
  *
  * WHAT IT COSTS: 7 statements past nothing — the gate, the restore check, the preferences, the rows (the plan's kind and
- * "under way" joined in), the standing matches (one more for each further chunk of 90 rows), the extras (bounded by
- * `start_time`) and `corosReadAt` (native-days.test.ts).
+ * "under way" joined in), the standing matches of the rows shown (one more for each further chunk of 90), the extras
+ * (bounded by `start_time`) and `corosReadAt` (native-days.test.ts).
  */
 nativeRoutes.get("/days", requireUser, async (c) => {
   c.header("Cache-Control", "no-store");
@@ -293,7 +293,7 @@ nativeRoutes.get("/days", requireUser, async (c) => {
   if (from < earliest || to > latest) return c.json({ error: "out_of_horizon", today, earliest, latest }, 400);
   const readAt = nowInstant();
   const [rows, acts, coros] = await Promise.all([readPlanRows(db, userId, from, to), readExtraActivities(db, userId, from, to), corosReadAt(db, userId)]);
-  const matches = await matchesOfRows(db, userId, rows);
+  const matches = await matchesOfRows(db, userId, shownRows(rows, from, to));
   return c.json({ version: 1, today, readAt, corosReadAt: coros, days: deviceDays(rows, matches, acts, from, to, today) });
 });
 
