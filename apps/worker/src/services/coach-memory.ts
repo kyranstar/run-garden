@@ -10,7 +10,8 @@
  */
 import { and, eq, isNull, sql } from "drizzle-orm";
 import { coachMemory } from "@rg/database";
-import type { AtomicStatement, Db } from "./db.js";
+import { runAtomically, type AtomicStatement, type Db } from "./db.js";
+import { sha256Hex } from "../auth/crypto.js";
 
 export const MEMORY_KINDS = ["fact", "rule", "note", "observation"] as const;
 export type MemoryKind = (typeof MEMORY_KINDS)[number];
@@ -49,8 +50,17 @@ export interface DesignMemoryProvenance {
   checkBack?: string;
 }
 
-/** Where a memory v2 item came from: a coach's run, or a saved post. */
-export type MemoryProvenance = DesignMemoryProvenance | SavedPostMemoryProvenance;
+/** R1 (3c): an item the owner told the training coach from LifeOS, by a tap on the exact sentence shown (`training_tell`). */
+export const LIFEOS_SOURCE = "lifeos";
+export interface LifeosMemoryProvenance {
+  source: typeof LIFEOS_SOURCE;
+  /** The phone that sent it (`native_devices.id`). */
+  deviceId: string;
+  at: string;
+}
+
+/** Where a memory v2 item came from: a coach's run, a saved post, or the owner's tap in LifeOS. */
+export type MemoryProvenance = DesignMemoryProvenance | SavedPostMemoryProvenance | LifeosMemoryProvenance;
 
 export interface NewMemory {
   id: string;
@@ -106,4 +116,62 @@ export function memoryWrites(db: Db, m: NewMemory): AtomicStatement[] {
     );
   }
   return writes;
+}
+
+// ── R1: what the owner tells the training coach from LifeOS ──────────────────────────────────────────────────────────
+
+/** A told item's words, at most: one line (DESIGN-3 §3.7). */
+export const STATED_BODY_MAX = 140;
+/** The kinds the owner may tell: never an observation, which is learned from outcomes. */
+export const STATED_KINDS = ["note", "fact", "rule"] as const;
+/** A told note's life: a note is time-boxed, as the coach's own are. */
+export const STATED_NOTE_DAYS = 30;
+
+/** One line of at most 140 characters, no control characters; or null. */
+export function statedBodyOf(v: unknown): string | null {
+  if (typeof v !== "string") return null;
+  const body = v.trim();
+  // eslint-disable-next-line no-control-regex
+  return body.length >= 1 && body.length <= STATED_BODY_MAX && !/[\u0000-\u001f\u007f]/.test(body) ? body : null;
+}
+
+/**
+ * THE OWNER'S OWN WORDS, TOLD FROM LIFEOS (R1, 3c; DESIGN-3 §3.7 pair 24): an item of the training coach's memory with
+ * confidence `stated` and provenance `lifeos`, written only on the owner's tap (the route). Keyed by the phone's `clientId`,
+ * so a resend is the same item (`repeated`). Run-garden's own rule against two of the same: a live item of the same kind
+ * saying the same words (case and spacing aside) is answered as it is, nothing written (`existing`) — the told item never
+ * replaces anything else, so nothing the owner confirmed is ever superseded from the phone. A note lasts STATED_NOTE_DAYS.
+ */
+export async function addStatedMemory(
+  db: Db,
+  userId: string,
+  input: { kind: (typeof STATED_KINDS)[number]; body: string; clientId: string; deviceId: string },
+  now: string,
+  today: string,
+  addDays: (d: string, n: number) => string,
+): Promise<{ item: typeof coachMemory.$inferSelect; repeated?: true; existing?: true }> {
+  const m = coachMemory;
+  const id = `mem:lifeos:${(await sha256Hex(`${userId}|${input.clientId}`)).slice(0, 32)}`;
+  const [again] = await db.select().from(m).where(and(eq(m.id, id), eq(m.userId, userId))).limit(1);
+  if (again) return { item: again, repeated: true };
+  const norm = (s: string) => s.trim().replace(/\s+/g, " ").toLowerCase();
+  const live = await db
+    .select()
+    .from(m)
+    .where(and(eq(m.userId, userId), eq(m.kind, input.kind), eq(m.active, true), isNull(m.supersededBy)));
+  const same = live.find((x) => norm(x.body) === norm(input.body) && (x.expiresAt === null || x.expiresAt >= today));
+  if (same) return { item: same, existing: true };
+  const writes = memoryWrites(db, {
+    id,
+    userId,
+    kind: input.kind,
+    body: input.body,
+    confidence: "stated",
+    evidence: null,
+    expiresAt: input.kind === "note" ? addDays(today, STATED_NOTE_DAYS) : null,
+    provenance: { source: LIFEOS_SOURCE, deviceId: input.deviceId, at: now },
+  });
+  await runAtomically(db, writes);
+  const [item] = await db.select().from(m).where(and(eq(m.id, id), eq(m.userId, userId))).limit(1);
+  return { item: item! };
 }

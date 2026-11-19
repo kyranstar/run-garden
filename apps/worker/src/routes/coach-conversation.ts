@@ -16,6 +16,7 @@
 import { Hono } from "hono";
 import type { AppContext } from "../auth/middleware.js";
 import { requireUser } from "../auth/middleware.js";
+import { deviceCoachGate } from "./coach-device-gate.js";
 import { coachDesignerEnabled } from "../env.js";
 import { CONVERSATION_ID, readConversation } from "../services/coach-conversation.js";
 import { endedLine } from "../services/coach-runs.js";
@@ -30,6 +31,8 @@ export function makeCoachConversationRoutes(deps: { now?: () => Date } = {}): Ho
     await next();
   });
   routes.use("*", requireUser);
+  // R1: the QA account's phone has no coach (its switches are off only inside requireUser).
+  routes.use("*", deviceCoachGate);
 
   routes.get("/", async (c) => {
     const id = c.req.query("id");

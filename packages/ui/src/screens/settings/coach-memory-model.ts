@@ -50,6 +50,8 @@ const SOURCE_WORDS: Record<string, string> = {
   studio_brief: "From the old Studio's brief",
   // What a post the athlete saved says about when, why or how often (saved-posts import, spec §17).
   "saved post": "From a saved post",
+  // What the owner told the training coach from LifeOS, by a tap on the sentence it showed (R1).
+  lifeos: "Told from LifeOS",
 };
 
 /** Where it came from, in a few words, and when: "From your message, Oct 3". Never an id. */

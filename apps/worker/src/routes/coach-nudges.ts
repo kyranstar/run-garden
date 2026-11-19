@@ -21,6 +21,7 @@ import { Hono } from "hono";
 import { todayInZone } from "@rg/domain";
 import type { AppContext } from "../auth/middleware.js";
 import { requireUser } from "../auth/middleware.js";
+import { deviceCoachGate } from "./coach-device-gate.js";
 import { coachDesignerEnabled } from "../env.js";
 import { loadPreferences } from "../services/calendar-sync.js";
 import { parseSeen } from "../services/coach-opening-line.js";
@@ -37,6 +38,8 @@ export function makeCoachNudgesRoutes(deps: { now?: () => Date } = {}): Hono<App
     await next();
   });
   routes.use("*", requireUser);
+  // R1: the QA account's phone has no coach (its switches are off only inside requireUser).
+  routes.use("*", deviceCoachGate);
 
   routes.get("/", async (c) => {
     const db = c.get("db");

@@ -111,6 +111,7 @@ export const ROUTE_CLASSES: Record<string, Classified> = {
   "POST /api/coach/questions/:id/answer": "gated",
   "POST /api/coach/questions/:id/dismiss": "gated",
   "GET /api/coach/memory": V5_DEVICE,
+  "POST /api/coach/memory": V5_DEVICE,
   "PATCH /api/coach/memory/:id": V5_DEVICE,
   "DELETE /api/coach/memory/:id": V5_DEVICE,
   "GET /api/coach/plans": "gated",

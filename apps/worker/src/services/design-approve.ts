@@ -196,7 +196,9 @@ import {
 } from "@rg/domain";
 import { EXERCISES, type ExerciseRecord } from "@rg/exercise-library";
 import { deriveDoc, makeLibraryIndex, startEditing, toProposable, type DocDerived, type DocIssue } from "@rg/workout";
-import type { Db } from "./db.js";
+import type { AlsoInBatch, Db } from "./db.js";
+import { ReceiptLog } from "./take-back.js";
+import { proposalVersion } from "./proposal-version.js";
 import { underWayNow, underWaySql, UNDER_WAY_WORDS } from "./session-guard.js";
 
 /** The sessions as they are now, with what says whether each is under way: one statement. */
@@ -714,14 +716,14 @@ export function planOpCostOf(
 ): number {
   switch (op.op.kind) {
     case "skip":
-      return SKIP_COST + (row && !appAuthoredRow(row) ? 0 : SKIP_UNPUSH_COST);
+      return SKIP_COST + RECEIPT_COST + (row && !appAuthoredRow(row) ? 0 : SKIP_UNPUSH_COST);
     case "adjust":
       // Re-timed by the rule (its claim and rewrite included, the mark's lift too); else the length alone — on a row
       // taking the watch's version too, which writes nothing more (review A4: the card's "the watch keeps its copy").
       if (op.retime) return RETIME_COST + op.retime.stageInserts + dayRows;
       return ADJUST_COST + dayRows;
     case "move":
-      return MOVE_COST + dayRows + 1;
+      return MOVE_COST + dayRows + 1 + RECEIPT_COST;
     // The new shape §5: an ease (a swap is one) rewrites its session — before the rows its day's collision pass moves.
     case "ease":
       return EASE_COST + dayRows;
@@ -732,6 +734,11 @@ export function planOpCostOf(
   }
 }
 
+/** R1: a take-back receipt, in its op's own batch (services/take-back.ts) — one insert. */
+export const RECEIPT_COST = 1;
+/** …and its settle, once the day's collision pass has placed an untimed row (or re-timed a revised one). */
+export const RECEIPT_SETTLE_COST = 1;
+
 /** What an op costs, by the sessions its day already holds (`dayRows`, this request's own included) — a change's too
  * (`planOpCostOf`; the request's changes add PLAN_BATCH_FIXED once). */
 export function opCostOf(
@@ -740,15 +747,15 @@ export function opCostOf(
   edit?: ApproveInput["edit"],
 ): number {
   if ("op" in op) return planOpCostOf(op, dayRows);
-  if (op.target.kind === "revise") return REVISE_BASE + dayRows;
+  if (op.target.kind === "revise") return REVISE_BASE + dayRows + RECEIPT_COST + RECEIPT_SETTLE_COST;
   const time = edit && edit.time !== undefined ? edit.time : op.target.time;
   // A workout made for a plan is checked once more at the approval (`assertPlanOpen`: one read).
   const forPlan = op.planId ? 1 : 0;
   // A designed run (§8 §3): the coach lane's row, its stages and its watch create.
-  if (op.doc && isRunDoc(op.doc)) return runCreateCost(op.doc, time ?? null, dayRows) + forPlan;
+  if (op.doc && isRunDoc(op.doc)) return runCreateCost(op.doc, time ?? null, dayRows) + forPlan + RECEIPT_COST + (time ? 0 : RECEIPT_SETTLE_COST);
   // The collision pass may move every unpinned session of the day, the new one with them. An untimed one the approve
   // places at a time (B-I1) costs the less of the two: the declared cost stays an upper bound.
-  return (time ? CREATE_AT_TIME_COST : CREATE_PLACED_BASE + dayRows + 1) + forPlan;
+  return (time ? CREATE_AT_TIME_COST : CREATE_PLACED_BASE + dayRows + 1 + RECEIPT_SETTLE_COST) + forPlan + RECEIPT_COST;
 }
 
 // ── A claim no request finishes (the recovery rule; see the module comment) ────────────────────────────────────────
@@ -957,6 +964,9 @@ function notEditable(cause: NotEditableCause, state = ""): Omit<Refused, "opId">
 export interface ApproveInput {
   /** The ops to approve; none named: its workouts and its changes to sessions (`decidedUnnamed`). */
   opIds?: string[];
+  /** Who approves (R1: the take-back receipts' `made_by`): a device's `device:<id>`, else the laptop's `session`. Set by the
+   * route, never the body. */
+  madeBy?: string;
   /** Edit before approve: the athlete's version of one op's draft (a new workout's day and time may be theirs). */
   edit?: { opId: string; doc: Record<string, unknown>; date?: string; time?: string | null };
 }
@@ -1030,6 +1040,11 @@ export interface ApproveAnswer {
   /** A request naming no ops: the ops still open that it left because only their name approves them (`decidedUnnamed`).
    * Present only when there are some, so `ok: true` with nothing done says why. */
   notNamed?: string[];
+  /** R1: the take-back receipt each op this request applied wrote in its own batch (a new or revised workout, a move, a
+   * skip). Present only when there are some. */
+  receipts?: Array<{ opId: string; receiptId: string }>;
+  /** R1: the proposal's version as this request left it (design-version.ts): what the next round's approve names. */
+  version?: string;
 }
 
 /** The ops `ids` names, in the proposal's order; every id must be one of its ops. */
@@ -1287,7 +1302,7 @@ export async function approveDesignOps(
   const unnamed = leftOut.length > 0 ? { notNamed: leftOut } : {};
   if (inPlan.length === 0 && declined.length === 0) {
     if (p.status === "superseded") throw new NotOpenError(p.status);
-    return { status: p.status as DesignProposalStatus, applied, changed, refused, settled, remaining: overflow, ...unnamed };
+    return { status: p.status as DesignProposalStatus, applied, changed, refused, settled, remaining: overflow, ...unnamed, version: await proposalVersion(p) };
   }
 
   const inHand = [...inPlan, ...declined];
@@ -1332,6 +1347,8 @@ export async function approveDesignOps(
 
   const remaining: string[] = [];
   const inFlight: string[] = [];
+  // R1: the ops this request applies go back together (one group); each relies on the ones applied before it.
+  const receipts = new ReceiptLog(db, userId, p.id, input.madeBy ?? "session", ctx.prefs.timezone, ctx.now);
   let left = budget;
   /** Nothing has gone yet: the first always goes, so every request moves on. */
   let first = true;
@@ -1402,8 +1419,17 @@ export async function approveDesignOps(
     const resolvedAt = await writeOps(db, userId, p, claimOps, claimStatus, ctx.now);
     current = { ...p, ops: claimOps, status: claimStatus, resolvedAt };
     let res: Awaited<ReturnType<typeof applyOps>>;
+    // A move's and a skip's receipt, by session, for its write's own batch (the take-back covers these two of the changes).
+    const changeReceipts = new Map<string, AlsoInBatch>();
+    for (const c of batch) {
+      const row = plan.rows.get(c.op.workoutId);
+      if (!row) continue;
+      if (c.op.kind === "move") changeReceipts.set(c.op.workoutId, await receipts.insert(c.id, "move", c.op.toDate, { date: row.dto.date, time: row.dto.time }, sql`${sql.raw('"planned_workouts"."effective_date"')} = ${c.op.toDate}`));
+      if (c.op.kind === "skip") changeReceipts.set(c.op.workoutId, await receipts.insert(c.id, "skip", row.dto.date, { date: row.dto.date }, sql.raw(`"planned_workouts"."completion_state" = 'skipped'`)));
+    }
     try {
       res = await applyOps(db, userId, ctx.prefs, p.id, batch.map((c) => c.op), {
+        receipts: changeReceipts,
         // A length the card said the rule re-times (`retime`): the applier re-times it only when it finds the same.
         retimes: new Map(batch.flatMap((c) => (c.op.kind === "adjust" && c.retime ? [[c.op.workoutId, c.retime] as const] : []))),
         ...(ctx.runWire ? { runWire: ctx.runWire } : {}),
@@ -1435,6 +1461,7 @@ export async function approveDesignOps(
         const before = claimed.get(c.id)!;
         outcomes.set(c.id, { status: "applied", at: ctx.now, workoutId: c.op.workoutId, before });
         changed.push({ opId: c.id, change: changeVerb(c), workoutId: c.op.workoutId, before });
+        if (changeReceipts.has(c.op.workoutId)) receipts.landed(c.id);
       } else {
         // A re-timed length whose session changed since the card has its own code (review-L minor 5), its words the same.
         const why = said.get(c.id);
@@ -1766,7 +1793,7 @@ export async function approveDesignOps(
     }
     first = false;
     left -= cost;
-    const result = await applyOp(db, userId, p.id, op, input.edit, ctx, plan);
+    const result = await applyOp(db, userId, p.id, op, input.edit, ctx, plan, receipts);
     if ("refusal" in result) {
       // Edit before approve answers as a Studio save does: the athlete's version is refused, nothing recorded.
       if (input.edit) throw result.error;
@@ -1774,6 +1801,7 @@ export async function approveDesignOps(
       outcomes.set(opId, { status: "refused", at: ctx.now, ...result.refusal });
     } else {
       applied.push({ opId, ...result.applied });
+      receipts.landed(opId);
       // A designed run's watch create waits for the client to drain it, as a change's watch job does.
       if (result.queued) coachDrain = true;
       if (op.target.kind === "new") added.set(result.applied.workout.date, (added.get(result.applied.workout.date) ?? 0) + 1);
@@ -1793,6 +1821,7 @@ export async function approveDesignOps(
   // The first op always goes, so `left` can fall below nothing: no room then.
   if (meter) meter.left = Math.max(0, left);
   const drain = {
+    ...(receipts.written.length > 0 ? { receipts: receipts.written } : {}),
     ...(coachDrain ? { coachDrain: true as const } : {}),
     ...(planned.length > 0 ? { planned } : {}),
     ...(corrected.length > 0 ? { corrected } : {}),
@@ -1804,7 +1833,7 @@ export async function approveDesignOps(
   if (outcomes.size === 0) {
     // A superseded proposal with nothing to repair is no longer the athlete's.
     if (p.status === "superseded") throw new NotOpenError(p.status);
-    return { status: p.status as DesignProposalStatus, applied, changed, refused, settled, remaining, ...drain };
+    return { status: p.status as DesignProposalStatus, applied, changed, refused, settled, remaining, ...drain, version: await proposalVersion(current) };
   }
 
   const next = withOutcomes(current.ops, outcomes);
@@ -1824,7 +1853,7 @@ export async function approveDesignOps(
       console.error(JSON.stringify({ level: "error", msg: "design approve: applied, but the receipt failed", proposal: p.id, error: e instanceof Error ? e.message : "unknown" })),
     );
   }
-  return { status, applied, changed, refused, settled, remaining, ...drain };
+  return { status, applied, changed, refused, settled, remaining, ...drain, version: await proposalVersion({ status, ops: next }) };
 }
 
 /** "Tue · Thu · 2 a week · 30 min — 6 sessions placed again": a programme change done, for the answer and the receipt. */
@@ -2023,6 +2052,7 @@ async function applyOp(
   edit: ApproveInput["edit"],
   ctx: DocWorkoutCtx,
   plan: Plan,
+  receipts: ReceiptLog,
 ): Promise<OpResult> {
   const opId = opIdOf(op);
   const mine = edit?.opId === opId ? edit : undefined;
@@ -2053,17 +2083,19 @@ async function applyOp(
         if (gone) return { refusal: { error: "past_time", why: gone }, error: new PastTimeError("past_time", gone) };
       }
       // A designed run (§8 §3) lands in the coach lane, and goes to the watch: designed-runs.ts.
+      // Its take-back receipt in the create's own batch (R1), settled once an untimed one is placed.
+      const hook = await receipts.docHook(opId, "create", date, null);
       if (isRunDoc(doc as WorkoutDoc)) {
-        const run = await createDesignedRun(db, userId, { date, time, doc, clientId: approvalKey(proposalId, opId), ...planOf(op) }, ctx, source);
+        const run = await createDesignedRun(db, userId, { date, time, doc, clientId: approvalKey(proposalId, opId), ...planOf(op) }, ctx, source, hook);
         return { applied: { workout: run.workout, warnings: run.warnings.map(issueOut), ...(edited ? { edited: true } : {}), ...(moved ? { moved: true } : {}) }, queued: run.queued };
       }
-      const made = await createDocWorkout(db, userId, { date, time, doc, clientId: approvalKey(proposalId, opId), ...planOf(op) }, ctx, source);
+      const made = await createDocWorkout(db, userId, { date, time, doc, clientId: approvalKey(proposalId, opId), ...planOf(op) }, ctx, source, hook);
       return { applied: { workout: made.workout, warnings: made.warnings.map(issueOut), ...(edited ? { edited: true } : {}), ...(moved ? { moved: true } : {}) } };
     }
     if (!row || row.archived) return refusalOf(new DocWorkoutNotFoundError(), date);
     date = row.dto.date;
     if (date < ctx.today) return refusalOf(new PastDateError(), date);
-    const revised = await reviseDocWorkout(db, userId, target.workoutId, { doc, baseRev: target.baseRev }, ctx, source);
+    const revised = await reviseDocWorkout(db, userId, target.workoutId, { doc, baseRev: target.baseRev }, ctx, source, await receipts.docHook(opId, "revise", date, { rev: target.baseRev }));
     return {
       applied: {
         workout: revised.workout,

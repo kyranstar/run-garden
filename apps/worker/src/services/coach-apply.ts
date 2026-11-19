@@ -40,7 +40,7 @@ import {
   type WorkoutDoc,
 } from "@rg/domain";
 import { runBlockRoles } from "@rg/coros";
-import { chunkIds, chunkedInsert, guardFailed, guardOrFail, insertBatches, rowGone, runAtomically, runAtomicallyFirst, type AtomicStatement, type Db } from "./db.js";
+import { chunkIds, chunkedInsert, guardFailed, guardOrFail, insertBatches, rowGone, runAtomically, runAtomicallyFirst, type AtomicStatement, type Db, type AlsoInBatch } from "./db.js";
 import { separateDayCollisions, windowTimeFor } from "./day-placement.js";
 import { coachStamp, recordedStampFor, stampName, takenStampsOn, takenStampsOnDays } from "./coros-stamp.js";
 import { applyMove } from "./jobs.js";
@@ -1329,6 +1329,11 @@ export async function applyOps(
      * one is written as it always was.
      */
     guards?: ReadonlyMap<string, SQL>;
+    /**
+     * R1 (services/take-back.ts): a change's take-back receipt, by session id, for its write's own batch — a move's (the
+     * guarded move, one batch) and a skip's. Only with that session's guard. A change without one is written as it was.
+     */
+    receipts?: ReadonlyMap<string, AlsoInBatch>;
   } = {},
 ): Promise<ApplyResult> {
   const inScope = (i: number) => !opts.only || opts.only(i);
@@ -1557,6 +1562,7 @@ export async function applyOps(
               source: "app",
               corosWritesEnabled: prefs.corosWritesEnabled ?? false,
               ...(guard ? { onlyIf: guard } : {}),
+              ...(guard && opts.receipts?.get(op.workoutId) ? { alsoInBatch: opts.receipts.get(op.workoutId)! } : {}),
             });
           } catch (e) {
             // The guarded batch failed, nothing written: the session isn't the one the approve read, or it is gone.
@@ -1637,7 +1643,8 @@ export async function applyOps(
         // Coach-sanctioned: the garden treats it as agreed rest (spec §1). The athlete's own skip's writer (`skipWorkout`):
         // a session the app built has its copy taken off the watch too (the watch mirrors the plan, owner §10.2).
         const guard = holdOf(op.workoutId, found.row);
-        const { skipped } = await skipWorkout(db, userId, op.workoutId, { now, today, source: "coach", sanctionedBy: "coach", prefs, ...(guard ? { onlyIf: guard } : {}) });
+        const skipReceipt = guard ? opts.receipts?.get(op.workoutId) : undefined;
+        const { skipped } = await skipWorkout(db, userId, op.workoutId, { now, today, source: "coach", sanctionedBy: "coach", prefs, ...(guard ? { onlyIf: guard } : {}), ...(skipReceipt ? { alsoInBatch: skipReceipt } : {}) });
         // Not skipped: its write found the session resolved, gone or (guarded) no longer as read since the read above.
         if (!skipped) {
           out.missed.push(guard ? GUARD_LOST : "a session it skips changed meanwhile, so it was left as it was");

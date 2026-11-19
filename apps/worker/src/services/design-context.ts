@@ -86,6 +86,7 @@ import { COACH_REACH_DAYS, RUN_LIMITS } from "./design-limits.js";
 import { LATER_LEAD_MIN } from "./design-time.js";
 import { memoryCore } from "./memory-core.js";
 import { SAVED_POST_SOURCE } from "./coach-memory.js";
+import { frameSection, type DayFrame } from "./design-frame.js";
 import { FIT_SAVES_REQUEST } from "@rg/saves";
 import { focusReadInContext, type RunFocus } from "./design-focus.js";
 import { CONTEXT_TURNS, conversationBlock, conversationRows, type TurnRow } from "./coach-conversation.js";
@@ -196,6 +197,8 @@ export interface DesignRun {
    * boundary its opening names: the next stretch is what comes after it. */
   planId?: string | null;
   planLastDay?: string | null;
+  /** R1: a phone run's day frame (switch A on): read into a main run's header as data, with its source and coverage. */
+  frame?: DayFrame | null;
 }
 
 /** What heads a plan's draft's request in its main run's opening message (plans with a purpose §4.2): the app's, not the
@@ -1498,6 +1501,8 @@ function header(r: Reads, run: DesignRun, role: Role, scope: { kind: ScopeKind; 
   // A fit-in run told its batch (the saves flow, §12.1) has the whole section, whatever its words.
   const saves = role === "main" && r.saves ? savesSection(r.saves, r, asksAboutSaves(run.request) || !!run.savesBatchId) : null;
   if (saves) parts.push(saves);
+  // The athlete's day as their phone shared it (R1, switch A on): typed times only, said as data before the request.
+  if (role === "main" && run.frame) parts.push(frameSection(run.frame));
   // A plan's draft's request is the app's (plans with a purpose §4.2), marked as the data it carries (the plan's name).
   if (run.request && run.origin === "plan_draft") {
     parts.push(`${role === "main" ? draftRequestLine(run.planId, run.planLastDay, r.today) : DRAFT_REQUEST_SUB_LINE}\n${markUntrusted("plan draft", run.request)}`);

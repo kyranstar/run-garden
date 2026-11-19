@@ -62,6 +62,9 @@ import { designProposalId } from "../services/design-tools/propose.js";
 import { dayRowsSql, placedTimes } from "../services/design-placement.js";
 import { clockIn, PastTimeError } from "../services/design-time.js";
 import type { Db } from "../services/db.js";
+import { completenessOf } from "../services/design-version.js";
+import { proposalVersion } from "../services/proposal-version.js";
+import { madeByOf } from "../services/take-back.js";
 import { refusal } from "./workouts.js";
 
 type C = Context<AppContext>;
@@ -95,6 +98,8 @@ const OP_IDS = z
 const approveSchema = z
   .object({
     opIds: OP_IDS.optional(),
+    // R1 (DESIGN-3 §3.4.4): the version the approver was shown — required of a device (its gate), checked for anyone.
+    version: z.string().regex(/^[0-9a-f]{64}$/).optional(),
     edit: z.object({ opId: OP_ID, doc: z.record(z.string(), z.unknown()), date: DATE.optional(), time: TIME.nullable().optional() }).strict().optional(),
   })
   .strict()
@@ -135,6 +140,18 @@ export async function approveDesigned(c: C, p: DesignProposalRow & { expiresAt: 
   if (!parsed.success) return c.json({ error: "bad_request", issues: parsed.error.issues }, 400);
   const db = c.get("db");
   const userId = c.get("userId");
+  const device = c.get("device");
+  // WHAT WAS SHOWN IS WHAT IS APPROVED (R1, DESIGN-3 §3.4.4): a version other than the proposal's own is a proposal that
+  // changed since — the fresh one is answered, and nothing is written; the approver looks again.
+  const version = await proposalVersion(p);
+  if (parsed.data.version !== undefined && parsed.data.version !== version) return c.json({ error: "proposal_changed", version }, 409);
+  if (device && parsed.data.version === undefined) return c.json({ error: "version_required", version }, 409);
+  // A proposal a run didn't finish (it stopped at a limit, failed, was cancelled or expired) is never a phone's to approve:
+  // it is shown unfinished, with Ask again and Open on the laptop (DESIGN-3 §3.8). The laptop's approve is unchanged.
+  if (device) {
+    const done = await completenessOf(db, userId, p.id);
+    if (!done.complete) return c.json({ error: "incomplete", missing: done.missing }, 409);
+  }
   const prefs = await loadPreferences(db, userId);
   const today = todayInZone(prefs.timezone);
   // A whole plan change that has started is never expired under the athlete: the approve finishes it (§8 §5).
@@ -144,7 +161,8 @@ export async function approveDesigned(c: C, p: DesignProposalRow & { expiresAt: 
   }
   try {
     const meter = { left: 0 };
-    const answer = await approveDesignOps(db, userId, p, parsed.data, { today, now: nowInstant(), prefs, runWire: runWireOf(c.env) }, undefined, meter);
+    const { version: _shown, ...asked } = parsed.data;
+    const answer = await approveDesignOps(db, userId, p, { ...asked, madeBy: madeByOf(device) }, { today, now: nowInstant(), prefs, runWire: runWireOf(c.env) }, undefined, meter);
     // A change another approve is applying is left to it (Task 8b's recovery rule): 409 only when nothing else was named.
     const { inFlight, ...rest } = answer;
     const nothingElse = [rest.applied, rest.changed, rest.refused, rest.settled, rest.remaining, rest.planned ?? [], rest.pinned ?? [], rest.corrected ?? [], rest.objectives ?? []].every((xs) => xs.length === 0);

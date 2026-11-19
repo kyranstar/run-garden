@@ -1635,9 +1635,9 @@ describe("creating a run", () => {
     });
   });
 
-  it("every role thinks hard and may answer at length: effort high, 16k tokens", () => {
+  it("every role thinks hard and may answer at length: effort high, 32k tokens a call — a ceiling (R1)", () => {
     for (const role of ["main", "designer", "reviewer"] as const) {
-      expect(RUN_LIMITS[role]).toMatchObject({ effort: "high", maxTokens: 16_000 });
+      expect(RUN_LIMITS[role]).toMatchObject({ effort: "high", maxTokens: 32_000 });
     }
   });
 });

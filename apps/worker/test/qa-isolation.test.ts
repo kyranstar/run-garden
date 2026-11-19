@@ -19,6 +19,13 @@ import { planRoutes } from "../src/routes/plan.js";
 import { qaRoutes } from "../src/routes/qa.js";
 import { sessionRoutes } from "../src/routes/sessions.js";
 import { workoutRoutes } from "../src/routes/workouts.js";
+import { coachRoutes } from "../src/routes/coach.js";
+import { coachConversationRoutes } from "../src/routes/coach-conversation.js";
+import { coachNudgesRoutes } from "../src/routes/coach-nudges.js";
+import { coachRunRoutes } from "../src/routes/coach-runs.js";
+import { nativeLibraryRoutes } from "../src/routes/native-library.js";
+import { nativeTakeBackRoutes } from "../src/routes/native-take-back.js";
+import { EXERCISES } from "@rg/exercise-library";
 import { loadPreferences } from "../src/services/calendar-sync.js";
 import { createDocWorkout } from "../src/services/doc-workouts.js";
 import { tableHashes } from "../src/services/parity.js";
@@ -44,12 +51,19 @@ beforeEach(async () => {
   w = await nativeWorld(
     [
       ["/api/qa", qaRoutes],
+      ["/api/native", nativeLibraryRoutes],
+      ["/api/native", nativeTakeBackRoutes],
       ["/api/native", nativeRoutes],
       ["/api/plan", planRoutes],
       ["/api/sessions", sessionRoutes],
       ["/api/workouts", workoutRoutes],
+      ["/api/coach/runs", coachRunRoutes],
+      ["/api/coach/conversation", coachConversationRoutes],
+      ["/api/coach/nudges", coachNudgesRoutes],
+      ["/api/coach", coachRoutes],
     ],
-    { env: { WATCH_PUSH_ENABLED: "1" } },
+    // The owner's coach on (as in production), and the model's key: the QA phone must have no coach whatever they say.
+    { env: { WATCH_PUSH_ENABLED: "1", COACH_DESIGNER: "1", AI_GATEWAY_API_KEY: "test-key" } },
   );
 });
 afterEach(() => {
@@ -281,7 +295,7 @@ describe("another account's session row of the same id, landing mid-save (the re
   });
 });
 
-describe("every v4 device route, sent the owner's ids by the QA phone", () => {
+describe("every v5 device route, sent the owner's ids by the QA phone", () => {
   it("answers 404 or 409 — or, for the routes naming none, the QA account's own — and the owner's hashes are unchanged", async () => {
     const owner = await ownerAccount();
     const qa = await qaPhone();
@@ -289,6 +303,18 @@ describe("every v4 device route, sent the owner's ids by the QA phone", () => {
     const ownerIds = [owner.played, owner.open, owner.lifted, owner.buildId, owner.performedId, owner.coros, owner.corosMatch, owner.extra, owner.said, owner.ahead, w.userId];
     const fresh = newId();
     const from = { date: today, time: "17:00" };
+    // R1's: the owner's saved workout, a take-back receipt, a coach run and its proposal, a memory item.
+    const ownerTemplate = `tpl-${newId()}`;
+    await w.db.insert(schema.workoutTemplates).values({ id: ownerTemplate, userId: w.userId, name: "Owner hips", doc: JSON.stringify(qaDoc("Owner hips")), pinned: false, uses: 0, lastUsedAt: null, createdAt: nowInstant(), updatedAt: nowInstant() });
+    const ownerReceipt = `tb_${newId().replace(/-/g, "")}`;
+    await w.db.insert(schema.takeBackReceipts).values({ id: ownerReceipt, userId: w.userId, source: "place", sourceKey: "owner", madeBy: "session", workoutId: owner.open, op: "create", groupId: ownerReceipt, postState: "{}", createdAt: nowInstant(), expiresAt: "2099-01-01T00:00:00.000Z" });
+    const ownerRun = `run-${newId()}`;
+    await w.db.insert(schema.coachRuns).values({ id: ownerRun, userId: w.userId, parentId: null, role: "main", scope: { kind: "now" }, request: "Owner's ask", status: "waiting_athlete", state: null, steps: 0, costUsd: 0, createdAt: nowInstant(), updatedAt: nowInstant() });
+    const ownerMemory = `mem-${newId()}`;
+    await w.db.insert(schema.coachMemory).values({ id: ownerMemory, userId: w.userId, kind: "rule", body: "Owner's rule.", provenance: { source: "athlete_words", runId: ownerRun, role: "main", at: nowInstant() } as never, learnedAt: nowInstant(), expiresAt: null, active: true, pinned: false, confidence: "stated", supersededBy: null, evidence: null, updatedAt: nowInstant() });
+    const before5 = await tableHashes(w.db, w.userId);
+    expect(before5).not.toEqual(before);
+    const version = "a".repeat(64);
 
     // [method, path, body, expected statuses]. Routes naming no id answer the QA account's own (200), last the sign-out.
     const cases: Array<[string, string, unknown, number[]]> = [
@@ -322,17 +348,48 @@ describe("every v4 device route, sent the owner's ids by the QA phone", () => {
       ["POST", "/api/sessions/watch/drain", { workoutId: owner.open }, [404]],
       ["GET", `/api/workouts/${owner.open}/doc`, undefined, [404]],
       ["PUT", `/api/workouts/${owner.open}/doc`, { doc: qaDoc("Owner core"), baseRev: owner.openRev }, [404]],
+      // R1 (v5): the library is the QA account's own, the owner's saved workout and receipt not found; its switch A its own.
+      ["GET", "/api/native/templates", undefined, [200]],
+      ["GET", `/api/native/templates/${ownerTemplate}`, undefined, [404]],
+      ["GET", "/api/native/library?limit=5", undefined, [200]],
+      ["GET", `/api/native/library/${EXERCISES[0]!.id}`, undefined, [200]],
+      ["POST", `/api/native/templates/${ownerTemplate}/place`, { date: addDays(today, 1), clientId: `qa-${newId()}` }, [404]],
+      ["POST", "/api/native/take-back", { receiptIds: [ownerReceipt], requestId: `qa-${newId()}` }, [200]],
+      ["GET", `/api/native/receipts/${ownerReceipt}`, undefined, [404]],
+      ["GET", "/api/native/sharing", undefined, [200]],
+      ["PUT", "/api/native/sharing", { toTraining: false, disclosureVersion: "1" }, [200]],
+      // …and the coach is off for the QA account, every route of it: no run, no model, nothing of the owner's.
+      ["POST", "/api/coach/runs", { scope: { kind: "now" } }, [404]],
+      ["POST", `/api/coach/runs/${ownerRun}/step`, undefined, [404]],
+      ["GET", "/api/coach/runs/current", undefined, [404]],
+      ["GET", `/api/coach/runs/${ownerRun}`, undefined, [404]],
+      ["POST", `/api/coach/runs/${ownerRun}/answer`, { answers: ["Home"] }, [404]],
+      ["POST", `/api/coach/runs/${ownerRun}/cancel`, {}, [404]],
+      ["POST", `/api/coach/runs/${ownerRun}/undo-answer`, { handle: `${ownerRun}:x` }, [404]],
+      ["GET", "/api/coach/conversation", undefined, [404]],
+      ["GET", `/api/coach/proposals/design-${ownerRun}`, undefined, [404]],
+      ["GET", `/api/coach/proposals/design-${ownerRun}/ops/x/draft`, undefined, [404]],
+      ["POST", `/api/coach/proposals/design-${ownerRun}/approve`, { opIds: ["x"], version }, [404]],
+      ["POST", `/api/coach/proposals/design-${ownerRun}/decline`, {}, [404]],
+      ["POST", "/api/coach/drain", {}, [404]],
+      ["GET", "/api/coach/memory", undefined, [404]],
+      ["PATCH", `/api/coach/memory/${ownerMemory}`, { pinned: true }, [404]],
+      ["DELETE", `/api/coach/memory/${ownerMemory}`, undefined, [404]],
+      ["POST", "/api/coach/memory", { kind: "rule", body: "QA rule.", clientId: `qa-${newId()}` }, [404]],
+      ["GET", "/api/coach/nudges", undefined, [404]],
+      ["GET", "/api/coach/spend", undefined, [404]],
       ["POST", "/api/native/sign-out", undefined, [200]],
     ];
     // Every route the newest scope lists has its case: a route added to the list without one fails here.
-    for (const r of DEVICE_SCOPES["training-v4"]) {
+    for (const r of DEVICE_SCOPES["training-v5"]) {
       expect(cases.some(([m, p]) => m === r.method && r.pattern.test(p.split("?")[0]!)), `${r.method} ${r.pattern}`).toBe(true);
     }
     for (const [method, path, body, expected] of cases) {
       const a = await qa.as(method, path, body);
       expect(expected, `${method} ${path}: ${a.status} ${a.text.slice(0, 120)}`).toContain(a.status);
-      for (const id of ownerIds) expect(a.text.includes(id), `${method} ${path} answered an owner id`).toBe(false);
-      expect(await tableHashes(w.db, w.userId), `${method} ${path}`).toEqual(before);
+      // (The take-back's own answer names the receipt it was sent, and only to say it isn't the QA account's.)
+      for (const id of [...ownerIds, ownerTemplate, ownerRun, ownerMemory]) expect(a.text.includes(id), `${method} ${path} answered an owner id`).toBe(false);
+      expect(await tableHashes(w.db, w.userId), `${method} ${path}`).toEqual(before5);
     }
     // Nothing of the QA account's points at the owner's rows either.
     const ownerActivities = [owner.performedId, owner.coros];

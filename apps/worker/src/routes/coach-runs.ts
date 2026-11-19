@@ -63,6 +63,11 @@ import { stepAlarmOn, stepperLeaseMs, tellStepper, type StepperHint, type Steppe
 import { CONVERSATION_ID } from "../services/coach-conversation.js";
 import { DRIFT_ID } from "../services/where-you-stand.js";
 import { FocusError, focusSchema } from "../services/design-focus.js";
+import { dayFrameSchema, frameInReach, type DayFrame } from "../services/design-frame.js";
+import { frameRefusal } from "../services/device-sharing.js";
+import { loadPreferences } from "../services/calendar-sync.js";
+import { addDays, todayInZone } from "@rg/domain";
+import { coachModelGate, deviceCoachGate } from "./coach-device-gate.js";
 import {
   ANSWER_MAX_CHARS,
   REQUEST_MAX_CHARS,
@@ -131,8 +136,11 @@ export function makeCoachRunRoutes(deps: () => RunDeps = defaultRunDeps): Hono<A
     await next();
   });
   routes.use("*", requireUser);
+  // R1: the QA account's phone has no coach (its switches are off only inside requireUser), and a phone's new run needs a
+  // model it can reach.
+  routes.use("*", deviceCoachGate);
 
-  routes.post("/", async (c) => {
+  routes.post("/", coachModelGate, async (c) => {
     const body = (await c.req.json().catch(() => null)) as {
       scope?: unknown;
       request?: unknown;
@@ -141,6 +149,7 @@ export function makeCoachRunRoutes(deps: () => RunDeps = defaultRunDeps): Hono<A
       conversationId?: unknown;
       savesBatchId?: unknown;
       nudge?: unknown;
+      frame?: unknown;
     } | null;
     // No scope: the athlete's default; "next workouts" with no count: theirs (Settings → Coach, Task 10).
     const asked = body && typeof body === "object" && !Array.isArray(body) ? parseScopeRequest(body.scope) : null;
@@ -168,6 +177,19 @@ export function makeCoachRunRoutes(deps: () => RunDeps = defaultRunDeps): Hono<A
     // A drift chip's id (where you stand, §7.2): absent, or one.
     const nudge = body.nudge;
     if (nudge !== undefined && (typeof nudge !== "string" || !DRIFT_ID.test(nudge))) return c.json({ error: "bad_nudge" }, 400);
+    // THE DAY FRAME (R1, DESIGN-3 §3.3.2): its exact typed keys or 400, and only from a phone whose switch A is on under the
+    // words the frame names, or 409 `sharing_off` — refused, never ignored, and nothing starts (CALLS C1).
+    const device = c.get("device");
+    let frame: DayFrame | undefined;
+    if (body.frame !== undefined) {
+      const f = dayFrameSchema.safeParse(body.frame);
+      if (!f.success) return c.json({ error: "bad_frame", issues: f.error.issues.map((i) => ({ path: i.path.join("."), message: i.message })) }, 400);
+      const today = todayInZone((await loadPreferences(c.get("db"), c.get("userId"))).timezone);
+      if (!frameInReach(f.data, today, addDays)) return c.json({ error: "bad_frame", issues: [{ path: "days", message: "days from yesterday to a week ahead" }] }, 400);
+      const refused = await frameRefusal(c.get("db"), c.get("userId"), device?.id, f.data.consent);
+      if (refused) return c.json(refused, 409);
+      frame = f.data;
+    }
     try {
       const created = await createRun(
         c.get("db"),
@@ -180,6 +202,8 @@ export function makeCoachRunRoutes(deps: () => RunDeps = defaultRunDeps): Hono<A
           ...(conversationId !== undefined ? { conversationId: conversationId as string | null } : {}),
           ...(savesBatchId !== undefined ? { savesBatchId: savesBatchId as string } : {}),
           ...(typeof nudge === "string" ? { diagnose: nudge } : {}),
+          // Who asked from where: the device that signed the request in — never a field of the body.
+          ...(device ? { lifeos: { deviceId: device.id, ...(frame ? { frame } : {}) } } : {}),
         },
         new Date(),
       );

@@ -38,8 +38,7 @@ import {
   type AnyDesignedOp,
   type DesignedOp,
   type DesignedPlanOp,
-  type PlanOpOutcome,
-} from "../src/services/design-approve.js";
+  type PlanOpOutcome, RECEIPT_COST } from "../src/services/design-approve.js";
 import { planChangeLines } from "../src/services/design-manifest.js";
 import { supersedeOlderPlans } from "../src/services/design-orchestrate.js";
 import { COACH_REACH_DAYS } from "../src/services/design-limits.js";
@@ -682,13 +681,14 @@ describe("approve: each change through the thread coach's own applier", () => {
     // A skip of a session the app built takes its copy off the watch too (the watch mirrors the plan, owner §10.2):
     // counted by the session's origin, the most it can cost when none is known.
     expect(SKIP_UNPUSH_COST).toBe(8);
-    expect(planOpCostOf({ op: { kind: "skip", workoutId: "w" } } as PlanAdjustOp, 4, { origin: null })).toBe(SKIP_COST);
-    expect(planOpCostOf({ op: { kind: "skip", workoutId: "w" } } as PlanAdjustOp, 4, { origin: "studio" })).toBe(SKIP_COST + SKIP_UNPUSH_COST);
+    // A skip and a move carry their take-back receipt (R1): one insert in the write's batch.
+    expect(planOpCostOf({ op: { kind: "skip", workoutId: "w" } } as PlanAdjustOp, 4, { origin: null })).toBe(SKIP_COST + RECEIPT_COST);
+    expect(planOpCostOf({ op: { kind: "skip", workoutId: "w" } } as PlanAdjustOp, 4, { origin: "studio" })).toBe(SKIP_COST + RECEIPT_COST + SKIP_UNPUSH_COST);
     expect(planOpCostOf({ op: { kind: "adjust", workoutId: "w", durationMinutes: 1 } } as PlanAdjustOp, 4)).toBe(ADJUST_COST + 4);
-    expect(planOpCostOf({ op: { kind: "move", workoutId: "w", toDate: TODAY } } as PlanAdjustOp, 4)).toBe(MOVE_COST + 4 + 1);
-    expect(planOpCostOf({ op: { kind: "skip", workoutId: "w" } } as PlanAdjustOp, 4)).toBe(SKIP_COST + SKIP_UNPUSH_COST);
+    expect(planOpCostOf({ op: { kind: "move", workoutId: "w", toDate: TODAY } } as PlanAdjustOp, 4)).toBe(MOVE_COST + 4 + 1 + RECEIPT_COST);
+    expect(planOpCostOf({ op: { kind: "skip", workoutId: "w" } } as PlanAdjustOp, 4)).toBe(SKIP_COST + RECEIPT_COST + SKIP_UNPUSH_COST);
     // The approve plans by one function: a change costs through it as a workout does.
-    expect(opCostOf({ op: { kind: "move", workoutId: "w", toDate: TODAY } } as PlanAdjustOp, 4)).toBe(MOVE_COST + 4 + 1);
+    expect(opCostOf({ op: { kind: "move", workoutId: "w", toDate: TODAY } } as PlanAdjustOp, 4)).toBe(MOVE_COST + 4 + 1 + RECEIPT_COST);
   });
 });
 
@@ -747,7 +747,7 @@ describe("approve: judged again before the applier runs, and planned within the 
     const two = await planned({ date: day(-2) });
     const { id } = await proposal({ changes: [skip(one), skip(two)], docs: [{ title: "Hips", date: day(-1) }] });
     const workout = (await proposalOf(id))!.ops.find((o) => o.kind === "doc_workout")!.by.runId;
-    const room = PLAN_BATCH_FIXED + 2 * SKIP_COST;
+    const room = PLAN_BATCH_FIXED + 2 * (SKIP_COST + RECEIPT_COST);
     // One short of both skips: the first goes (with the fixed part), the second and the workout wait — each once.
     let res = await approveDesignOps(db, rich.userId, (await proposalOf(id))! as never, {}, ctx(), room - 1);
     expect(res.changed.map((c) => c.workoutId)).toEqual([one]);

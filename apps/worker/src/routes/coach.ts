@@ -69,6 +69,12 @@ import { approveDesigned, declineDesigned, designedDraft, designedLines } from "
 import { EARLIEST_ZONE, liveMemoryWhere, MEMORY_PIN_CAP, memoryHistoryWhere, REHEARSAL_MEMORY } from "../services/memory-core.js";
 import { LIVE_STATUSES } from "../services/coach-runs.js";
 import { designProposalId } from "../services/design-tools/propose.js";
+import { completenessOf, opsSummaryOf } from "../services/design-version.js";
+import { proposalVersion } from "../services/proposal-version.js";
+import { receiptsOfProposal } from "../services/take-back.js";
+import { deviceCoachGate } from "./coach-device-gate.js";
+import { addStatedMemory, STATED_KINDS, statedBodyOf } from "../services/coach-memory.js";
+import { sharingOf } from "../services/device-sharing.js";
 
 /**
  * The coach's HTTP surface (Plan A Tasks A7+A9). Proposals are STATE with a
@@ -82,6 +88,8 @@ export const coachRoutes = new Hono<AppContext>();
 /** What `/message` answers a cached old client with while the thread coach has stepped back (§8 §6): a receipt. */
 export const THREAD_COACH_STEPPED_BACK = "Your coach is now behind the Coach button.";
 coachRoutes.use("*", requireUser);
+// R1: a phone reaches only the designer's routes here (training-v5), and none while the coach is off for its account.
+coachRoutes.use("*", deviceCoachGate);
 
 export async function receipt(
   db: Db,
@@ -535,6 +543,8 @@ coachRoutes.post("/proposals/:id/approve", async (c) => {
   // A designed proposal is approved op by op — its workouts through the Studio's create and revise path (Stage 3 Task
   // 8), its changes through the applier one op each (Task 8b) — never as a whole thread proposal's CoachOps.
   if (isDesignedProposal(p.ops)) return approveDesigned(c, p, (today) => sweepExpiredProposals(db, userId, today));
+  // R1: a phone approves the designer's proposals only, by their ops and version; the thread coach's are the laptop's.
+  if (c.get("device")) return c.json({ error: "not_designed" }, 409);
   if (p.status !== "pending") return c.json({ error: "not_pending", status: p.status }, 409);
 
   const prefs = await loadPreferences(db, userId);
@@ -613,7 +623,21 @@ coachRoutes.get("/proposals/:id", async (c) => {
   if (!p) return c.json({ error: "not_found" }, 404);
   const { ops, ...status } = p;
   const manifest = isDesignedProposal(ops) ? await designedLines(c, ops, p.id) : undefined;
-  return c.json(manifest ? { ...status, ...manifest } : status);
+  if (!manifest) return c.json(status);
+  // R1 (DESIGN-3 §3.4.4, §3.5 pair 16): what an approve must name — the version — whether its run finished, every op as
+  // typed fields, and the take-back receipts its approved ops wrote (open ones take-backable). Two statements more.
+  const now = nowInstant();
+  const [version, done, receipts] = await Promise.all([proposalVersion(p), completenessOf(c.get("db"), c.get("userId"), p.id), receiptsOfProposal(c.get("db"), c.get("userId"), p.id, now)]);
+  return c.json({
+    ...status,
+    ...manifest,
+    version,
+    complete: done.complete,
+    ...(done.missing ? { missing: done.missing } : {}),
+    opsSummary: opsSummaryOf(ops),
+    receipts: receipts.map((r) => ({ opId: r.opId, receiptId: r.receiptId })),
+    takeBackable: receipts.filter((r) => r.open).map((r) => r.opId),
+  });
 });
 
 /** A designed workout's draft, for Edit before approve (Stage 3 Task 8; routes/design-proposals.ts). */
@@ -631,6 +655,7 @@ coachRoutes.post("/proposals/:id/decline", async (c) => {
   if (!p) return c.json({ error: "not_found" }, 404);
   // Declined op by op too (Stage 3 Task 8), with the athlete's reason kept for the coach.
   if (isDesignedProposal(p.ops)) return declineDesigned(c, p);
+  if (c.get("device")) return c.json({ error: "not_designed" }, 409);
   if (p.status !== "pending") return c.json({ error: "not_pending", status: p.status }, 409);
   // A plan being added (§8 §4; review-1) is never declined half-made: it is the athlete's already, and their next
   // approve finishes it — as a designed plan being applied is never declined (`in_flight`).
@@ -773,6 +798,32 @@ coachRoutes.patch("/memory/:id", async (c) => {
     .limit(1);
   if (!mine) return c.json({ error: "not_found" }, 404);
   return c.json({ error: "pin_cap", max: MEMORY_PIN_CAP, why: `You can pin up to ${MEMORY_PIN_CAP}. Unpin one first.` }, 409);
+});
+
+/**
+ * *Tell your training coach* (R1, 3c; DESIGN-3 §3.7, pair 24): `{kind: note | fact | rule, body, clientId}` → `{ok, item}`
+ * (201; 200 for a resend or the same words already kept) — the exact sentence LifeOS showed the owner, sent on their tap,
+ * kept as `stated` with provenance `lifeos` (coach-memory.ts `addStatedMemory`). The phone's own (403 `device_only` for a
+ * cookie), and only with switch A on (409 `sharing_off`): it is words from LifeOS's side. 400 `bad_request` for one that
+ * isn't one line of at most 140 characters. Undone by `DELETE /memory/:id`.
+ */
+coachRoutes.post("/memory", async (c) => {
+  const device = c.get("device");
+  if (!device) return c.json({ error: "device_only" }, 403);
+  const raw = (await c.req.json().catch(() => null)) as { kind?: unknown; body?: unknown; clientId?: unknown } | null;
+  const body = statedBodyOf(raw?.body);
+  const kind = raw?.kind;
+  const clientId = raw?.clientId;
+  if (!raw || !body || !(STATED_KINDS as readonly unknown[]).includes(kind) || typeof clientId !== "string" || clientId.length < 1 || clientId.length > 100) {
+    return c.json({ error: "bad_request" }, 400);
+  }
+  const db = c.get("db");
+  const userId = c.get("userId");
+  const sharing = await sharingOf(db, userId, device.id);
+  if (!sharing.toTraining) return c.json({ error: "sharing_off", why: "Telling your training coach from LifeOS is off on this phone." }, 409);
+  const prefs = await loadPreferences(db, userId);
+  const told = await addStatedMemory(db, userId, { kind: kind as (typeof STATED_KINDS)[number], body, clientId, deviceId: device.id }, nowInstant(), todayInZone(prefs.timezone), addDays);
+  return c.json({ ok: true, item: told.item, ...(told.repeated ? { repeated: true } : {}), ...(told.existing ? { existing: true } : {}) }, told.repeated || told.existing ? 200 : 201);
 });
 
 coachRoutes.delete("/memory/:id", async (c) => {

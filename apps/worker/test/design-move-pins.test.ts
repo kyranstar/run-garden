@@ -33,8 +33,7 @@ import {
   REQUEST_BUDGET,
   REVISE_BASE,
   type DesignedOp,
-  type DesignedPinsOp,
-} from "../src/services/design-approve.js";
+  type DesignedPinsOp, RECEIPT_COST, RECEIPT_SETTLE_COST } from "../src/services/design-approve.js";
 import { designedManifest } from "../src/routes/design-proposals.js";
 import { supersedeOlderPlans } from "../src/services/design-orchestrate.js";
 import { proposalFields } from "../src/services/design-review.js";
@@ -730,11 +729,11 @@ describe("approving the moves in rotation", () => {
     expect(res.json).toMatchObject({ status: "approved", remaining: [] });
     expect(res.json.applied).toHaveLength(1);
     // Within what it declares — the day holds the workout alone (the revision's own session): REVISE_BASE + 1 — and
-    // measured exactly: the pins' 11 as above, and the revision's own 11 (its mark owed for the watch among them: the
-    // watch mirrors the plan, M2). (With `forgetAccountLibrary` in the re-seed's place, the pins alone measured 12: the
-    // receipt read the library again.)
-    expect(res.total).toBeLessThanOrEqual(APPROVE_FIXED + MOVE_PINS_FIXED + 1 + REVISE_BASE + 1);
-    expect(res.total).toBe(APPROVE_FIXED + MOVE_PINS_FIXED + 1 + 11);
+    // measured exactly: the pins' 11 as above, and the revision's own 12 (its mark owed for the watch among them: the
+    // watch mirrors the plan, M2; its take-back receipt in its batch, R1). (With `forgetAccountLibrary` in the re-seed's
+    // place, the pins alone measured 12: the receipt read the library again.)
+    expect(res.total).toBeLessThanOrEqual(APPROVE_FIXED + MOVE_PINS_FIXED + 1 + REVISE_BASE + 1 + RECEIPT_COST + RECEIPT_SETTLE_COST);
+    expect(res.total).toBe(APPROVE_FIXED + MOVE_PINS_FIXED + 1 + 12);
   });
 
   it("Not now declines it; nothing pinned, the batch not marked", async () => {

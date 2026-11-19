@@ -19,7 +19,7 @@ import type { Env } from "../src/env.js";
 import type { Db } from "../src/services/db.js";
 import { loadPreferences } from "../src/services/calendar-sync.js";
 import { opIdOf } from "../src/services/proposal-kinds.js";
-import { approveDesignOps, approvalRef, CREATE_AT_TIME_COST, CREATE_PLACED_BASE, declineDesignOps, designDraft, opCostOf, REVISE_BASE, statusOfOps, type DesignedOp } from "../src/services/design-approve.js";
+import { approveDesignOps, approvalRef, CREATE_AT_TIME_COST, CREATE_PLACED_BASE, declineDesignOps, designDraft, opCostOf, REVISE_BASE, statusOfOps, type DesignedOp, RECEIPT_COST, RECEIPT_SETTLE_COST } from "../src/services/design-approve.js";
 import { docWorkoutLines, placeNamer } from "../src/services/design-manifest.js";
 import { docDayContext, reviseDocWorkout } from "../src/services/doc-workouts.js";
 import { docValidateCtx, readDocAthlete } from "../src/services/design-tools/act-common.js";
@@ -269,11 +269,12 @@ describe("approve, some of it", () => {
       const res = await approveDesignOps(db, rich.userId, (await proposalOf(id))!, {}, ctx(), budget);
       return { applied: res.applied.map((a) => opIds.indexOf(a.opId)), remaining: res.remaining.map((o) => opIds.indexOf(o)) };
     };
-    // Room for two timed workouts: a placed one and a timed one don't fit together.
-    expect(await run([at(later), at(day(-3), "07:00")], 2 * CREATE_AT_TIME_COST)).toEqual({ applied: [0], remaining: [1] });
-    expect(await run([at(day(-4), "07:00"), at(day(-5), "07:00")], 2 * CREATE_AT_TIME_COST)).toEqual({ applied: [0, 1], remaining: [] });
+    // Room for two timed workouts (each with its take-back receipt, R1): a placed one and a timed one don't fit together.
+    const timedCost = CREATE_AT_TIME_COST + RECEIPT_COST;
+    expect(await run([at(later), at(day(-3), "07:00")], 2 * timedCost)).toEqual({ applied: [0], remaining: [1] });
+    expect(await run([at(day(-4), "07:00"), at(day(-5), "07:00")], 2 * timedCost)).toEqual({ applied: [0, 1], remaining: [] });
     // A revision's cost, and the first op of a request goes whatever the room: every request moves on.
-    expect(await run([{ doc: calmDoc({ title: "Wednesday" }), target: { kind: "revise", workoutId: rich.todayDocId, baseRev: 2 } }, at(day(-6), "07:00")], REVISE_BASE + CREATE_AT_TIME_COST - 1)).toEqual({ applied: [0], remaining: [1] });
+    expect(await run([{ doc: calmDoc({ title: "Wednesday" }), target: { kind: "revise", workoutId: rich.todayDocId, baseRev: 2 } }, at(day(-6), "07:00")], REVISE_BASE + RECEIPT_COST + RECEIPT_SETTLE_COST + timedCost - 1)).toEqual({ applied: [0], remaining: [1] });
     expect(await run([at(day(-7)), at(day(-8), "07:00")], 1)).toEqual({ applied: [0], remaining: [1] });
   });
 
@@ -281,12 +282,14 @@ describe("approve, some of it", () => {
     const placed = { target: { kind: "new" as const, date: later } };
     const timed = { target: { kind: "new" as const, date: later, time: "07:00" } };
     const revise = { target: { kind: "revise" as const, workoutId: "w", baseRev: 1 } };
-    expect(opCostOf(placed, 0)).toBe(CREATE_PLACED_BASE + 1);
-    expect(opCostOf(placed, 5)).toBe(CREATE_PLACED_BASE + 6);
-    expect(opCostOf(timed, 5)).toBe(CREATE_AT_TIME_COST);
-    expect(opCostOf(revise, 4)).toBe(REVISE_BASE + 4);
+    // Each with its take-back receipt (R1), and its settle once an untimed or re-timed row is placed.
+    const receipt = RECEIPT_COST;
+    expect(opCostOf(placed, 0)).toBe(CREATE_PLACED_BASE + 1 + receipt + RECEIPT_SETTLE_COST);
+    expect(opCostOf(placed, 5)).toBe(CREATE_PLACED_BASE + 6 + receipt + RECEIPT_SETTLE_COST);
+    expect(opCostOf(timed, 5)).toBe(CREATE_AT_TIME_COST + receipt);
+    expect(opCostOf(revise, 4)).toBe(REVISE_BASE + 4 + receipt + RECEIPT_SETTLE_COST);
     // The athlete's time, with an edit, makes it a timed one.
-    expect(opCostOf(placed, 5, { opId: "x", doc: {}, time: "06:00" })).toBe(CREATE_AT_TIME_COST);
+    expect(opCostOf(placed, 5, { opId: "x", doc: {}, time: "06:00" })).toBe(CREATE_AT_TIME_COST + receipt);
   });
 
   it("two workouts on one day in one request: the second counts the first among the day's sessions", async () => {
@@ -1162,7 +1165,7 @@ describe("approving a workout made for a plan", () => {
     const own = { target: { kind: "new" as const, date: later } };
     expect(opCostOf({ ...own, planId: "pl-a" }, 2)).toBe(opCostOf(own, 2) + 1);
     const timed = { target: { kind: "new" as const, date: later, time: "07:00" } };
-    expect(opCostOf({ ...timed, planId: "pl-a" }, 2)).toBe(CREATE_AT_TIME_COST + 1);
+    expect(opCostOf({ ...timed, planId: "pl-a" }, 2)).toBe(CREATE_AT_TIME_COST + RECEIPT_COST + 1);
   });
 
   it("its statements stay within what opCostOf declares", async () => {

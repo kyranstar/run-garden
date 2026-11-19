@@ -23,6 +23,7 @@ import { libraryForDocs } from "./account-library.js";
 import { checkFocus, dayOutOfRange, type RunFocus } from "./design-focus.js";
 import { DESIGNER_CEILING_MICROS, MAX_TOOL_CALLS_PER_TURN, RUN_LIMITS, SET_REDO_ROUNDS } from "./design-limits.js";
 import { NO_TOOL_LINE } from "./design-prompt.js";
+import { frameLines, type DayFrame } from "./design-frame.js";
 import {
   DEFAULT_SET_MAIN_COST_MICROS,
   DEFAULT_WORKOUT_COST_MICROS,
@@ -454,6 +455,14 @@ export interface RunSettings {
   planId?: string;
   /** A plan's draft's only (R62): the plan's last day as the draft's key read it — what its opening says comes after. */
   planLastDay?: string;
+  /** A main run's only (R1; DESIGN-3 §3.10): asked from the owner's phone — `lifeos`, set from the device that signed the
+   * request in (`deviceId`), never from the body. The laptop's run view says "From LifeOS". The athlete still asked. */
+  via?: "lifeos";
+  deviceId?: string;
+  /** A phone run's only, with switch A on (design-frame.ts): the day frame it was sent with, and the disclosure version the
+   * owner accepted (`consent`). Read into the opening context as data; its lines shown on the laptop. */
+  frame?: DayFrame;
+  consent?: string;
 }
 
 export interface PendingCall {
@@ -562,6 +571,7 @@ export function newRunState(
     diagnose?: string;
     /** Who asked, the plan the run is for and its last day (plans with a purpose §4.2): a main run's alone. */
     origin?: "plan_draft";
+    lifeos?: { deviceId: string; frame?: DayFrame };
     planId?: string;
     planLastDay?: string;
   } = {},
@@ -585,6 +595,9 @@ export function newRunState(
       ...(opts.savesBatchId && role !== "reviewer" ? { savesBatchId: opts.savesBatchId, savesSkip: opts.savesSkip ?? [] } : {}),
       ...(opts.diagnose && role === "main" ? { diagnose: opts.diagnose } : {}),
       ...(opts.origin && role === "main" ? { origin: opts.origin } : {}),
+      ...(opts.lifeos && role === "main"
+        ? { via: "lifeos" as const, deviceId: opts.lifeos.deviceId, ...(opts.lifeos.frame ? { frame: opts.lifeos.frame, consent: opts.lifeos.frame.consent } : {}) }
+        : {}),
       ...(opts.planId && role === "main" ? { planId: opts.planId } : {}),
       ...(opts.planLastDay && role === "main" ? { planLastDay: opts.planLastDay } : {}),
     },
@@ -764,6 +777,8 @@ export interface ContextRun {
   /** A plan's draft's main run (R62): the plan it drafts for and its last day, which its opening names. */
   planId?: string;
   planLastDay?: string;
+  /** A phone run's main run (R1): the day frame it came with (switch A on), read as data with its coverage. */
+  frame?: DayFrame;
 }
 
 /**
@@ -981,6 +996,9 @@ export interface CoachRunDto {
   conversationId: string;
   /** Who asked (plans with a purpose §4.2): `plan_draft`, the app (its `request` is the app's words); absent, the athlete. */
   origin?: "plan_draft";
+  /** R1: asked from the owner's phone (the laptop's run view says "From LifeOS"), and the day frame's lines when one came. */
+  via?: "lifeos";
+  frameLines?: string[];
 }
 
 export interface CoachRunEventDto {
@@ -1026,6 +1044,8 @@ function runDto(root: RunNode, nodes: RunNode[]): CoachRunDto {
     ...(root.settings?.focus ? { focus: root.settings.focus } : {}),
     conversationId: conversationOf(root),
     ...(root.settings?.origin === "plan_draft" ? { origin: "plan_draft" as const } : {}),
+    ...(root.settings?.via === "lifeos" ? { via: "lifeos" as const } : {}),
+    ...(root.settings?.via === "lifeos" && root.settings.frame ? { frameLines: frameLines(root.settings.frame) } : {}),
   };
 }
 
@@ -1184,6 +1204,9 @@ export interface CreateRunInput {
   /** A plan's draft's (R62): the plan's last day, from the same reading as its key — its opening says what comes after it is
    * the stretch to propose. Kept in the run's settings. */
   planLastDay?: string;
+  /** R1: asked from the owner's phone — the device that signed the request in, and the day frame when switch A is on and
+   * the route checked it (routes/coach-runs.ts). Kept in the run's settings, no statement of its own. */
+  lifeos?: { deviceId: string; frame?: DayFrame };
   /** A limit for this one run below its scope's, in dollars (a plan's draft: plan-drafts.ts `DRAFT_CEILING_USD`): the
    * athlete's own lower limit still wins. Kept as the run's ceiling, no statement of its own. */
   ceilingUsd?: number;
@@ -1380,6 +1403,7 @@ export async function createRun(db: Db, userId: string, input: CreateRunInput, n
     ...(input.origin ? { origin: input.origin } : {}),
     ...(input.planId ? { planId: input.planId } : {}),
     ...(input.planLastDay ? { planLastDay: input.planLastDay } : {}),
+    ...(input.lifeos ? { lifeos: input.lifeos } : {}),
   });
   const once = input.once ?? null;
   /** The lane has no live main run (the athlete's one, or the rehearsals' one): both inserts' own guard, in their statement. */
@@ -2841,6 +2865,7 @@ async function contextStep(s: StepCtx): Promise<StepEnd> {
     // A draft's main run (R62): the plan's last day its opening names; sub-runs keep their neutral line.
     ...(s.run.role === "main" && s.state.settings.planId ? { planId: s.state.settings.planId } : {}),
     ...(s.run.role === "main" && s.state.settings.planLastDay ? { planLastDay: s.state.settings.planLastDay } : {}),
+    ...(s.run.role === "main" && s.state.settings.frame ? { frame: s.state.settings.frame } : {}),
   };
   const built = await s.deps.buildContext.build(s.db, s.env, s.userId, run, s.now);
   s.state.system = built.system;

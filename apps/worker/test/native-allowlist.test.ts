@@ -61,6 +61,7 @@ const {
   deviceConversationQuery,
   deviceDeclineBody,
   deviceLibraryQuery,
+  deviceMemoryBody,
   deviceMemoryPatchBody,
   devicePlaceBody,
   deviceSharingBody,
@@ -137,6 +138,7 @@ const V5_PAIRS = [
   "GET /api/coach/memory",
   "PATCH /api/coach/memory/:id",
   "DELETE /api/coach/memory/:id",
+  "POST /api/coach/memory",
   "GET /api/coach/nudges",
   "GET /api/coach/spend",
 ];
@@ -164,6 +166,7 @@ const PROBE_BODIES: Record<string, string> = {
   "POST /api/native/templates/:id/place": JSON.stringify({ date: "2026-11-20", clientId: "probe-place" }),
   "POST /api/native/take-back": JSON.stringify({ receiptIds: ["probe-receipt"], requestId: "probe-request" }),
   "PUT /api/native/sharing": JSON.stringify({ toTraining: false, disclosureVersion: "probe" }),
+  "POST /api/coach/memory": JSON.stringify({ kind: "rule", body: "Probe.", clientId: "probe-memory" }),
 };
 /**
  * A probe's query where a pair's query rule refuses none (DESIGN-2c §2.5): `/days` takes exactly `from` and `to` (the route
@@ -356,6 +359,7 @@ describe("every mounted route is classified", () => {
       ["GET", String(/^\/api\/coach\/memory$/), null, noQuery],
       ["PATCH", String(/^\/api\/coach\/memory\/[^/]+$/), deviceMemoryPatchBody, null],
       ["DELETE", String(/^\/api\/coach\/memory\/[^/]+$/), emptyBody, null],
+      ["POST", String(/^\/api\/coach\/memory$/), deviceMemoryBody, null],
       ["GET", String(/^\/api\/coach\/nudges$/), null, deviceNudgesQuery],
       ["GET", String(/^\/api\/coach\/spend$/), null, noQuery],
     ]);

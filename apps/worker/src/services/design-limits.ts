@@ -19,11 +19,19 @@ type RunEffort = "low" | "medium" | "high" | "xhigh" | "max";
  * A run's limits by role: model calls (the step cap — each role block states it: design-context.ts), the effort every
  * call asks for, the output ceiling per call. Effort is always sent: omitted, Opus 5.5 takes `medium`. The loop
  * (coach-runs.ts) re-exports it.
+ *
+ * THE OUTPUT CEILING IS A CEILING, NOT A GUARANTEE (R1; the lead's v0.20 ruling): 32,000 per call, up from 16,000, so a
+ * high-effort step is cut off less often — a cut-off step is paid for and must go on. A step that still stops at
+ * `max_tokens` runs no tool (nothing cut off ever becomes an op: coach-runs.ts) and goes on only within the run's call cap;
+ * a run that ends without its finish is `complete: false`, never a phone's to approve (design-version.ts). Every call is
+ * reserved at its worst case before it is made, under the run's ceiling and the week's $20 cutoff, which this leaves as
+ * they were (design-limits.test.ts pins what a 32,000-token call reserves).
  */
+export const MAX_OUTPUT_TOKENS = 32_000;
 export const RUN_LIMITS: Readonly<Record<"main" | "designer" | "reviewer", { maxCalls: number; effort: RunEffort; maxTokens: number }>> = {
-  main: { maxCalls: 12, effort: "high", maxTokens: 16_000 },
-  designer: { maxCalls: 10, effort: "high", maxTokens: 16_000 },
-  reviewer: { maxCalls: REVIEWER_MAX_CALLS, effort: "high", maxTokens: 16_000 },
+  main: { maxCalls: 12, effort: "high", maxTokens: MAX_OUTPUT_TOKENS },
+  designer: { maxCalls: 10, effort: "high", maxTokens: MAX_OUTPUT_TOKENS },
+  reviewer: { maxCalls: REVIEWER_MAX_CALLS, effort: "high", maxTokens: MAX_OUTPUT_TOKENS },
 };
 
 /** The most workouts one set plans (a week, the next N whatever N is, or an auto run's several: design-orchestrate.ts).

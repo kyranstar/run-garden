@@ -21,7 +21,7 @@ import type { Db } from "../src/services/db.js";
 import { createSession, SESSION_COOKIE } from "../src/auth/sessions.js";
 import { coachRoutes } from "../src/routes/coach.js";
 import { buildDossier } from "../src/services/coach-context.js";
-import { APPROVE_FIXED, CREATE_AT_TIME_COST, DECLINE_COST, opCostOf, REQUEST_BUDGET, REVISE_BASE, type DesignedOp } from "../src/services/design-approve.js";
+import { APPROVE_FIXED, CREATE_AT_TIME_COST, DECLINE_COST, opCostOf, REQUEST_BUDGET, REVISE_BASE, type DesignedOp, RECEIPT_COST, RECEIPT_SETTLE_COST } from "../src/services/design-approve.js";
 import { createDocWorkout } from "../src/services/doc-workouts.js";
 import { designProposalId, proposeWorkout, type DocWorkoutTarget } from "../src/services/design-tools/propose.js";
 import { isToolErr, type OpReview, type ToolContext } from "../src/services/design-tools/types.js";
@@ -214,7 +214,7 @@ describe("POST /api/coach/proposals/:id/approve", () => {
     const at = await designed([{ doc: calmDoc({ title: "Timed" }), target: { kind: "new", date: addDays(today, 3), time: "12:00" } }]);
     const timed = await invoke("POST", `/api/coach/proposals/${at.id}/approve`, {});
     expect(timed.json.applied).toHaveLength(1);
-    expect(timed.total).toBeLessThanOrEqual(APPROVE_FIXED + CREATE_AT_TIME_COST);
+    expect(timed.total).toBeLessThanOrEqual(APPROVE_FIXED + CREATE_AT_TIME_COST + RECEIPT_COST);
 
     // Today, with the day's check answered (its pre-check read) and two sessions to place around.
     await db.insert(schema.conditionChecks).values({ id: newId(), userId, profileId: "tmj", kind: "daily", value: 1, feelingOff: false, localDate: today, at: nowInstant() });
@@ -230,7 +230,7 @@ describe("POST /api/coach/proposals/:id/approve", () => {
     const revised = await invoke("POST", `/api/coach/proposals/${rev.id}/approve`, {});
     expect(revised.json.applied).toHaveLength(1);
     // Its day holds two runs and the workout itself.
-    expect(revised.total).toBeLessThanOrEqual(APPROVE_FIXED + REVISE_BASE + 3);
+    expect(revised.total).toBeLessThanOrEqual(APPROVE_FIXED + REVISE_BASE + 3 + RECEIPT_COST + RECEIPT_SETTLE_COST);
   });
 
   it("a pathological day — five sessions on each of two days — never puts a request past 45: the planner takes one at a time", async () => {

@@ -489,6 +489,7 @@ const TRAINING_V5: readonly DeviceRoute[] = [
   { method: "GET", pattern: /^\/api\/coach\/memory$/, query: noQuery },
   { method: "PATCH", pattern: new RegExp(`^/api/coach/memory/${SEG}$`), body: deviceMemoryPatchBody },
   { method: "DELETE", pattern: new RegExp(`^/api/coach/memory/${SEG}$`), body: emptyBody },
+  { method: "POST", pattern: /^\/api\/coach\/memory$/, body: deviceMemoryBody },
   { method: "GET", pattern: /^\/api\/coach\/nudges$/, query: deviceNudgesQuery },
   { method: "GET", pattern: /^\/api\/coach\/spend$/, query: noQuery },
 ];

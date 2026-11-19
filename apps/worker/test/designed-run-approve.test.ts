@@ -138,10 +138,11 @@ describe("approving a designed run", () => {
     const [op] = (await db.select().from(coachProposals).where(eq(coachProposals.id, id)))[0]!.ops as DesignedOp[];
     expect(res.total).toBeLessThanOrEqual(APPROVE_FIXED + opCostOf(op!, 1));
     expect(res.total).toBeLessThanOrEqual(REQUEST_BUDGET);
-    // Pinned: 23 measured (the approve's own, the run's create — its five stage rows in one insert, the day's collision
-    // pass, its watch job — and the calendar's step in the room left), against 30 declared.
-    expect(res.total).toBe(23);
-    expect(APPROVE_FIXED + opCostOf(op!, 1)).toBe(30);
+    // Pinned: 25 measured (the approve's own, the run's create — its five stage rows in one insert, the day's collision
+    // pass, its watch job, its take-back receipt and the receipt's settle once placed (R1) — and the calendar's step in the
+    // room left), against 32 declared.
+    expect(res.total).toBe(25);
+    expect(APPROVE_FIXED + opCostOf(op!, 1)).toBe(32);
 
     const workoutId = res.json.applied[0].workout.id as string;
     const [row] = await db.select().from(plannedWorkouts).where(eq(plannedWorkouts.id, workoutId));
