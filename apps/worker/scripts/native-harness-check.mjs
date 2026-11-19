@@ -89,8 +89,9 @@ check("the laptop lists the pending phone with the phone's check number", !!pend
 check("Confirm: 200", (await call("POST", `/api/native/devices/${pending.id}/confirm`, { cookie: true, body: { check: won.check } })).status, 200);
 const me = await call("GET", "/api/native/me", { bearer: token });
 check("active: /api/native/me is {userId, device}", Object.keys(me.json).sort(), ["device", "userId"]);
-// A new pairing is minted at the newest scope (stage 2b RG-NOTES §3.5, §8; DESIGN-2c §3: training-v4), and /me says so.
-check("…and its device is training-v4: {label, expiresAt, scope}", [Object.keys(me.json.device ?? {}).sort(), me.json.device?.scope], [["expiresAt", "label", "scope"], "training-v4"]);
+// A new pairing is minted at the newest scope (stage 2b RG-NOTES §3.5, §8; DESIGN-2c §3; DESIGN-3 §3.5: training-v5), and
+// /me says so.
+check("…and its device is training-v5: {label, expiresAt, scope}", [Object.keys(me.json.device ?? {}).sort(), me.json.device?.scope], [["expiresAt", "label", "scope"], "training-v5"]);
 
 // 3. Off the slice: refused.
 for (const [method, path] of [["GET", "/api/plan/today"], ["GET", "/api/auth/me"], ["POST", "/api/native/pairings"], ["GET", "/api/native/devices"], ["POST", "/api/settings/delete-all"]]) {
@@ -256,9 +257,10 @@ const deviceRowOf = (id) => sql(`select id, user_id, label, state, check_number,
 const fitted = await call("POST", "/api/workouts", { cookie: true, body: { doc: { ...doc, title: "Harness fit" }, date: day, time: "23:50", clientId: `harness-fit-${Date.now()}` } });
 check("the laptop makes another of today's sessions", fitted.status < 300, true);
 const fid = fitted.json.workout.id;
-// Paired at v4 (the newest), the phone starts here two rungs down, as a phone paired before 2b's release is: the laptop's
-// step-down, in place, one rung at a time (v4 → v3, v3 → v2), then the grants back (here, and in 4f).
-check("the phone paired at v4 is stepped down to v3 on the laptop, in place", (await call("POST", `/api/native/devices/${phoneId}/reduce`, { cookie: true, body: { scope: "training-v3" } })).json, { ok: true, scope: "training-v3", reduced: true });
+// Paired at v5 (the newest), the phone starts here three rungs down, as a phone paired before 2b's release is: the laptop's
+// step-down, in place, one rung at a time (v5 → v4, v4 → v3, v3 → v2), then the grants back (here, in 4f and in 4h).
+check("the phone paired at v5 is stepped down to v4 on the laptop, in place", (await call("POST", `/api/native/devices/${phoneId}/reduce`, { cookie: true, body: { scope: "training-v4" } })).json, { ok: true, scope: "training-v4", reduced: true });
+check("…then to v3", (await call("POST", `/api/native/devices/${phoneId}/reduce`, { cookie: true, body: { scope: "training-v3" } })).json, { ok: true, scope: "training-v3", reduced: true });
 check("…and to v2, one rung more", (await call("POST", `/api/native/devices/${phoneId}/reduce`, { cookie: true, body: { scope: "training-v2" } })).json, { ok: true, scope: "training-v2", reduced: true });
 const listedPhone = (await call("GET", "/api/native/devices", { cookie: true })).json.devices.find((d) => d.id === phoneId);
 check("the laptop lists the phone at v2, with v3 to grant", [listedPhone?.scope, listedPhone?.nextScope], ["training-v2", "training-v3"]);
@@ -424,6 +426,93 @@ const renews = await Promise.all([renewAs(renewRaceId), renewAs(renewRaceId), re
 check("renew: three at once on local D1: one renewed, two not, one audit", [renews.map((a) => `${a.status} ${a.json.renewed}`).sort(), renewAudits() - renewRaceAudits], [["200 false", "200 false", "200 true"], 1]);
 check("renew: …all three answer the one expiry", new Set(renews.map((a) => a.json.expiresAt)).size, 1);
 
+
+// 4h. R1 on local D1 (kit v0.20, DESIGN-3 §3.4, §3.5, §5.3 "end to end"): the laptop grants the v4 phone training-v5 in place;
+// its library reads (nothing written), a saved workout put on the plan with its receipt in the same batch, /days showing it,
+// taken back (archived as taken_back, compensation said), the same take-back again answering what it did; a place the laptop
+// moved since refused changed_since; switch A off refusing a frame; then the coach on the phone with the scripted designer —
+// a run, its proposal (version, complete, the typed ops), an approve without its version refused at the gate, a stale one
+// 409, the right one applied with its receipt, the drain, /days, a laptop edit, and the take-back refused changed_since; the
+// laptop's coach says From LifeOS; the step-down to v4 stops it all and turns switch A off.
+const POST_STATE = `json_object(${["effective_date", "effective_time", "completion_state", "content_state", "archived_at", "archive_reason", "workout_doc_rev", "sanctioned_by", "category", "title", "calendar_block_duration_seconds", "structured_json", "session_params"].map((c) => `'${c}', ${c}`).join(", ")})`;
+check("R1: the laptop lists the phone at v4, with v5 to grant", [(await call("GET", "/api/native/devices", { cookie: true })).json.devices.find((d) => d.id === phoneId)?.nextScope], ["training-v5"]);
+check("R1: under v4, the library and the coach are 403 out_of_scope", [(await call("GET", "/api/native/templates", { bearer: token })).json, (await call("GET", "/api/coach/spend", { bearer: token })).json], [{ error: "out_of_scope" }, { error: "out_of_scope" }]);
+const beforeR1 = phoneRow();
+check("R1: the laptop grants the phone v5: 200 granted, its row the same but its scope", [(await grantAs(phoneId, "training-v5")).json, phoneRow()], [{ ok: true, scope: "training-v5", granted: true }, { ...beforeR1, scope: "training-v5" }]);
+check("R1: switch A starts off", (await call("GET", "/api/native/sharing", { bearer: token })).json, { toTraining: false, disclosureVersion: null, setAt: null });
+const tpl = await call("POST", "/api/templates", { cookie: true, body: { name: "Harness hip reset", doc } });
+check("R1: the laptop saves a template", tpl.status, 201);
+const tplId = tpl.json.template?.id;
+const hashLib = d1Hash();
+const tplList = await call("GET", "/api/native/templates", { bearer: token });
+check("R1: /templates: the saved one, its exact keys, no document", [tplList.status, Object.keys(tplList.json.templates?.find((t) => t.id === tplId) ?? {}).sort()], [200, ["discipline", "id", "lastUsedAt", "minutes", "name", "pinned", "updatedAt", "uses"]]);
+const lib = await call("GET", "/api/native/library?limit=5", { bearer: token });
+check("R1: /library?limit=5: five rows, each exactly its keys, one verdict", [lib.status, lib.json.items?.length, [...new Set((lib.json.items ?? []).map((r) => Object.keys(r).sort().join(",")))]], [200, 5, ["difficulty,equipment,excluded,family,id,lastDoneOn,name,pinned,regions,summary,verdict"]]);
+check("R1: /library/:id: the move's page, no profile's notes", [(await call("GET", `/api/native/library/${lib.json.items?.[0]?.id}`, { bearer: token })).status], [200]);
+check("R1: every table byte-identical across the library reads", d1Hash(), hashLib);
+const d4 = plusDays(day, 4);
+const placeKey = `harness-place-${Date.now()}`;
+const placed = await call("POST", `/api/native/templates/${tplId}/place`, { bearer: token, body: { date: d4, time: "18:00", clientId: placeKey } });
+check("R1: Put it on… Thu 18:00: 201 with its workout and receipt", [placed.status, typeof placed.json.workoutId, /^tb_[0-9a-f]{32}$/.test(placed.json.receiptId ?? "")], [201, "string", true]);
+const [placedRow] = sql(`select archived_at, archive_reason, effective_date, effective_time, ${POST_STATE} as state from planned_workouts where id = '${placed.json.workoutId}'`);
+const [placedReceipt] = sql(`select source, op, status, post_state, made_by from take_back_receipts where id = '${placed.json.receiptId}'`);
+check("R1: …the row on its day, and its receipt holds the row exactly as written", [placedRow?.effective_date, placedRow?.effective_time, placedReceipt?.source, placedReceipt?.op, placedReceipt?.status, placedReceipt?.post_state === placedRow?.state, placedReceipt?.made_by], [d4, "18:00", "place", "create", "open", true, `device:${phoneId}`]);
+check("R1: the same clientId again: the same row and receipt, nothing new", [(await call("POST", `/api/native/templates/${tplId}/place`, { bearer: token, body: { date: d4, time: "18:00", clientId: placeKey } })).json.receiptId, sql(`select count(*) as n from take_back_receipts where source = 'place'`)[0].n], [placed.json.receiptId, 1]);
+check("R1: /days shows it on its day", (await daysAs(token, `?from=${d4}&to=${d4}`)).json.days?.[0]?.sessions?.some((x) => x.id === placed.json.workoutId), true);
+const tbReq = `harness-tb-${Date.now()}`;
+const tb = await call("POST", "/api/native/take-back", { bearer: token, body: { receiptIds: [placed.json.receiptId], requestId: tbReq } });
+check("R1: Take back: taken_back, compensation listed", [tb.status, tb.json.outcomes?.[0]?.outcome, Array.isArray(tb.json.outcomes?.[0]?.compensation)], [200, "taken_back", true]);
+check("R1: …the row archived as taken_back — never deleted — and its receipt marked with the request", [sql(`select archive_reason from planned_workouts where id = '${placed.json.workoutId}'`)[0]?.archive_reason, sql(`select status, request_id from take_back_receipts where id = '${placed.json.receiptId}'`)[0]], ["taken_back", { status: "taken_back", request_id: tbReq }]);
+const hashTb = d1Hash();
+// The same answer (its compensation read live: a provider may have moved on meanwhile), and nothing written.
+const stable = (a) => (a.outcomes ?? []).map(({ compensation: _c, ...o }) => o);
+const tbAgain = await call("POST", "/api/native/take-back", { bearer: token, body: { receiptIds: [placed.json.receiptId], requestId: tbReq } });
+check("R1: the same take-back again: the same answer, nothing written", [JSON.stringify(stable(tbAgain.json)) === JSON.stringify(stable(tb.json)), tbAgain.json.remaining, d1Hash() === hashTb], [true, [], true]);
+check("R1: another request id: already_taken_back", (await call("POST", "/api/native/take-back", { bearer: token, body: { receiptIds: [placed.json.receiptId], requestId: `${tbReq}-b` } })).json.outcomes?.[0]?.outcome, "already_taken_back");
+check("R1: /receipts/:id: taken back, its compensation live", [(await call("GET", `/api/native/receipts/${placed.json.receiptId}`, { bearer: token })).json.status], ["taken_back"]);
+const placed2 = await call("POST", `/api/native/templates/${tplId}/place`, { bearer: token, body: { date: d4, time: "07:00", clientId: `${placeKey}-2` } });
+check("R1: a second place, and the laptop moves it", [placed2.status, (await call("POST", `/api/plan/workouts/${placed2.json.workoutId}/move`, { cookie: true, body: { toDate: plusDays(day, 5), toTime: "07:00" } })).status], [201, 200]);
+const hashMoved = d1Hash();
+const tb2 = await call("POST", "/api/native/take-back", { bearer: token, body: { receiptIds: [placed2.json.receiptId], requestId: `${tbReq}-2` } });
+check("R1: …its take-back refused changed_since, with the row as it stands; nothing written", [tb2.json.outcomes?.[0]?.error, tb2.json.outcomes?.[0]?.now?.effective_date, d1Hash() === hashMoved], ["changed_since", plusDays(day, 5), true]);
+const runsBefore = sql("select count(*) as n from coach_runs")[0].n;
+const frameR1 = { days: [day], energy: "low", free: { [day]: [{ from: "17:30", to: "19:30" }] }, dayEnd: "23:00", load: { [day]: "full" }, coverage: { [day]: { planAsOf: new Date().toISOString(), calendarAsOf: null, drafted: false } }, consent: "harness.1" };
+check("R1: switch A off: a run with a frame is 409 sharing_off, nothing started", [(await call("POST", "/api/coach/runs", { bearer: token, body: { scope: { kind: "now" }, frame: frameR1 } })).json.error, sql("select count(*) as n from coach_runs")[0].n - runsBefore], ["sharing_off", 0]);
+const ran = await call("POST", "/api/coach/runs", { bearer: token, body: { scope: { kind: "now" }, request: "A short mobility session now" } });
+check("R1: the phone asks the training coach: a run via lifeos", [ran.status, ran.json.run?.via], [200, "lifeos"]);
+const runId = ran.json.run?.id;
+let runNow = ran.json.run;
+for (let i = 0; i < 90 && runNow && !["finished", "failed", "stopped_cap", "cancelled", "expired"].includes(runNow.status); i++) {
+  await call("POST", `/api/coach/runs/${runId}/step?afterSeq=0`, { bearer: token, body: {} });
+  await new Promise((r) => setTimeout(r, 1000));
+  runNow = (await call("GET", `/api/coach/runs/${runId}`, { bearer: token })).json.run;
+}
+check("R1: …its steps run in the run's own alarm, and it finishes with a proposal (the scripted designer)", [runNow?.status, typeof runNow?.proposalId], ["finished", "string"]);
+const prop = await call("GET", `/api/coach/proposals/${runNow?.proposalId}`, { bearer: token });
+const opIds = (prop.json.opsSummary ?? []).map((o) => o.opId);
+check("R1: the proposal read: its version, complete, one op typed (add, today), no receipts yet", [prop.status, /^[0-9a-f]{64}$/.test(prop.json.version ?? ""), prop.json.complete, prop.json.opsSummary?.[0]?.op, prop.json.opsSummary?.[0]?.day, prop.json.receipts], [200, true, true, "add", day, []]);
+check("R1: approve without its version: 403 at the gate", (await call("POST", `/api/coach/proposals/${runNow?.proposalId}/approve`, { bearer: token, body: { opIds } })).json, { error: "out_of_scope" });
+check("R1: approve with a stale version: 409 proposal_changed with the fresh one", (await call("POST", `/api/coach/proposals/${runNow?.proposalId}/approve`, { bearer: token, body: { opIds, version: "0".repeat(64) } })).json, { error: "proposal_changed", version: prop.json.version });
+const approved = await call("POST", `/api/coach/proposals/${runNow?.proposalId}/approve`, { bearer: token, body: { opIds, version: prop.json.version } });
+const approvedId = approved.json.applied?.[0]?.workout?.id;
+check("R1: approve with its ops and version: applied, with its receipt and the version it leaves", [approved.status, approved.json.applied?.length, approved.json.receipts?.length, /^[0-9a-f]{64}$/.test(approved.json.version ?? "") && approved.json.version !== prop.json.version], [200, 1, 1, true]);
+check("R1: the drain answers", (await call("POST", "/api/coach/drain", { bearer: token, body: {} })).status, 200);
+check("R1: /days shows the approved workout today", (await daysAs(token, `?from=${day}&to=${day}`)).json.days?.[0]?.sessions?.some((x) => x.id === approvedId), true);
+check("R1: the proposal says it can be taken back", (await call("GET", `/api/coach/proposals/${runNow?.proposalId}`, { bearer: token })).json.takeBackable, opIds);
+check("R1: the laptop edits it between approve and take-back", (await call("POST", `/api/plan/workouts/${approvedId}/move`, { cookie: true, body: { toDate: day, toTime: "23:55" } })).status, 200);
+const tb3 = await call("POST", "/api/native/take-back", { bearer: token, body: { receiptIds: [approved.json.receipts?.[0]?.receiptId], requestId: `${tbReq}-3` } });
+check("R1: …the take-back refused changed_since, the laptop's edit kept", [tb3.json.outcomes?.[0]?.error, sql(`select effective_time, archived_at from planned_workouts where id = '${approvedId}'`)[0]], ["changed_since", { effective_time: "23:55", archived_at: null }]);
+const convo = await call("GET", "/api/coach/conversation", { cookie: true });
+check("R1: the laptop's coach says the phone's turn came From LifeOS", (convo.json.turns ?? []).some((t) => t.runId === runId && t.via === "lifeos"), true);
+check("R1: the QA gate's opposite: the owner's phone has its coach (spend answers)", (await call("GET", "/api/coach/spend", { bearer: token })).status, 200);
+check("R1: switch A on, then the step-down to v4: the library and coach 403 at once, switch A off", [
+  (await call("PUT", "/api/native/sharing", { bearer: token, body: { toTraining: true, disclosureVersion: "harness.1" } })).json.toTraining,
+  (await reduceAs(phoneId, "training-v4")).json.reduced,
+  (await call("GET", "/api/native/library", { bearer: token })).json,
+  (await call("GET", "/api/coach/memory", { bearer: token })).json,
+  sql(`select to_training from native_device_sharing where device_id = '${phoneId}'`)[0]?.to_training,
+], [true, true, { error: "out_of_scope" }, { error: "out_of_scope" }, 0]);
+
 // 4e. The LifeOS QA account on local D1 (the phone QA harness, routes/qa.ts): the laptop sets it up (account, fixtures, a code
 // and the run's tokens); a phone pairs to it, active at once, and does what the on-device suite does; the harness token reads
 // the state and purges; then EVERY table of the real local D1 that has a user_id column, and every child of the QA account's
@@ -452,7 +541,7 @@ const qaPair = await call("POST", "/api/native/pair", { body: { code: qaSetup.js
 check("QA: its code pairs a phone (the owner's wire shape: pending)", [qaPair.status, qaPair.json.state], [200, "pending"]);
 const qaToken = qaPair.json.token;
 const qaMe = await call("GET", "/api/native/me", { bearer: qaToken });
-check("QA: …active at once, as the QA account, at v4", [qaMe.status, qaMe.json.userId, qaMe.json.device?.scope], [200, qaId, "training-v4"]);
+check("QA: …active at once, as the QA account, at v5", [qaMe.status, qaMe.json.userId, qaMe.json.device?.scope], [200, qaId, "training-v5"]);
 const qaDay = (await call("GET", "/api/native/today", { bearer: qaToken })).json;
 check("QA: the phone's day is today's three QA fixtures, and nothing of the owner's", qaDay.sessions.map((s) => s.title).sort(), ["QA Easy run", "QA Hips and back", "QA Mobility"]);
 // Stage 2c's reads on the QA phone: its own days and record, never a row of the owner's (on real local D1).

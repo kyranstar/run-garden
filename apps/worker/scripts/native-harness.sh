@@ -30,6 +30,9 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 WORKER="$ROOT/apps/worker"
 PORT="${NATIVE_HARNESS_PORT:-8975}"
+# The scripted designer (apps/web/e2e/coach-design-model.mjs), on loopback: the coach's runs answer from its `now` script, so
+# the check walks run → proposal → approve → take-back with no model called (R1).
+MODEL_PORT="${NATIVE_HARNESS_MODEL_PORT:-8964}"
 STATE="${NATIVE_HARNESS_STATE:-${TMPDIR:-/tmp}/rg-native-harness-$(printf %s "$ROOT" | cksum | cut -d' ' -f1)}"
 BASE="http://127.0.0.1:$PORT"
 JAR="$STATE/owner.cookies"
@@ -39,7 +42,9 @@ export WRANGLER_SEND_METRICS=false
 
 stop() {
   if [ -f "$STATE/pid" ]; then kill "$(cat "$STATE/pid")" 2>/dev/null || true; fi
+  if [ -f "$STATE/model.pid" ]; then kill "$(cat "$STATE/model.pid")" 2>/dev/null || true; fi
   lsof -ti "tcp:$PORT" -sTCP:LISTEN 2>/dev/null | xargs kill 2>/dev/null || true
+  lsof -ti "tcp:$MODEL_PORT" -sTCP:LISTEN 2>/dev/null | xargs kill 2>/dev/null || true
 }
 
 json_field() { node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const v=process.argv[1].split(".").reduce((o,k)=>o==null?o:o[k],JSON.parse(s));process.stdout.write(typeof v==="string"?v:JSON.stringify(v))})' "$1"; }
@@ -70,11 +75,15 @@ case "${1:-}" in
       ];
       require("node:fs").writeFileSync(process.argv[3], lines.join("\n") + "\n", { mode: 0o600 });
     ' "$OWNER" "$PORT" "$ENV_FILE"
+    node "$ROOT/apps/web/e2e/coach-design-model.mjs" "$MODEL_PORT" >"$STATE/model.log" 2>&1 &
+    echo $! >"$STATE/model.pid"
     cd "$WORKER"
     npx wrangler d1 migrations apply run-garden-db --local -c wrangler.dev.toml --persist-to "$STATE" >"$STATE/migrate.log" 2>&1 \
       || { cat "$STATE/migrate.log"; exit 1; }
+    # The fixture model on loopback (fixture mode's one way to a model, gateway-route.ts): a stub key, never a real one.
     npx wrangler dev --local -c wrangler.dev.toml --port "$PORT" --ip 127.0.0.1 --persist-to "$STATE" --env-file "$ENV_FILE" \
-      --var "APP_URL:http://127.0.0.1:$PORT" --var FIXTURE_MODE:1 --var AI_DEFAULT_ENABLED:0 >"$STATE/worker.log" 2>&1 &
+      --var "APP_URL:http://127.0.0.1:$PORT" --var FIXTURE_MODE:1 --var AI_DEFAULT_ENABLED:0 \
+      --var "FIXTURE_MODEL_URL:http://127.0.0.1:$MODEL_PORT" --var AI_GATEWAY_API_KEY:stub --var AI_DESIGN_MODEL:scripted:now >"$STATE/worker.log" 2>&1 &
     echo $! >"$STATE/pid"
     for _ in $(seq 1 90); do
       curl -fsS "$BASE/api/health" >/dev/null 2>&1 && break
