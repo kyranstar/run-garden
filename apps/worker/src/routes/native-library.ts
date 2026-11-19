@@ -35,7 +35,7 @@ import { CALENDAR_OPS_PER_REQUEST, loadPreferences, syncCalendar } from "../serv
 import { createDocWorkout, keyedRowId } from "../services/doc-workouts.js";
 import { approveTimeOf } from "../services/design-time.js";
 import { LibraryItemNotFoundError, libraryItem, listLibrary, MAX_LIBRARY_LIMIT, type LibraryItem, type LibraryRow, type Safety } from "../services/library-view.js";
-import { madeByOf, receiptExpiry, receiptIdOf, receiptInsert, receiptSettle } from "../services/take-back.js";
+import { madeByOf, receiptExpiry, receiptIdOf, receiptInsert } from "../services/take-back.js";
 import { listTemplates } from "../services/workout-templates.js";
 import { waitUntilSafe } from "../services/wait-until.js";
 import { refusal } from "./workouts.js";
@@ -263,7 +263,7 @@ nativeLibraryRoutes.post("/templates/:id/place", requireUser, async (c) => {
       { date, time: time ?? null, doc: { ...t.doc, basedOn: { kind: "template", id: t.id } }, clientId: `place:${clientId}` },
       ctx,
       {},
-      { alsoInBatch: (w) => [...useCounted(c, t.id)(w), ...insert(w)], afterPlaced: receiptSettle(db, { id: receiptId, userId }) },
+      { alsoInBatch: (w) => [...useCounted(c, t.id)(w), ...insert(w)], settleId: receiptId },
     );
     const answer = { workoutId: made.workout.id, receiptId, date: made.workout.date, time: made.workout.time };
     if (made.repeated) return c.json({ ...answer, repeated: true }, 200);

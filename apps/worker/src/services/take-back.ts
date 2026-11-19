@@ -147,16 +147,6 @@ export function receiptInsert(db: Db, r: ReceiptSpec): AlsoInBatch {
   ];
 }
 
-/** After the day's collision pass placed an untimed row (or re-timed a revised one): the receipt holds the row as it now is. */
-export function receiptSettle(db: Db, r: Pick<ReceiptSpec, "id" | "userId">): AlsoInBatch {
-  return ({ workoutId }) => [
-    db
-      .update(takeBackReceipts)
-      .set({ postState: sql`(select ${POST_STATE_SQL} from "planned_workouts" where "planned_workouts"."id" = ${workoutId} and "planned_workouts"."user_id" = ${r.userId})` })
-      .where(and(eq(takeBackReceipts.id, r.id), eq(takeBackReceipts.userId, r.userId), eq(takeBackReceipts.status, "open"))),
-  ];
-}
-
 /**
  * THE RECEIPTS ONE APPROVE REQUEST WRITES (design-approve.ts): one group for the request (its ops go back together), each
  * receipt relying on the ones this request landed before it, keyed `<proposalId>:<opId>`. `insert` and `docHook` build a
@@ -206,7 +196,7 @@ export class ReceiptLog {
   /** A document write's receipt (a new workout, a revision): in its batch, and settled once its row is placed. */
   async docHook(opId: string, op: ReceiptOp, date: string, preState: Record<string, unknown> | null): Promise<DocWriteReceipt> {
     const spec = await this.spec(opId, op, date, preState);
-    return { alsoInBatch: receiptInsert(this.db, spec), afterPlaced: receiptSettle(this.db, spec) };
+    return { alsoInBatch: receiptInsert(this.db, spec), settleId: spec.id };
   }
 
   /** The op's write stood: its receipt with it. */

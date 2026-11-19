@@ -90,6 +90,18 @@ describe("the collision pass keeps the earlier receipts (B-9)", () => {
     expect((await k.takeBack([p2.receiptId])).json.outcomes[0].outcome).toBe("taken_back");
   });
 
+  it("an untimed place its own pass re-times: its receipt holds where the pass put it, and it is taken back", async () => {
+    const day = addDays(T, 1);
+    // The larger id is the one moved: placed second, its own pass moves it off the first's time.
+    const [moved, kept] = await movedFirst((n) => `c-o2-${n}`, (n) => `c-o1-${n}`);
+    const first = await k.place(day, null, kept);
+    k.tick();
+    const second = await k.place(day, null, moved);
+    expect([(await k.rowOf(first.workoutId)).effectiveTime, second.time]).toEqual([first.time, "07:30"]);
+    k.tick();
+    expect((await k.takeBack([second.receiptId])).json.outcomes[0].outcome).toBe("taken_back");
+  });
+
   it("a Studio save's pass re-times a placed row: still taken back", async () => {
     const day = addDays(T, 1);
     const [c1, laptop] = await movedFirst((n) => `c-s1-${n}`, (n) => `laptop-${n}`);

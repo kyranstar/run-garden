@@ -6,7 +6,7 @@
  * can tell that refusal apart — and keep a receipt with a row their collision pass re-timed — without importing the
  * take-back service.
  */
-import { and, eq, inArray, sql, type SQL } from "drizzle-orm";
+import { and, eq, inArray, or, sql, type SQL } from "drizzle-orm";
 import { takeBackReceipts } from "@rg/database";
 import type { AtomicStatement, Db } from "./db.js";
 
@@ -35,28 +35,30 @@ export const COMPARE_COLUMNS = [
 export const POST_STATE_SQL: SQL = sql.raw(`json_object(${COMPARE_COLUMNS.map((c) => `'${c}', "planned_workouts"."${c}"`).join(", ")})`);
 
 /**
- * After a write's collision pass re-timed OTHER rows (review B-9): each open receipt of a re-timed row holds the row as the
- * pass left it — only when the re-time is all that changed since its write (its `post_state` is the row now with the time
- * it had before the pass, `from`). A row someone changed beside it stays as its receipt saw it: changed since. One
- * statement for every row the pass moved; none when it moved none.
+ * AFTER A WRITE'S COLLISION PASS, ONE STATEMENT (R1; review B-9): the write's own receipt (`ownId`, when it has one to
+ * settle) holds its row as the pass placed it; and each open receipt of an OTHER row the pass re-timed (`moved`) holds that
+ * row as the pass left it — only when the re-time is all that changed since its write (its `post_state` is the row now with
+ * the time it had before the pass, `from`). A row someone changed beside it stays as its receipt saw it: changed since. None
+ * when there is nothing to settle.
  */
-export function receiptsFollowRetime(db: Db, userId: string, moved: ReadonlyArray<{ workoutId: string; from: string }>): AtomicStatement[] {
-  if (moved.length === 0) return [];
+export function receiptsAfterPass(db: Db, userId: string, ownId: string | null, moved: ReadonlyArray<{ workoutId: string; from: string }>): AtomicStatement[] {
+  if (ownId === null && moved.length === 0) return [];
   const t = takeBackReceipts;
-  const before = sql.join(moved.map((m) => sql`when ${m.workoutId} then ${m.from}`), sql` `);
   const row = sql`"planned_workouts"."id" = "take_back_receipts"."workout_id" and "planned_workouts"."user_id" = ${userId}`;
+  const before = sql.join(moved.map((m) => sql`when ${m.workoutId} then ${m.from}`), sql` `);
+  const followed: SQL | undefined =
+    moved.length > 0
+      ? and(
+          inArray(t.workoutId, moved.map((m) => m.workoutId)),
+          sql`"take_back_receipts"."post_state" = (select json_set(${POST_STATE_SQL}, '$.effective_time', case "planned_workouts"."id" ${before} end) from "planned_workouts" where ${row})`,
+        )
+      : undefined;
+  const which = ownId !== null && followed ? or(eq(t.id, ownId), followed) : ownId !== null ? eq(t.id, ownId) : followed;
   return [
     db
       .update(t)
       .set({ postState: sql`(select ${POST_STATE_SQL} from "planned_workouts" where ${row})` })
-      .where(
-        and(
-          eq(t.userId, userId),
-          eq(t.status, "open"),
-          inArray(t.workoutId, moved.map((m) => m.workoutId)),
-          sql`"take_back_receipts"."post_state" = (select json_set(${POST_STATE_SQL}, '$.effective_time', case "planned_workouts"."id" ${before} end) from "planned_workouts" where ${row})`,
-        ),
-      ),
+      .where(and(eq(t.userId, userId), eq(t.status, "open"), which)),
   ];
 }
 const NOT_LANDED = /NOT NULL constraint failed: take_back_receipts\.post_state/;

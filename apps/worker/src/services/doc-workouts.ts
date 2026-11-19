@@ -86,7 +86,7 @@ import { separateDayCollisions, windowTimeFor, type RetimedRow } from "./day-pla
 import { placeOrDefault } from "./default-place.js";
 import { loadBuildHistory } from "./engine-inputs.js";
 import { RestoreInProgressError } from "./programs.js";
-import { receiptsFollowRetime } from "./receipt-landed.js";
+import { receiptsAfterPass } from "./receipt-landed.js";
 import { bookedSeconds, pushJobId, sentBuildIdOf, slotChecks } from "./session-build.js";
 import { enqueueUnpushIfOurs, removeFromPlan } from "./plan-mutations.js";
 import type { IntentSource } from "./sync-intents.js";
@@ -364,12 +364,14 @@ export interface DocWriteSource {
 
 /**
  * R1 (services/take-back.ts): a take-back receipt's statements for a document write. `alsoInBatch` runs in the write's own
- * batch, after it; `afterPlaced` runs once the day's collision pass has placed an untimed row (or re-timed a revised one), so
- * the receipt holds the row as the owner will see it. Absent, the writers are exactly as they were.
+ * batch, after it; `settleId` is that receipt's id, settled once the day's collision pass has placed an untimed row (or
+ * re-timed a revised one), so the receipt holds the row as the owner will see it — in the one statement that also keeps the
+ * receipts of the other rows the pass re-timed (receipt-landed.ts `receiptsAfterPass`, review B-9). Absent, the writers are
+ * as they were.
  */
 export interface DocWriteReceipt {
   alsoInBatch?: AlsoInBatch;
-  afterPlaced?: AlsoInBatch;
+  settleId?: string;
 }
 
 // ── The day a document is checked for ────────────────────────────────────────────────────────────────────────
@@ -734,9 +736,8 @@ export async function createDocWorkout(
   if (input.time == null) {
     const moved = await separateDayCollisions(db, userId, [date], ctx.prefs, { from: ctx.today, now: ctx.now });
     time = moved.find((m) => m.workoutId === id)?.to ?? time;
-    // Its own receipt holds where it was placed; another row's, where the pass moved it (review B-9).
-    const follow = receiptsFollowRetime(db, userId, moved.filter((m) => m.workoutId !== id));
-    if (receipt.afterPlaced || follow.length > 0) await runAtomically(db, [...(receipt.afterPlaced ? receipt.afterPlaced({ now: ctx.now, workoutId: id }) : []), ...follow]);
+    // Its own receipt holds where it was placed; another row's, where the pass moved it (review B-9): one statement.
+    await runAtomically(db, receiptsAfterPass(db, userId, receipt.settleId ?? null, moved.filter((m) => m.workoutId !== id)));
   }
   return { workout: dtoOf({ ...row, effectiveTime: time }, doc, derived.estimatedMinutes), warnings };
 }
@@ -1053,10 +1054,9 @@ export async function reviseDocWorkout(
   const moved = booked !== row.calendarBlockDurationSeconds
     ? await separateDayCollisions(db, userId, [row.effectiveDate], ctx.prefs, { from: ctx.today, now: ctx.now })
     : [];
-  // Its own receipt holds where the pass put it; another row's, where it moved that one (review B-9).
-  const follow = receiptsFollowRetime(db, userId, moved.filter((m) => m.workoutId !== workoutId));
-  const own = written && receipt.afterPlaced && moved.some((m) => m.workoutId === workoutId) ? receipt.afterPlaced({ now: ctx.now, workoutId }) : [];
-  if (own.length > 0 || follow.length > 0) await runAtomically(db, [...own, ...follow]);
+  // Its own receipt holds where the pass put it; another row's, where it moved that one (review B-9): one statement.
+  const own = written && receipt.settleId && moved.some((m) => m.workoutId === workoutId) ? receipt.settleId : null;
+  await runAtomically(db, receiptsAfterPass(db, userId, own, moved.filter((m) => m.workoutId !== workoutId)));
   const rev = after.workoutDocRev ?? null;
   const workout = dtoOf(
     {
