@@ -200,12 +200,13 @@ const hh = (hour: number): string => `${String(hour).padStart(2, "0")}:00`;
 
 /**
  * Today's fixture times: the next whole hour + 1, + 2, + 3 on the account's clock, kept between 06:00 and 21:00 (so *Later
- * today* has room before midnight — late in the evening the three share the last hours).
+ * today* has room before midnight — late in the evening the three share the last hours). The first is always at least an hour
+ * ahead: LifeOS QA phone run 20261119-125821 seeded at 12:5x got 13:00, already past when the phone reached Today at 13:03.
  */
 export function qaTimes(now: string, timezone: string): [string, string, string] {
   const hour = DateTime.fromISO(now, { zone: "utc" }).setZone(timezone).hour;
   const at = (n: number) => hh(Math.min(21, Math.max(6, hour + n)));
-  return [at(1), at(2), at(3)];
+  return [at(2), at(3), at(4)];
 }
 
 /** An adaptive programme's slot, as placement writes one (program-slots.ts), for `date` at `time`. */

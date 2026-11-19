@@ -157,9 +157,9 @@ describe("the fixtures", () => {
     expect(seeded.today).toBe(today);
     expect(seeded.tomorrow).toBe(addDays(today, 1));
     const [t1, t2, t3] = qaTimes(nowInstant(), "America/Los_Angeles");
-    // Midday held (12:00 PDT / 11:00 PST): the next three whole hours.
+    // Midday held (12:00 PDT / 11:00 PST): the three whole hours after the next.
     const hour = Number(new Intl.DateTimeFormat("en-GB", { hour: "2-digit", hour12: false, timeZone: "America/Los_Angeles" }).format(new Date()));
-    expect([t1, t2, t3]).toEqual([hour + 1, hour + 2, hour + 3].map((h) => `${h}:00`));
+    expect([t1, t2, t3]).toEqual([hour + 2, hour + 3, hour + 4].map((h) => `${h}:00`));
     expect(seeded.fixtures.filter((f) => f.date === today).map((f) => f.time)).toEqual([t1, t2, t3]);
     expect(seeded.fixtures.map((f) => [f.title, f.date, f.kind])).toEqual([
       ["QA Hips and back", today, "document"],
@@ -187,9 +187,15 @@ describe("the fixtures", () => {
   });
 
   it("keep today's times between 06:00 and 21:00 on the account's clock", () => {
-    expect(qaTimes("2026-11-18T03:30:00.000Z", "UTC")).toEqual(["06:00", "06:00", "06:00"]);
-    expect(qaTimes("2026-11-18T19:10:00.000Z", "UTC")).toEqual(["20:00", "21:00", "21:00"]);
-    expect(qaTimes("2026-11-18T19:10:00.000Z", "America/New_York")).toEqual(["15:00", "16:00", "17:00"]);
+    expect(qaTimes("2026-11-18T03:30:00.000Z", "UTC")).toEqual(["06:00", "06:00", "07:00"]);
+    expect(qaTimes("2026-11-18T19:10:00.000Z", "UTC")).toEqual(["21:00", "21:00", "21:00"]);
+    expect(qaTimes("2026-11-18T19:10:00.000Z", "America/New_York")).toEqual(["16:00", "17:00", "18:00"]);
+  });
+
+  it("start at least an hour ahead, however late in the hour the seed is (LifeOS QA phone run 20261119-125821)", () => {
+    // Seeded at 12:58 PST: 13:00 was two minutes away, and past before the phone reached Today.
+    expect(qaTimes("2026-11-19T20:58:00.000Z", "America/Los_Angeles")).toEqual(["14:00", "15:00", "16:00"]);
+    expect(qaTimes("2026-11-19T20:00:00.000Z", "America/Los_Angeles")).toEqual(["14:00", "15:00", "16:00"]);
   });
 });
 
