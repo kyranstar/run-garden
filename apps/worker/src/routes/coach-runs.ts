@@ -129,6 +129,18 @@ async function tellQuietly(env: Env, run: Pick<CoachRunDto, "id" | "status" | "s
 }
 
 /** The routes, over `deps` (the model, the opening context, the tools); tests pass scripted ones. */
+/** A frame's refusal by kind, in the app's words (never a value it was sent). */
+const FRAME_ISSUE_WORDS: Readonly<Record<string, string>> = {
+  invalid_type: "not the kind of value the frame takes",
+  invalid_enum_value: "not one of the frame's own values",
+  invalid_literal: "not one of the frame's own values",
+  invalid_string: "not in the frame's own form",
+  unrecognized_keys: "a key the frame doesn't take",
+  too_small: "fewer than the frame takes",
+  too_big: "more than the frame takes",
+  custom: "outside the frame's bounds",
+};
+
 export function makeCoachRunRoutes(deps: () => RunDeps = defaultRunDeps): Hono<AppContext> {
   const routes = new Hono<AppContext>();
 
@@ -186,7 +198,8 @@ export function makeCoachRunRoutes(deps: () => RunDeps = defaultRunDeps): Hono<A
     let frame: DayFrame | undefined;
     if (body.frame !== undefined) {
       const f = dayFrameSchema.safeParse(body.frame);
-      if (!f.success) return c.json({ error: "bad_frame", issues: f.error.issues.map((i) => ({ path: i.path.join("."), message: i.message })) }, 400);
+      // Where, in the app's own words — never what was sent (review A NIT 1: zod's own messages quote the value).
+      if (!f.success) return c.json({ error: "bad_frame", issues: f.error.issues.map((i) => ({ path: i.path.join("."), message: FRAME_ISSUE_WORDS[i.code] ?? "not what the frame takes" })) }, 400);
       const today = todayInZone((await loadPreferences(c.get("db"), c.get("userId"))).timezone);
       if (!frameInReach(f.data, today, addDays)) return c.json({ error: "bad_frame", issues: [{ path: "days", message: "days from yesterday to a week ahead" }] }, 400);
       const refused = await frameRefusal(c.get("db"), c.get("userId"), device?.id, f.data.consent);

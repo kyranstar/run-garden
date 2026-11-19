@@ -75,7 +75,7 @@ import { receiptsOfProposal } from "../services/take-back.js";
 import { deviceCoachGate } from "./coach-device-gate.js";
 import { deviceCoachView } from "../services/device-view.js";
 import { addStatedMemory, STATED_KINDS, statedBodyOf } from "../services/coach-memory.js";
-import { sharingOf } from "../services/device-sharing.js";
+import { toldRefusal } from "../services/device-sharing.js";
 
 /**
  * The coach's HTTP surface (Plan A Tasks A7+A9). Proposals are STATE with a
@@ -818,26 +818,29 @@ coachRoutes.patch("/memory/:id", async (c) => {
 });
 
 /**
- * *Tell your training coach* (R1, 3c; DESIGN-3 §3.7, pair 24): `{kind: note | fact | rule, body, clientId}` → `{ok, item}`
+ * *Tell your training coach* (R1, 3c; DESIGN-3 §3.7, pair 24): `{kind: note | fact | rule, body, clientId, consent}` → `{ok, item}`
  * (201; 200 for a resend or the same words already kept) — the exact sentence LifeOS showed the owner, sent on their tap,
  * kept as `stated` with provenance `lifeos` (coach-memory.ts `addStatedMemory`). The phone's own (403 `device_only` for a
- * cookie), and only with switch A on (409 `sharing_off`): it is words from LifeOS's side. 400 `bad_request` for one that
+ * cookie), and only with switch A on under the words the owner accepted (`consent`, the stored version: else 409
+ * `sharing_off`): it is words from LifeOS's side. 400 `bad_request` for one that
  * isn't one line of at most 140 characters. Undone by `DELETE /memory/:id`.
  */
 coachRoutes.post("/memory", async (c) => {
   const device = c.get("device");
   if (!device) return c.json({ error: "device_only" }, 403);
-  const raw = (await c.req.json().catch(() => null)) as { kind?: unknown; body?: unknown; clientId?: unknown } | null;
+  const raw = (await c.req.json().catch(() => null)) as { kind?: unknown; body?: unknown; clientId?: unknown; consent?: unknown } | null;
   const body = statedBodyOf(raw?.body);
   const kind = raw?.kind;
   const clientId = raw?.clientId;
-  if (!raw || !body || !(STATED_KINDS as readonly unknown[]).includes(kind) || typeof clientId !== "string" || clientId.length < 1 || clientId.length > 100) {
+  const consent = raw?.consent;
+  if (!raw || !body || !(STATED_KINDS as readonly unknown[]).includes(kind) || typeof clientId !== "string" || clientId.length < 1 || clientId.length > 100 || typeof consent !== "string") {
     return c.json({ error: "bad_request" }, 400);
   }
   const db = c.get("db");
   const userId = c.get("userId");
-  const sharing = await sharingOf(db, userId, device.id);
-  if (!sharing.toTraining) return c.json({ error: "sharing_off", why: "Telling your training coach from LifeOS is off on this phone." }, 409);
+  // Held to switch A and the very words the owner accepted, as a frame is (review A MINOR-3).
+  const refused = await toldRefusal(db, userId, device.id, consent);
+  if (refused) return c.json(refused, 409);
   const prefs = await loadPreferences(db, userId);
   const told = await addStatedMemory(db, userId, { kind: kind as (typeof STATED_KINDS)[number], body, clientId, deviceId: device.id }, nowInstant(), todayInZone(prefs.timezone), addDays);
   return c.json({ ok: true, item: told.item, ...(told.repeated ? { repeated: true } : {}), ...(told.existing ? { existing: true } : {}) }, told.repeated || told.existing ? 200 : 201);

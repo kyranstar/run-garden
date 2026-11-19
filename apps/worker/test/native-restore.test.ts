@@ -202,7 +202,8 @@ const OPEN_BEFORE = [
   "PUT /api/sync/read-now",
 ];
 /** Open while restoring since this change: they write only `native_devices`. */
-const OPEN_NOW = ["POST /api/native/devices/:id/revoke", "POST /api/native/devices/revoke-all", "POST /api/native/sign-out"];
+// R1 review A NIT 3: switch A turned off lands while restoring (the route holds a turn on to the restore: 423).
+const OPEN_NOW = ["POST /api/native/devices/:id/revoke", "POST /api/native/devices/revoke-all", "POST /api/native/sign-out", "PUT /api/native/sharing"];
 
 describe("every other cookie write keeps its restore answer", () => {
   let env: Env;
@@ -233,7 +234,7 @@ describe("every other cookie write keeps its restore answer", () => {
   });
   afterAll(() => vi.unstubAllGlobals());
 
-  it("the writes open while restoring are the ones before, and the three native ones", async () => {
+  it("the writes open while restoring are the ones before, and the four native ones", async () => {
     const mounted = [...new Set(mountedRoutes().map((r) => `${r.method} ${r.path}`))];
     const paths = [...new Set(mounted.map((k) => k.split(" ")[1]!))];
     const open: string[] = [];

@@ -15,7 +15,7 @@
 import { and, eq } from "drizzle-orm";
 import { auditEvents, nativeDeviceSharing } from "@rg/database";
 import { newId } from "@rg/domain";
-import { runAtomically, type Db } from "./db.js";
+import { runAtomicallyRowsAt, type Db } from "./db.js";
 
 export const SHARING_SET_KIND = "native_device_sharing_set";
 
@@ -36,16 +36,22 @@ export async function sharingOf(db: Db, userId: string, deviceId: string): Promi
   return row ? { toTraining: Boolean(row.toTraining), disclosureVersion: row.disclosureVersion, setAt: row.setAt } : { toTraining: false, disclosureVersion: null, setAt: null };
 }
 
-/** The phone's choice, stored with its words' version, and audited in the same batch. */
+/** The phone's choice, stored with its words' version, and audited in the same batch: answered as stored (review A NIT 6). */
 export async function setSharing(db: Db, userId: string, deviceId: string, choice: { toTraining: boolean; disclosureVersion: string }, now: string): Promise<SharingState> {
-  await runAtomically(db, [
-    db
-      .insert(nativeDeviceSharing)
-      .values({ deviceId, userId, toTraining: choice.toTraining, disclosureVersion: choice.disclosureVersion, setAt: now })
-      .onConflictDoUpdate({ target: nativeDeviceSharing.deviceId, set: { toTraining: choice.toTraining, disclosureVersion: choice.disclosureVersion, setAt: now } }),
-    db.insert(auditEvents).values({ id: newId(), userId, kind: SHARING_SET_KIND, detail: { deviceId, toTraining: choice.toTraining, disclosureVersion: choice.disclosureVersion }, createdAt: now }),
-  ]);
-  return { toTraining: choice.toTraining, disclosureVersion: choice.disclosureVersion, setAt: now };
+  const [row] = await runAtomicallyRowsAt<typeof nativeDeviceSharing.$inferSelect>(
+    db,
+    [
+      db
+        .insert(nativeDeviceSharing)
+        .values({ deviceId, userId, toTraining: choice.toTraining, disclosureVersion: choice.disclosureVersion, setAt: now })
+        .onConflictDoUpdate({ target: nativeDeviceSharing.deviceId, set: { toTraining: choice.toTraining, disclosureVersion: choice.disclosureVersion, setAt: now } })
+        .returning(),
+      db.insert(auditEvents).values({ id: newId(), userId, kind: SHARING_SET_KIND, detail: { deviceId, toTraining: choice.toTraining, disclosureVersion: choice.disclosureVersion }, createdAt: now }),
+    ],
+    0,
+  );
+  if (!row) throw new Error("sharing_not_stored");
+  return { toTraining: Boolean(row.toTraining), disclosureVersion: row.disclosureVersion, setAt: row.setAt };
 }
 
 /**
@@ -54,8 +60,16 @@ export async function setSharing(db: Db, userId: string, deviceId: string, choic
  */
 export async function frameRefusal(db: Db, userId: string, deviceId: string | undefined, consent: string): Promise<null | { error: "sharing_off"; why: string }> {
   if (!deviceId) return { error: "sharing_off", why: "Only a paired phone can share your day, and only once you turn that on there." };
-  const s = await sharingOf(db, userId, deviceId);
-  if (!s.toTraining) return { error: "sharing_off", why: "Sharing your day with your training coach is off on this phone." };
+  return refusalUnder(await sharingOf(db, userId, deviceId), consent, "Sharing your day with your training coach is off on this phone.");
+}
+
+/** Why a told note can't go (review A MINOR-3), or null when it can: held to switch A and its words' version, as a frame is. */
+export async function toldRefusal(db: Db, userId: string, deviceId: string, consent: string): Promise<null | { error: "sharing_off"; why: string }> {
+  return refusalUnder(await sharingOf(db, userId, deviceId), consent, "Telling your training coach from LifeOS is off on this phone.");
+}
+
+function refusalUnder(s: SharingState, consent: string, off: string): null | { error: "sharing_off"; why: string } {
+  if (!s.toTraining) return { error: "sharing_off", why: off };
   if (s.disclosureVersion !== consent) return { error: "sharing_off", why: "What this phone shares has changed since you turned it on: look at it again on the phone." };
   return null;
 }

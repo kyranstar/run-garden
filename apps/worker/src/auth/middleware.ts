@@ -66,6 +66,8 @@ const OPEN_WHILE_RESTORING = [
   /^\/api\/(coros|sync)\/read-now$/,
   /^\/api\/native\/devices\/(revoke-all|[^/]+\/revoke)$/,
   /^\/api\/native\/sign-out$/,
+  // Switch A turned OFF always lands (review A NIT 3), as a revoke does: the route itself holds a turn ON to the restore.
+  /^\/api\/native\/sharing$/,
 ];
 const MUTATING = new Set(["POST", "PUT", "PATCH", "DELETE"]);
 

@@ -42,7 +42,7 @@ const items = () => w.db.select().from(coachMemory);
 
 describe("POST /api/coach/memory", () => {
   it("the phone's own, and only with switch A on", async () => {
-    const said = { kind: "rule", body: "Mornings work better on busy days.", clientId: "c-1" };
+    const said = { kind: "rule", body: "Mornings work better on busy days.", clientId: "c-1", consent: "1" };
     expect((await tell(said, null)).json).toEqual({ error: "device_only" });
     const off = await tell(said);
     expect([off.status, off.json.error]).toEqual([409, "sharing_off"]);
@@ -51,15 +51,15 @@ describe("POST /api/coach/memory", () => {
 
   it("kept stated, from LifeOS, with the phone; a resend is the same item; the same words already kept are answered as they are", async () => {
     await on();
-    const a = await tell({ kind: "rule", body: "Mornings work better on busy days.", clientId: "c-1" });
+    const a = await tell({ kind: "rule", body: "Mornings work better on busy days.", clientId: "c-1", consent: "1" });
     expect(a.status, a.text).toBe(201);
     // The phone reads the item as its own DTO (review A MINOR-1): never the account's id or the ids in its provenance.
     expect(a.json.item).toEqual({ id: expect.any(String), kind: "rule", body: "Mornings work better on busy days.", confidence: "stated", pinned: false, expiresAt: null, learnedAt: nowInstant(), source: "lifeos" });
     const [row] = await w.db.select().from(coachMemory).where(eq(coachMemory.id, a.json.item.id));
     expect([row!.active, row!.provenance]).toEqual([true, { source: "lifeos", deviceId: v5.id, at: nowInstant() }]);
-    const again = await tell({ kind: "rule", body: "Mornings work better on busy days.", clientId: "c-1" });
+    const again = await tell({ kind: "rule", body: "Mornings work better on busy days.", clientId: "c-1", consent: "1" });
     expect([again.status, again.json.repeated, again.json.item.id]).toEqual([200, true, a.json.item.id]);
-    const same = await tell({ kind: "rule", body: "  mornings work better   on busy days. ", clientId: "c-2" });
+    const same = await tell({ kind: "rule", body: "  mornings work better   on busy days. ", clientId: "c-2", consent: "1" });
     expect([same.status, same.json.existing, same.json.item.id]).toEqual([200, true, a.json.item.id]);
     expect(await items()).toHaveLength(1);
   });
@@ -67,23 +67,23 @@ describe("POST /api/coach/memory", () => {
   it("one line of at most 140 characters, of kind note, fact or rule; a note lasts 30 days", async () => {
     await on();
     for (const body of [
-      { kind: "rule", body: "x".repeat(141), clientId: "c" },
-      { kind: "rule", body: "two\nlines", clientId: "c" },
-      { kind: "rule", body: "   ", clientId: "c" },
-      { kind: "observation", body: "Clenches on heavy days.", clientId: "c" },
+      { kind: "rule", body: "x".repeat(141), clientId: "c", consent: "1" },
+      { kind: "rule", body: "two\nlines", clientId: "c", consent: "1" },
+      { kind: "rule", body: "   ", clientId: "c", consent: "1" },
+      { kind: "observation", body: "Clenches on heavy days.", clientId: "c", consent: "1" },
     ]) {
       expect([JSON.stringify(body), (await tell(body)).json]).toEqual([JSON.stringify(body), { error: "bad_request" }]);
     }
-    expect((await tell({ kind: "rule", body: "x", clientId: "c", extra: 1 })).json).toEqual({ error: "out_of_scope" });
-    const note = await tell({ kind: "note", body: "Travelling until Sunday.", clientId: "c-note" });
+    expect((await tell({ kind: "rule", body: "x", clientId: "c", consent: "1", extra: 1 })).json).toEqual({ error: "out_of_scope" });
+    const note = await tell({ kind: "note", body: "Travelling until Sunday.", clientId: "c-note", consent: "1" });
     expect(note.json.item.expiresAt).toBe(addDays(T, 30));
-    expect((await tell({ kind: "fact", body: "y".repeat(140), clientId: "c-max" })).status).toBe(201);
+    expect((await tell({ kind: "fact", body: "y".repeat(140), clientId: "c-max", consent: "1" })).status).toBe(201);
   });
 
   it("never supersedes what the owner confirmed; DELETE takes a told item back", async () => {
     await on();
     await w.db.insert(coachMemory).values({ id: "m-confirmed", userId: w.userId, kind: "rule", body: "Evenings only on weekdays.", provenance: { source: "athlete_words", runId: "r", role: "main", at: nowInstant() } as never, learnedAt: nowInstant(), expiresAt: null, active: true, pinned: true, confidence: "confirmed", supersededBy: null, evidence: null, updatedAt: nowInstant() });
-    const a = await tell({ kind: "rule", body: "Mornings work better on busy days.", clientId: "c-3" });
+    const a = await tell({ kind: "rule", body: "Mornings work better on busy days.", clientId: "c-3", consent: "1" });
     const [kept] = await w.db.select().from(coachMemory).where(eq(coachMemory.id, "m-confirmed"));
     expect([kept!.supersededBy, kept!.active, kept!.confidence]).toEqual([null, true, "confirmed"]);
     expect((await w.call("DELETE", `/api/coach/memory/${a.json.item.id}`, { bearer: v5.token })).json).toEqual({ ok: true });

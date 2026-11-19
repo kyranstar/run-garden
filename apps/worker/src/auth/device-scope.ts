@@ -329,11 +329,14 @@ export const deviceTakeBackBody: BodyRule = (raw) => {
 
 /** Switch A from the phone (Settings → Coach → *Your day and your training*): exactly `{toTraining, disclosureVersion}` —
  * on or off, and the version of the words the owner was shown when they chose. */
+/** The version of the words the owner accepted on the phone (switch A's `disclosureVersion`, a frame's or a told note's `consent`). */
+const CONSENT = /^[A-Za-z0-9._-]{1,40}$/;
+
 export const deviceSharingBody: BodyRule = (raw) => {
   const p = parsed(raw);
   if (!p.ok || !isPlainObject(p.value) || !keysAre(p.value, ["toTraining", "disclosureVersion"])) return false;
   const { toTraining, disclosureVersion } = p.value;
-  return typeof toTraining === "boolean" && typeof disclosureVersion === "string" && /^[A-Za-z0-9._-]{1,40}$/.test(disclosureVersion);
+  return typeof toTraining === "boolean" && typeof disclosureVersion === "string" && CONSENT.test(disclosureVersion);
 };
 
 /**
@@ -393,7 +396,14 @@ export const deviceMemoryPatchBody: BodyRule = (raw) => {
  * of at most 140 characters and the kind to note, fact or rule. */
 export const deviceMemoryBody: BodyRule = (raw) => {
   const p = parsed(raw);
-  return p.ok && isPlainObject(p.value) && keysAre(p.value, ["kind", "body", "clientId"]) && isIdText(p.value.clientId, 100);
+  return (
+    p.ok &&
+    isPlainObject(p.value) &&
+    keysAre(p.value, ["kind", "body", "clientId", "consent"]) &&
+    isIdText(p.value.clientId, 100) &&
+    typeof p.value.consent === "string" &&
+    CONSENT.test(p.value.consent)
+  );
 };
 
 /** One path segment, as Hono's `:param` matches one. */

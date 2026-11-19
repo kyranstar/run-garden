@@ -166,7 +166,7 @@ const PROBE_BODIES: Record<string, string> = {
   "POST /api/native/templates/:id/place": JSON.stringify({ date: "2026-11-20", clientId: "probe-place" }),
   "POST /api/native/take-back": JSON.stringify({ receiptIds: ["probe-receipt"], requestId: "probe-request" }),
   "PUT /api/native/sharing": JSON.stringify({ toTraining: false, disclosureVersion: "probe" }),
-  "POST /api/coach/memory": JSON.stringify({ kind: "rule", body: "Probe.", clientId: "probe-memory" }),
+  "POST /api/coach/memory": JSON.stringify({ kind: "rule", body: "Probe.", clientId: "probe-memory", consent: "probe-1" }),
 };
 /**
  * A probe's query where a pair's query rule refuses none (DESIGN-2c §2.5): `/days` takes exactly `from` and `to` (the route

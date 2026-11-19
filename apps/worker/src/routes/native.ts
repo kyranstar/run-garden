@@ -393,6 +393,8 @@ nativeRoutes.put("/sharing", requireUser, async (c) => {
   const raw = await c.req.text();
   if (!deviceSharingBody(raw)) return c.json({ error: "bad_sharing" }, 400);
   const choice = JSON.parse(raw) as { toTraining: boolean; disclosureVersion: string };
+  // Off lands even while a restore replaces the account (it is open then: middleware.ts); on waits for the restore.
+  if (choice.toTraining && (await restoreInProgress(c.get("db"), c.get("userId")))) return c.json({ error: "restore_in_progress" }, 423);
   return c.json(await setSharing(c.get("db"), c.get("userId"), device.id, choice, nowInstant()));
 });
 

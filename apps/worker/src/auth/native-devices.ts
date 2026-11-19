@@ -3,7 +3,7 @@
  * web holds a device token, `rgd_` and 32 random bytes, in its Keychain. The Worker keeps only the token's SHA-256
  * (`native_devices.id`), and the pairing code only as an HMAC (`native_pairings`).
  */
-import { and, asc, eq, gt, isNull, like, lt, ne, or, sql, type SQL } from "drizzle-orm";
+import { and, asc, eq, gt, isNull, like, lt, ne, notExists, or, sql, type SQL } from "drizzle-orm";
 import { auditEvents, nativeDevices, nativeDeviceSharing, nativePairings, nativePairLimits, users } from "@rg/database";
 import { newId, nowInstant } from "@rg/domain";
 import type { Env } from "../env.js";
@@ -688,7 +688,11 @@ export async function revokeDevice(db: Db, userId: string, id: string, now: stri
     .set({ state: "revoked", revokedAt: now, revokedReason: reason })
     .where(and(eq(nativeDevices.id, id), eq(nativeDevices.userId, userId), ne(nativeDevices.state, "revoked")))
     .returning({ id: nativeDevices.id });
-  if (done) return true;
+  if (done) {
+    // Its switch A goes with it (review A NIT 4): a revoked phone never signs in again, and its consent is not kept.
+    await db.delete(nativeDeviceSharing).where(and(eq(nativeDeviceSharing.deviceId, id), eq(nativeDeviceSharing.userId, userId)));
+    return true;
+  }
   const [row] = await db.select({ id: nativeDevices.id }).from(nativeDevices).where(and(eq(nativeDevices.id, id), eq(nativeDevices.userId, userId)));
   return row ? false : null;
 }
@@ -700,6 +704,8 @@ export async function revokeAllDevices(db: Db, userId: string, now: string): Pro
     .set({ state: "revoked", revokedAt: now, revokedReason: "owner_all" })
     .where(and(eq(nativeDevices.userId, userId), ne(nativeDevices.state, "revoked")))
     .returning({ id: nativeDevices.id });
+  // Their switches A go with them (review A NIT 4).
+  if (done.length > 0) await db.delete(nativeDeviceSharing).where(eq(nativeDeviceSharing.userId, userId));
   return done.length;
 }
 
@@ -772,6 +778,8 @@ export async function touchDevice(db: Db, device: Pick<ResolvedDevice, "id" | "l
 export async function purgeExpiredNativeRows(db: Db): Promise<void> {
   const now = nowInstant();
   await db.delete(nativeDevices).where(lt(nativeDevices.expiresAt, now));
+  // A switch A whose phone is gone goes too (review A NIT 4).
+  await db.delete(nativeDeviceSharing).where(notExists(db.select({ id: nativeDevices.id }).from(nativeDevices).where(eq(nativeDevices.id, nativeDeviceSharing.deviceId))));
   await db.delete(nativePairings).where(lt(nativePairings.expiresAt, now));
   await db.delete(nativePairLimits).where(lt(nativePairLimits.expiresAt, now));
 }
