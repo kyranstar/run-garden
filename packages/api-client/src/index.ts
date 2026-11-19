@@ -3219,6 +3219,12 @@ export const api = {
    */
   nativeReduce: (id: string, scope: string) =>
     post<{ ok: true; scope: string; reduced: boolean }>(`/api/native/devices/${encodeURIComponent(id)}/reduce`, { scope }),
+  /**
+   * Renew an active phone: its expiry set to 30 days from the server's acceptance, in place (its scope, token and saves
+   * kept). A repeat within a few minutes is `renewed: false`, with the expiry as it stands (never moved back). 409
+   * `device_revoked`, `device_expired`, `device_pending`; 404 while device sign-in is off or for a phone that isn't paired.
+   */
+  nativeRenew: (id: string) => post<{ ok: true; expiresAt: string; renewed: boolean }>(`/api/native/devices/${encodeURIComponent(id)}/renew`, {}),
   nativeRevokeAll: () => post<{ ok: true; revoked: number }>("/api/native/devices/revoke-all", {}),
   /** Settings → Developer → LifeOS QA: the QA account as it stands (404 for anyone but the owner). */
   qaStatus: () => get<QaStatusDto>("/api/qa/status"),

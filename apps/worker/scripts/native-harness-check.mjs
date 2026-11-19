@@ -391,6 +391,39 @@ check("2c: the laptop steps the phone down, v4 → v3: 200 reduced", (await redu
 check("2c: …and the same token's /days is 403 at once, while its document read still answers", [(await daysAs(token)).json, (await call("GET", `/api/workouts/${fid}/doc`, { bearer: token })).status], [{ error: "out_of_scope" }, 200]);
 check("2c: the laptop grants v4 again: the reads answer again, no tap on the phone", [(await grantAs(phoneId, "training-v4")).json.granted, (await daysAs(token)).status], [true, 200]);
 
+// 4g. Renew on local D1 (LifeOS Q-172, the lead's v0.17/v0.18 rulings): the laptop gives the v4 phone 30 days from the
+// server's acceptance, in place — its token, account, label, state and scope kept — with one audit; again at once, nothing;
+// three renews at once on workerd, one lands; the phone's own token can't renew itself; no read renews; and its /me says the
+// new expiry at the same scope.
+const renewAs = (rid) => call("POST", `/api/native/devices/${rid}/renew`, { cookie: true, body: {} });
+const renewAudits = () => sql("select count(*) as n from audit_events where kind = 'native_device_renewed'")[0].n;
+// Five days from its expiry, as a phone inside the 7-day warning is (its row written so on the local D1): a phone confirmed
+// minutes ago already holds its 30 days, and a renew then is the same renew (`renewed: false`).
+sql(`update native_devices set expires_at = '${new Date(Date.now() + 5 * 86_400_000).toISOString()}' where id = '${phoneId}'`);
+const beforeRenew = deviceRowOf(phoneId);
+const renewAuditsBefore = renewAudits();
+check("renew: the phone's own token can't renew itself: 403 out_of_scope, its row unchanged", [(await call("POST", `/api/native/devices/${phoneId}/renew`, { bearer: token, body: {} })).json, deviceRowOf(phoneId)], [{ error: "out_of_scope" }, beforeRenew]);
+check("renew: …nor does any read: /days leaves the expiry where it was", [(await daysAs(token)).status, deviceRowOf(phoneId).expires_at], [200, beforeRenew.expires_at]);
+const renewSent = Date.now();
+const renewed = await renewAs(phoneId);
+const renewBack = Date.now();
+const renewedAt = Date.parse(renewed.json.expiresAt ?? "");
+check("renew: the laptop renews the phone: 200 renewed", [renewed.status, renewed.json.ok, renewed.json.renewed], [200, true, true]);
+check("renew: …to 30 days from the server's acceptance", renewedAt >= renewSent + 30 * 86_400_000 - 1000 && renewedAt <= renewBack + 30 * 86_400_000 + 1000, true);
+check("renew: …its row the same but its expiry (token, account, label, state, scope), with one audit", [deviceRowOf(phoneId), renewAudits() - renewAuditsBefore], [{ ...beforeRenew, expires_at: renewed.json.expiresAt }, 1]);
+check("renew: the same renew again: 200 renewed false, the same expiry, no second audit", [(await renewAs(phoneId)).json, renewAudits() - renewAuditsBefore], [{ ok: true, expiresAt: renewed.json.expiresAt, renewed: false }, 1]);
+check("renew: the phone's /me says the new expiry, at v4 still", [(await call("GET", "/api/native/me", { bearer: token })).json.device?.expiresAt, (await call("GET", "/api/native/me", { bearer: token })).json.device?.scope], [renewed.json.expiresAt, "training-v4"]);
+const renewRaceToken = `rgd_${createHash("sha256").update(`harness-renew-race-${Date.now()}`).digest("base64url")}`;
+const renewRaceId = createHash("sha256").update(renewRaceToken).digest("hex");
+sql(
+  `insert into native_devices (id, user_id, scope, label, state, check_number, created_at, expires_at, confirmed_at, check_tries) values ` +
+    `('${renewRaceId}', '${me.json.userId}', 'training-v4', 'Harness renew race phone', 'active', '0000', '${at}', '${new Date(Date.now() + 5 * 86_400_000).toISOString()}', '${at}', 0)`,
+);
+const renewRaceAudits = renewAudits();
+const renews = await Promise.all([renewAs(renewRaceId), renewAs(renewRaceId), renewAs(renewRaceId)]);
+check("renew: three at once on local D1: one renewed, two not, one audit", [renews.map((a) => `${a.status} ${a.json.renewed}`).sort(), renewAudits() - renewRaceAudits], [["200 false", "200 false", "200 true"], 1]);
+check("renew: …all three answer the one expiry", new Set(renews.map((a) => a.json.expiresAt)).size, 1);
+
 // 4e. The LifeOS QA account on local D1 (the phone QA harness, routes/qa.ts): the laptop sets it up (account, fixtures, a code
 // and the run's tokens); a phone pairs to it, active at once, and does what the on-device suite does; the harness token reads
 // the state and purges; then EVERY table of the real local D1 that has a user_id column, and every child of the QA account's
@@ -564,6 +597,7 @@ check("a sixth code in the window: 429 too_many_codes, retryAfter 600", [sixth.s
 check("Revoke all", (await call("POST", "/api/native/devices/revoke-all", { cookie: true, body: {} })).json.ok, true);
 check("revoked: 401 device_revoked", (await call("GET", "/api/native/me", { bearer: token })).json, { error: "device_revoked" });
 check("…and a grant never brings a revoked phone back: 409 device_revoked", [(await grantAs(raceId, "training-v3")).json, deviceRowOf(raceId).state], [{ error: "device_revoked" }, "revoked"]);
+check("…nor does a renew: 409 device_revoked, its expiry unchanged", [(await renewAs(renewRaceId)).json, deviceRowOf(renewRaceId).state, deviceRowOf(renewRaceId).expires_at === renews[0].json.expiresAt], [{ error: "device_revoked" }, "revoked", true]);
 
 console.log(`\n${passed} passed, ${failed.length} failed`);
 if (failed.length) {

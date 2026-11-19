@@ -123,7 +123,11 @@ token above once LifeOS has moved over (stage 2c; the token's section goes at cl
 - **Its own named consent.** v4 is a scope of its own, never a widened one: the laptop grants it in place to a v3 phone
   (Settings → Devices, *Allow reading your plan and history*, whose line says what it reads and never reads) and steps
   it back to v3 in place; new pairings mint it. Revoke and the kill switch (`NATIVE_DEVICES`) stop it as every device.
-  Neither the grant, the step-down nor any read moves the device's 30-day expiry.
+  Neither the grant, the step-down nor any read moves the device's 30-day expiry: only the laptop's **Renew** does
+  (`POST /api/native/devices/:id/renew`, Settings → Devices, offered from 7 days out), which sets it to 30 days from the
+  server's acceptance — cookie only (a device token never renews itself), for an active, unexpired device of the account,
+  audited (`native_device_renewed`), idempotent within 10 minutes, never moving it back, and changing nothing else. 404
+  while the kill switch is off. Nothing renews in the background.
 - **Bounded, by shape at the gate and by value in the route.** Each pair holds a query rule (exact keys, each once, each
   in its grammar; anything else is 403 `out_of_scope` before the route): `/days?from&to`, at most 14 days within
   today − 90 … today + 14 on the account's clock; `/history?before&limit`, pages of whole days until they reach `limit`

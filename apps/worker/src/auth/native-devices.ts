@@ -14,7 +14,8 @@ import { QA_EMAIL, qaPossible } from "./qa-identity.js";
 
 /**
  * OWNER'S CHOICE, open (SLICE-CONTRACT §9 question 1): how long a confirmed device works before the owner re-pairs it
- * from the laptop. The default, 30 days, as a browser session (`sessions.ts`); warned 7 days ahead.
+ * from the laptop. The default, 30 days, as a browser session (`sessions.ts`); warned 7 days ahead. The laptop's Renew
+ * (`renewDevice`) sets the same 30 days again, from the moment it is accepted.
  */
 export const NATIVE_DEVICE_LIFETIME_DAYS = 30;
 export const NATIVE_DEVICE_WARN_DAYS = 7;
@@ -456,7 +457,7 @@ export interface DeviceListItem {
   confirmedAt: string | null;
   lastUsedAt: string | null;
   expiresAt: string;
-  /** Active and expiring within NATIVE_DEVICE_WARN_DAYS: re-pair soon. */
+  /** Active and expiring within NATIVE_DEVICE_WARN_DAYS: renew it (or re-pair) soon. */
   expiresSoon: boolean;
   /** What it may reach, as stored (device-scope.ts), so the laptop says what it can do. */
   scope: string;
@@ -596,6 +597,60 @@ export async function reduceScope(db: Db, userId: string, id: string, to: string
   if (r.ok) return { ok: true, scope: r.scope, reduced: r.changed };
   if (r.error === "not_one_step") return { ok: false, error: "not_previous_scope", scope: r.scope, previous: r.toward };
   return r;
+}
+
+/** The audit a renew writes: which device, and its expiry from and to. */
+export const DEVICE_RENEWED_KIND = "native_device_renewed";
+
+/**
+ * A renew this soon after the last is the same renew (a double click, a resend, a second tab): it answers `renewed: false`
+ * and writes nothing. Put as the stored expiry: one within this of what a renew accepted now would set is kept.
+ */
+export const RENEW_REPEAT_MS = 10 * 60_000;
+
+export type RenewOutcome = { ok: true; expiresAt: string; renewed: boolean } | StateRefusal;
+
+/**
+ * THE LAPTOP'S RENEW OF A PAIRED PHONE (LifeOS Q-172, as the lead's v0.17/v0.18 rulings amend it): one ACTIVE, unexpired
+ * device of the account given `NATIVE_DEVICE_LIFETIME_DAYS` (the pairing's own 30) from the server's acceptance — never
+ * +30 on the old expiry. Explicit (the owner's click, cookie only: a device token never reaches it) and idempotent: an
+ * expiry already within RENEW_REPEAT_MS of the new one, or past it, is kept — `renewed: false`, nothing written — so a
+ * double click is one renew and the expiry never moves backwards.
+ *
+ * WHAT IT KEEPS: every column but `expires_at` — the row's id (its token's hash, so the token works unchanged), account,
+ * label, state, scope, confirmation, last use and tries. It never re-enables anything: a revoked, expired or pending
+ * device is refused, and the switch (`NATIVE_DEVICES`) is the route's. Nothing renews by itself: no device request, read,
+ * grant or step-down calls this (the lead's v0.17 ruling: no background renewal).
+ *
+ * ONE TRANSACTION, decided in it, as `stepScope`: the audit (`DEVICE_RENEWED_KIND`, `{deviceId, label, from, to}`) and the
+ * new expiry are written only while the row is still the account's, active, unexpired and at the expiry read — so a renew
+ * lands with its one audit or not at all, and two at once land once. A miss is decided again from the row as it now stands.
+ */
+export async function renewDevice(db: Db, userId: string, id: string, now: string): Promise<RenewOutcome> {
+  const d = nativeDevices;
+  const to = at(now, NATIVE_DEVICE_LIFETIME_DAYS * DAY_MS);
+  const keptFrom = at(to, -RENEW_REPEAT_MS);
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const [row] = await db
+      .select({ state: d.state, expiresAt: d.expiresAt, label: d.label })
+      .from(d)
+      .where(and(eq(d.id, id), eq(d.userId, userId)))
+      .limit(1);
+    if (!row) return { ok: false, error: "not_found" };
+    if (row.state === "revoked") return { ok: false, error: "device_revoked" };
+    if (row.expiresAt <= now) return { ok: false, error: "device_expired" };
+    if (row.state !== "active") return { ok: false, error: "device_pending" };
+    if (row.expiresAt >= keptFrom) return { ok: true, expiresAt: row.expiresAt, renewed: false };
+    const still = and(eq(d.id, id), eq(d.userId, userId), eq(d.state, "active"), gt(d.expiresAt, now), eq(d.expiresAt, row.expiresAt), lt(d.expiresAt, keptFrom));
+    const detail = JSON.stringify({ deviceId: id, label: row.label, from: row.expiresAt, to });
+    const claimed = await runAtomicallyClaim(db, [
+      db.insert(auditEvents).select(sql`SELECT ${newId()}, ${userId}, ${DEVICE_RENEWED_KIND}, ${detail}, ${now} WHERE EXISTS (SELECT 1 FROM ${d} WHERE ${still})`),
+      db.update(d).set({ expiresAt: to }).where(still).returning({ id: d.id }),
+    ]);
+    if (claimed > 0) return { ok: true, expiresAt: to, renewed: true };
+  }
+  // The row kept changing under the renew: nothing was changed, and the laptop's list will say what it is now.
+  throw new Error("renew_contended");
 }
 
 /** Why a device was revoked. `check_failed` is set by `confirmDevice` itself, in the statement that counts the try. */

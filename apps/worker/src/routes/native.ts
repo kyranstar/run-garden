@@ -17,6 +17,11 @@
  *                                   device's state, or `not_previous_scope` {scope, previous} (v2 → v1 among them:
  *                                   Revoke stops plan edits); 400 `invalid_reduce`; 404 as the grant. It answers while
  *                                   device sign-in is off, as Revoke does
+ *   POST /devices/:id/renew         no body, or {} → that ACTIVE, unexpired device's expiry set to 30 days from now (LifeOS
+ *                                   Q-172, the lead's v0.17/v0.18 rulings): {ok, expiresAt, renewed} — `renewed: false`, nothing
+ *                                   written, when its expiry is already within 10 minutes of that or past it (a double click; the
+ *                                   expiry never moves back); 409 `device_revoked`, `device_expired`, `device_pending`; 400
+ *                                   `invalid_renew`; 404 for a device that isn't the account's. Scope, token and state are kept
  *   POST /devices/revoke-all        every device of the account revoked (the instant kill)
  *
  * The phone:
@@ -34,7 +39,7 @@
  *                                   The three write nothing, answer `no-store`, and 503 `restore_in_progress` (retryable)
  *                                   while a restore replaces the account. The cookie reads them too
  *
- * The kill switch (`NATIVE_DEVICES`, a secret): unless it is "1", minting, redeeming, confirming and granting are 404 —
+ * The kill switch (`NATIVE_DEVICES`, a secret): unless it is "1", minting, redeeming, confirming, granting and renewing are 404 —
  * the device list, revocation and the step-down answer either way, so the owner can always see, narrow and stop a device,
  * and nothing widens one while device sign-in is off.
  *
@@ -55,7 +60,7 @@ import { corosReadAt, deviceDays, matchesOfRows, readExtraActivities, readPlanRo
 import { DocTooLargeRefusal, NoDocumentError, NotAheadError, previewAhead, SessionNotFoundError } from "../services/session-build.js";
 import type { AppContext } from "../auth/middleware.js";
 import { requireUser } from "../auth/middleware.js";
-import { PAIRING_SCOPE } from "../auth/device-scope.js";
+import { emptyBody, PAIRING_SCOPE } from "../auth/device-scope.js";
 import {
   confirmDevice,
   grantNextScope,
@@ -64,6 +69,7 @@ import {
   mintPairing,
   redeemPairing,
   reduceScope,
+  renewDevice,
   revokeAllDevices,
   revokeDevice,
 } from "../auth/native-devices.js";
@@ -160,6 +166,20 @@ nativeRoutes.post("/devices/:id/reduce", requireUser, cookieOnly, async (c) => {
   if (outcome.ok) return c.json({ ok: true, scope: outcome.scope, reduced: outcome.reduced });
   if (outcome.error === "not_found") return c.json({ error: "not_found" }, 404);
   if (outcome.error === "not_previous_scope") return c.json({ error: outcome.error, scope: outcome.scope, previous: outcome.previous }, 409);
+  return c.json({ error: outcome.error }, 409);
+});
+
+/**
+ * The laptop's Renew (LifeOS Q-172, amended by the lead's v0.17/v0.18 rulings): Settings → Devices gives one active,
+ * unexpired phone of the account 30 days from now, in place (auth/native-devices.ts `renewDevice`). It names nothing — no
+ * body, or `{}` — so a resend or a double click is the same renew. Cookie only (a device token never renews itself), and
+ * only while device sign-in is on: like the grant, it keeps a phone working, so nothing renews one while the switch is off.
+ */
+nativeRoutes.post("/devices/:id/renew", pairingOn, requireUser, cookieOnly, async (c) => {
+  if (!emptyBody(await c.req.text())) return c.json({ error: "invalid_renew" }, 400);
+  const outcome = await renewDevice(c.get("db"), c.get("userId"), c.req.param("id"), nowInstant());
+  if (outcome.ok) return c.json({ ok: true, expiresAt: outcome.expiresAt, renewed: outcome.renewed });
+  if (outcome.error === "not_found") return c.json({ error: "not_found" }, 404);
   return c.json({ error: outcome.error }, 409);
 });
 
