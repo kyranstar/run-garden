@@ -103,6 +103,8 @@ async function sessionsOfActivities(db: Db, userId: string, activityIds: readonl
             localDate: performedSessions.localDate,
             mode: performedSessions.mode,
             theme: performedSessions.theme,
+            buildId: performedSessions.buildId,
+            note: performedSessions.note,
             movesDone: performedSessions.movesDone,
             createdAt: performedSessions.createdAt,
           })
@@ -185,6 +187,53 @@ export async function loggedSetsByActivity(
   const chosen = await sessionsOfActivities(db, userId, activityIds);
   const activityBySession = new Map([...chosen.values()].map((s) => [s.id, s.activityId!]));
   return setsOfSessions(db, userId, activityBySession, unit, () => false);
+}
+
+/** What the phone's History reads of an activity's performed session (DESIGN-2c §2.2). */
+export interface RecordedSession {
+  /** app | watch_review | import | watch, as stored. */
+  source: string;
+  /** The build it was played from, when it names one. */
+  buildId: string | null;
+  /** Every move it reached, logged or not. */
+  movesDone: number;
+  /** The session's own note. */
+  note: string | null;
+  /** Its logged sets (`performedByActivity`'s: the athlete's own record as typed, the watch's copy in `unit`); null for none. */
+  logged: LoggedExerciseDto[] | null;
+}
+
+/**
+ * THE PHONE'S HISTORY OF AN ACTIVITY'S SESSION (DESIGN-2c §2.2): the one session `sessionPerActivity` picks — the athlete's
+ * own record over the watch's copy — with its logged sets exactly as the Activity feed reads them (`performedByActivity`),
+ * the moves it reached, its build and its note. NEVER ITS CHECKS: no `condition_checks` row is read here, so no body-check
+ * reading can reach the phone's History. Two statements (and the account's library when a set names one of the athlete's
+ * own moves); none for no activity.
+ */
+export async function recordedByActivity(
+  db: Db,
+  userId: string,
+  activityIds: readonly string[],
+  unit: WeightUnit,
+): Promise<Map<string, RecordedSession>> {
+  if (activityIds.length === 0) return new Map();
+  const chosen = [...(await sessionsOfActivities(db, userId, activityIds)).values()];
+  if (chosen.length === 0) return new Map();
+  const activityBySession = new Map(chosen.map((s) => [s.id, s.activityId!]));
+  const own = new Set(chosen.filter((s) => s.source !== WATCH_SOURCE).map((s) => s.id));
+  const logged = await setsOfSessions(db, userId, activityBySession, unit, (id) => own.has(id));
+  return new Map(
+    chosen.map((s) => [
+      s.activityId!,
+      {
+        source: s.source,
+        buildId: s.buildId,
+        movesDone: Array.isArray(s.movesDone) ? s.movesDone.length : 0,
+        note: s.note,
+        logged: logged.get(s.activityId!) ?? null,
+      },
+    ]),
+  );
 }
 
 // ── What a session was: the feed's row and expansion (Phase 2d Task 2, mocks §8) ─────────────────────────────
