@@ -114,6 +114,31 @@ sessions, rest days and which sessions were done (`apps/worker/src/routes/lifeos
   limited to a session's id, title, sport, category, time, planned minutes, state and the matched activity's start.
   No health readings, no activities' telemetry, `Cache-Control: no-store`.
 
+## LifeOS reads through its device (`training-v4`)
+
+The paired phone's own credential (native device sign-in) reads the plan and the record behind it, replacing the plan
+token above once LifeOS has moved over (stage 2c; the token's section goes at cleanup). Three GETs in
+`apps/worker/src/routes/native.ts`, on the `training-v4` scope only (`apps/worker/src/auth/device-scope.ts`):
+
+- **Its own named consent.** v4 is a scope of its own, never a widened one: the laptop grants it in place to a v3 phone
+  (Settings → Devices, *Allow reading your plan and history*, whose line says what it reads and never reads) and steps
+  it back to v3 in place; new pairings mint it. Revoke and the kill switch (`NATIVE_DEVICES`) stop it as every device.
+  Neither the grant, the step-down nor any read moves the device's 30-day expiry.
+- **Bounded, by shape at the gate and by value in the route.** Each pair holds a query rule (exact keys, each once, each
+  in its grammar; anything else is 403 `out_of_scope` before the route): `/days?from&to`, at most 14 days within
+  today − 90 … today + 14 on the account's clock; `/history?before&limit`, pages of whole days, at most 30 rows, back
+  one year; `/sessions/:id/ahead`, no query, one session on a later day.
+- **Reads only.** None writes anything — no outline, build or preview stored, no block, check, garden, reconcile, match,
+  provider job, audit or note, no `waitUntil` — beyond the gate's own hourly `last_used_at`. *What's in it* for an engine
+  slot is built in memory and never stored. While a restore replaces the account each answers 503
+  `restore_in_progress` (`retryable: true`), never a half-restored plan.
+- **The account's own, and narrow.** Every row, match, activity and session is held to the device's account (the QA
+  account's phone reads only the QA account). A session carries its title, time, length, state, how it was done, its
+  kind and plan's name; an activity its sport, title in words, local start time, length, distance (runs only) and
+  source; a played session its logged sets, the moves it reached and its note. Never heart rate, pace, laps, elevation,
+  training load, cadence, power, routes or location, telemetry, the watch's feel rating, the device's name, the
+  body-check readings, the garden, coach text, email or connections. `Cache-Control: no-store`.
+
 ## One provider, no third-party egress
 
 COROS is the only external training-data source (README, "Why COROS is the
