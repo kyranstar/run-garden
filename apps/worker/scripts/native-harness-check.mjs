@@ -474,7 +474,7 @@ const placed2 = await call("POST", `/api/native/templates/${tplId}/place`, { bea
 check("R1: a second place, and the laptop moves it", [placed2.status, (await call("POST", `/api/plan/workouts/${placed2.json.workoutId}/move`, { cookie: true, body: { toDate: plusDays(day, 5), toTime: "07:00" } })).status], [201, 200]);
 const hashMoved = d1Hash();
 const tb2 = await call("POST", "/api/native/take-back", { bearer: token, body: { receiptIds: [placed2.json.receiptId], requestId: `${tbReq}-2` } });
-check("R1: …its take-back refused changed_since, with the row as it stands; nothing written", [tb2.json.outcomes?.[0]?.error, tb2.json.outcomes?.[0]?.now?.effective_date, d1Hash() === hashMoved], ["changed_since", plusDays(day, 5), true]);
+check("R1: …its take-back refused changed_since, with how it stands in the phone's words; nothing written", [tb2.json.outcomes?.[0]?.error, tb2.json.outcomes?.[0]?.now, d1Hash() === hashMoved], ["changed_since", { date: plusDays(day, 5), time: "07:00", state: "scheduled", archived: false, title: "Harness hips and back", minutes: tb2.json.outcomes?.[0]?.now?.minutes }, true]);
 const runsBefore = sql("select count(*) as n from coach_runs")[0].n;
 const frameR1 = { days: [day], energy: "low", free: { [day]: [{ from: "17:30", to: "19:30" }] }, dayEnd: "23:00", load: { [day]: "full" }, coverage: { [day]: { planAsOf: new Date().toISOString(), calendarAsOf: null, drafted: false } }, consent: "harness.1" };
 check("R1: switch A off: a run with a frame is 409 sharing_off, nothing started", [(await call("POST", "/api/coach/runs", { bearer: token, body: { scope: { kind: "now" }, frame: frameR1 } })).json.error, sql("select count(*) as n from coach_runs")[0].n - runsBefore], ["sharing_off", 0]);
