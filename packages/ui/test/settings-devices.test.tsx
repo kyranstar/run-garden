@@ -32,6 +32,9 @@ const V4_CAN = "Can play, save, move and fit workouts, record your feedback, and
 const V4_GRANT =
   "It will also be able to read your training plan, from three months back to two weeks ahead, and what you've done in the last year: titles, times, distances and the sets you logged. Never heart rate, pace, routes or health readings. You can stop it here any time.";
 const V4_STOP = "It will no longer be able to read your coming weeks and your history. It stays paired.";
+/** Renew's one line (LifeOS Q-172), and the hint beside a phone inside the warning while Renew is offered. */
+const RENEW_LINE = "It will keep working for 30 more days from now. Nothing else changes.";
+const RENEW_HINT = "Renew it to keep it working.";
 /** An active phone at `scope` (v2 unless said), with the steps the worker offers it. */
 const active = (over: Partial<NativeDeviceDto> = {}): NativeDeviceDto => {
   const scope = over.scope ?? "training-v2";
@@ -50,6 +53,7 @@ function worker(
   init: {
     enabled?: boolean; devices?: NativeDeviceDto[]; listStatus?: number; listBody?: unknown; pairRefusal?: unknown; confirmRefusal?: unknown; timezone?: string;
     grantRefusal?: { status: number; body: unknown }; reduceRefusal?: { status: number; body: unknown }; pairScope?: string;
+    renewRefusal?: { status: number; body: unknown };
   } = {},
 ) {
   const state = { enabled: init.enabled ?? true, devices: [...(init.devices ?? [])] };
@@ -81,6 +85,13 @@ function worker(
         const to = (JSON.parse(String(req!.body)) as { scope: string }).scope;
         state.devices = state.devices.map((d) => (d.id === reduce[1] ? { ...d, scope: to, nextScope: NEXT[to] ?? null, previousScope: PREVIOUS[to] ?? null } : d));
         return json({ ok: true, scope: to, reduced: true });
+      }
+      const renew = path.match(/^\/api\/native\/devices\/(\w+)\/renew$/);
+      if (renew && init.renewRefusal) return json(init.renewRefusal.body, init.renewRefusal.status);
+      if (renew) {
+        // 30 days from the server's acceptance (the worker's renewDevice), every other field kept.
+        state.devices = state.devices.map((d) => (d.id === renew[1] ? { ...d, expiresAt: iso(30 * DAY), expiresSoon: false } : d));
+        return json({ ok: true, expiresAt: iso(30 * DAY), renewed: true });
       }
       const confirm = path.match(/^\/api\/native\/devices\/(\w+)\/confirm$/);
       if (confirm && init.confirmRefusal) {
@@ -197,16 +208,17 @@ describe("Settings → Devices", () => {
     expect(button("Revoke", now)).toBeTruthy();
   });
 
-  it("an active phone shows its label, last use and expiry, with Revoke; a phone near its expiry says to pair again", async () => {
+  it("an active phone shows its label, last use and expiry, with Revoke; a phone near its expiry says to renew it", async () => {
     worker({ devices: [active(), active({ id: "c".repeat(64), label: "Old phone", lastUsedAt: null, expiresAt: iso(5 * DAY), expiresSoon: true })] });
     await mount();
     const phone = rowOf("Running phone");
     expect(words(phone)).toContain("Last used 2h ago");
     expect(words(phone)).toContain("Expires in 27 days");
-    expect(words(phone)).not.toContain("pair it again");
+    expect(words(phone)).not.toContain("Renew");
     expect(words(rowOf("Old phone"))).toContain("Never used");
     expect(words(rowOf("Old phone"))).toContain("Expires in 5 days");
-    expect(words(rowOf("Old phone"))).toContain("Pair it again before then");
+    expect(words(rowOf("Old phone"))).toContain(RENEW_HINT);
+    expect(words(rowOf("Old phone"))).not.toContain("Pair it again");
     await click(button("Revoke", phone));
     expect(calls.filter((c) => c.method === "POST").map((c) => c.path)).toEqual([`/api/native/devices/${"b".repeat(64)}/revoke`]);
     expect(rowOf("Running phone")).toBeUndefined();
@@ -234,7 +246,7 @@ describe("Settings → Devices", () => {
     expect(words(rowOf("Small hours phone"))).toContain("Expires today");
   });
 
-  it("the Pair-again hint shows at 7 calendar days or fewer, and not at 8", async () => {
+  it("the hint and Renew show at 7 calendar days or fewer, and not at 8", async () => {
     worker({
       devices: [
         active({ label: "Seven phone", expiresAt: "2026-11-18T03:00:00.000Z", expiresSoon: false }), // Nov 17 19:00 in LA: 7 days
@@ -243,9 +255,81 @@ describe("Settings → Devices", () => {
     });
     await mount(DevicesSection, { timezone: "America/Los_Angeles" });
     expect(words(rowOf("Seven phone"))).toContain("Expires in 7 days");
-    expect(words(rowOf("Seven phone"))).toContain("Pair it again before then");
+    expect(words(rowOf("Seven phone"))).toContain(RENEW_HINT);
+    expect(button("Renew", rowOf("Seven phone"))).toBeTruthy();
     expect(words(rowOf("Eight phone"))).toContain("Expires in 8 days");
-    expect(words(rowOf("Eight phone"))).not.toContain("Pair it again");
+    expect(words(rowOf("Eight phone"))).not.toContain(RENEW_HINT);
+    expect(button("Renew", rowOf("Eight phone"))).toBeUndefined();
+  });
+
+  it("Renew (LifeOS Q-172): one line first, sending nothing; Renew sends it, and the row says 30 days, its hint and button gone", async () => {
+    worker({ devices: [active({ label: "Old phone", expiresAt: iso(5 * DAY), expiresSoon: true }), active({ id: "c".repeat(64), label: "Running phone" })] });
+    await mount();
+    // Renew leads the row's buttons while the phone is inside the warning; its grant and Revoke are still there.
+    expect([...rowOf("Old phone").querySelectorAll("button")].map(words)).toEqual(["Renew", "Allow fitting and feedback", "Revoke"]);
+    await click(button("Renew", rowOf("Old phone")));
+    expect(calls.filter((c) => c.method === "POST")).toEqual([]);
+    const asking = rowOf("Old phone");
+    expect(words(asking)).toContain(RENEW_LINE);
+    expect([...asking.querySelectorAll("button")].map(words)).toEqual(["Renew", "Not now"]);
+    // The other phone isn't asked anything.
+    expect(words(rowOf("Running phone"))).not.toContain(RENEW_LINE);
+    await click(button("Renew", asking));
+    expect(calls.filter((c) => c.method === "POST")).toEqual([{ method: "POST", path: `/api/native/devices/${"b".repeat(64)}/renew`, body: {} }]);
+    const after = rowOf("Old phone");
+    expect(words(after)).toContain("Expires in 30 days");
+    expect(words(after)).not.toContain(RENEW_LINE);
+    expect(words(after)).not.toContain(RENEW_HINT);
+    // What it can do is unchanged: the same words, the same grant to offer, no Renew now it has its 30 days.
+    expect(words(after)).toContain("Can play, save and move workouts.");
+    expect([...after.querySelectorAll("button")].map(words)).toEqual(["Allow fitting and feedback", "Revoke"]);
+  });
+
+  it("Not now puts Renew's question away and sends nothing; a phone on its last day can still be renewed", async () => {
+    worker({ devices: [active({ label: "Tonight phone", expiresAt: iso(3 * 3_600_000), expiresSoon: true })] });
+    await mount(DevicesSection, { timezone: "America/Los_Angeles" });
+    expect(words(rowOf("Tonight phone"))).toContain("Expires today");
+    await click(button("Renew", rowOf("Tonight phone")));
+    await click(button("Not now", rowOf("Tonight phone")));
+    expect(words(rowOf("Tonight phone"))).not.toContain(RENEW_LINE);
+    expect(button("Renew", rowOf("Tonight phone"))).toBeTruthy();
+    expect(calls.filter((c) => c.method === "POST")).toEqual([]);
+    await click(button("Renew", rowOf("Tonight phone")));
+    await click(button("Renew", rowOf("Tonight phone")));
+    expect(calls.filter((c) => c.method === "POST").map((c) => c.path)).toEqual([`/api/native/devices/${"b".repeat(64)}/renew`]);
+    expect(words(rowOf("Tonight phone"))).toContain("Expires in 30 days");
+  });
+
+  it("no Renew while pending, nor with device sign-in off (the worker answers 404 then): the old hint stays", async () => {
+    worker({ devices: [pending()] });
+    await mount();
+    expect(button("Renew")).toBeUndefined();
+    act(() => root?.unmount());
+    host?.remove();
+    worker({ enabled: false, devices: [active({ label: "Old phone", expiresAt: iso(5 * DAY), expiresSoon: true })] });
+    await mount();
+    expect([...rowOf("Old phone").querySelectorAll("button")].map(words)).toEqual(["Revoke"]);
+    expect(words(rowOf("Old phone"))).toContain("Pair it again before then");
+  });
+
+  it("a refused Renew says why plainly, and the list is read again", async () => {
+    const refusals: Array<[{ status: number; body: unknown }, string]> = [
+      [{ status: 409, body: { error: "device_revoked" } }, "That phone was revoked or has expired: pair it again."],
+      [{ status: 409, body: { error: "device_expired" } }, "That phone was revoked or has expired: pair it again."],
+      [{ status: 404, body: { error: "not_found" } }, "Device sign-in is off, or that phone is no longer paired."],
+      [{ status: 500, body: { error: "x" } }, "Couldn't renew that phone. Try again."],
+    ];
+    for (const [refusal, says] of refusals) {
+      act(() => root?.unmount());
+      host?.remove();
+      worker({ devices: [active({ label: "Old phone", expiresAt: iso(5 * DAY), expiresSoon: true })], renewRefusal: refusal });
+      await mount();
+      await click(button("Renew", rowOf("Old phone")));
+      const gets = calls.filter((c) => c.method === "GET" && c.path === "/api/native/devices").length;
+      await click(button("Renew", rowOf("Old phone")));
+      expect(words(host)).toContain(says);
+      expect(calls.filter((c) => c.method === "GET" && c.path === "/api/native/devices").length).toBeGreaterThan(gets);
+    }
   });
 
   it("Settings counts on the account's own time zone, not the laptop's", async () => {

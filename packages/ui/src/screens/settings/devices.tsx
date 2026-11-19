@@ -7,6 +7,13 @@
  *    seconds for the phone that redeems it.
  *  - A pending phone: its label and the check number it shows too, with Confirm (which sends that number) and Revoke.
  *  - An active phone: its label, last use and expiry (and a word when it expires within 7 days), with Revoke.
+ *  - Renew (LifeOS Q-172, the lead's v0.17/v0.18 rulings): an active phone inside that warning — 7 calendar days or fewer,
+ *    the days the phone warns too — has Renew, which first says in one line that it keeps working 30 more days from now
+ *    and that nothing else changes; Renew then sets its expiry to 30 days from the worker's acceptance, in place (the same
+ *    phone, token and scope), and the row says "Expires in 30 days". Only while device sign-in is on (the worker's route is
+ *    404 while it is off). Offered only near expiry, not always: that is where the phone's own warning sends the owner, a
+ *    renew earlier gains little (it is 30 days from now, never +30), and a button that goes once it has done its job is its
+ *    own confirmation.
  *  - Each phone says what it can do, in plain words (its scope; kit v0.15). An active phone with a next scope has one
  *    button for it, which first says in one line what that adds; Allow grants it in place — the same phone, token and
  *    expiry — and Not now puts the question away. Only while device sign-in is on.
@@ -83,6 +90,9 @@ export const STEP_DOWNS: Readonly<Record<string, { button: string; line: string 
   },
 };
 
+/** Renew's button, and the one line it says before anything is sent (in the grant's style). */
+export const RENEW = { button: "Renew", line: "It will keep working for 30 more days from now. Nothing else changes." } as const;
+
 /**
  * Calendar days until an active phone's expiry, on the owner's clock (`timeZone`, the account's; the laptop's own when
  * unknown): 0 on its last day, however few hours are left; 1 the day before, however few (review F8).
@@ -116,6 +126,15 @@ function scopeRefusal(e: unknown, step: "grant" | "reduce"): string {
   return "Couldn't change what that phone can do. Try again.";
 }
 
+/** Why a renew was refused, in words that say what to do. */
+function renewRefusal(e: unknown): string {
+  const body = e instanceof ApiError ? (e.body as { error?: string } | null) : null;
+  if (body?.error === "device_revoked" || body?.error === "device_expired") return "That phone was revoked or has expired: pair it again.";
+  // Renew is 404 while device sign-in is off, as the grant is, and for a phone no longer paired.
+  if (e instanceof ApiError && e.status === 404) return "Device sign-in is off, or that phone is no longer paired.";
+  return "Couldn't renew that phone. Try again.";
+}
+
 function pairRefusal(e: unknown): string {
   const body = e instanceof ApiError ? (e.body as { error?: string; retryAfter?: number } | null) : null;
   if (e instanceof ApiError && e.status === 429 && body?.error === "too_many_codes") {
@@ -129,8 +148,8 @@ function pairRefusal(e: unknown): string {
 export function DevicesSection({ timezone }: { timezone?: string | null } = {}) {
   const qc = useQueryClient();
   const [minted, setMinted] = useState<{ code: string; expiresAt: string; scope?: string } | null>(null);
-  /** The phone whose grant or step-down is being asked about (its one line showing), if any. */
-  const [asking, setAsking] = useState<{ id: string; step: "grant" | "reduce" } | null>(null);
+  /** The phone whose grant, step-down or renew is being asked about (its one line showing), if any. */
+  const [asking, setAsking] = useState<{ id: string; step: "grant" | "reduce" | "renew" } | null>(null);
   const list = useQuery({
     queryKey: NATIVE_DEVICES_QUERY,
     queryFn: api.nativeDevices,
@@ -152,12 +171,15 @@ export function DevicesSection({ timezone }: { timezone?: string | null } = {}) 
   };
   const grant = useMutation({ mutationFn: (d: { id: string; scope: string }) => api.nativeGrant(d.id, d.scope), onSettled: settled });
   const reduce = useMutation({ mutationFn: (d: { id: string; scope: string }) => api.nativeReduce(d.id, d.scope), onSettled: settled });
+  const renew = useMutation({ mutationFn: (id: string) => api.nativeRenew(id), onSettled: settled });
+  /** One answer showing at a time: a question sent clears the others' refusals. */
+  const resetAnswers = () => (grant.reset(), reduce.reset(), renew.reset());
 
   const data = list.data;
   if (!data || !Array.isArray(data.devices) || typeof data.enabled !== "boolean") return null;
   if (!data.enabled && data.devices.length === 0) return null;
   const expired = minted !== null && Date.parse(minted.expiresAt) <= Date.now();
-  const busy = revoke.isPending || revokeAll.isPending || confirm.isPending || grant.isPending || reduce.isPending;
+  const busy = revoke.isPending || revokeAll.isPending || confirm.isPending || grant.isPending || reduce.isPending || renew.isPending;
   /** The grant an active phone can be given now: only while device sign-in is on, and only one this laptop has words for. */
   const grantOf = (d: NativeDeviceDto) => (data.enabled && d.state === "active" && d.nextScope ? (GRANTS[d.nextScope] ?? null) : null);
   /** The step-down an active phone can be given now, whatever the switch (it never widens a phone). */
@@ -192,15 +214,21 @@ export function DevicesSection({ timezone }: { timezone?: string | null } = {}) 
         }
         const next = grantOf(d);
         const down = stepDownOf(d);
+        /** 7 calendar days or fewer: the phone warns too. */
+        const soon = daysLeft(d.expiresAt, timezone) <= WARN_DAYS;
+        /** Renew is offered then, while device sign-in is on (the route is 404 while it is off). */
+        const canRenew = data.enabled && soon;
         /** The question this row is asking, if any: its one line, and what its first button sends. */
         const question =
           asking?.id !== d.id
             ? null
             : asking.step === "grant" && next
-              ? { line: next.line, yes: "Allow", send: () => (reduce.reset(), grant.mutate({ id: d.id, scope: d.nextScope! })) }
+              ? { line: next.line, yes: "Allow", send: () => (resetAnswers(), grant.mutate({ id: d.id, scope: d.nextScope! })) }
               : asking.step === "reduce" && down
-                ? { line: down.line, yes: "Stop", send: () => (grant.reset(), reduce.mutate({ id: d.id, scope: d.previousScope! })) }
-                : null;
+                ? { line: down.line, yes: "Stop", send: () => (resetAnswers(), reduce.mutate({ id: d.id, scope: d.previousScope! })) }
+                : asking.step === "renew" && canRenew
+                  ? { line: RENEW.line, yes: RENEW.button, send: () => (resetAnswers(), renew.mutate(d.id)) }
+                  : null;
         return (
           <div key={d.id} className="setting-row">
             <span className="place-row-main">
@@ -209,8 +237,7 @@ export function DevicesSection({ timezone }: { timezone?: string | null } = {}) 
               <small>
                 {d.lastUsedAt ? `Last used ${relativeTime(d.lastUsedAt)}` : "Never used"} · {expiresIn(daysLeft(d.expiresAt, timezone))}
               </small>
-              {/* 7 calendar days or fewer: the phone warns too. */}
-              {daysLeft(d.expiresAt, timezone) <= WARN_DAYS ? <small>Pair it again before then: Pair a phone, here.</small> : null}
+              {soon ? <small>{canRenew ? "Renew it to keep it working." : "Pair it again before then: Pair a phone, here."}</small> : null}
               {question ? <small>{question.line}</small> : null}
             </span>
             <span className="setting-row-end">
@@ -225,6 +252,11 @@ export function DevicesSection({ timezone }: { timezone?: string | null } = {}) 
                 </>
               ) : (
                 <>
+                  {canRenew ? (
+                    <button type="button" className="btn btn-small" disabled={busy} onClick={() => setAsking({ id: d.id, step: "renew" })}>
+                      {RENEW.button}
+                    </button>
+                  ) : null}
                   {next ? (
                     <button type="button" className="btn btn-small" disabled={busy} onClick={() => setAsking({ id: d.id, step: "grant" })}>
                       {next.button}
@@ -247,6 +279,7 @@ export function DevicesSection({ timezone }: { timezone?: string | null } = {}) 
       {confirm.isError ? <Banner kind="warn">{confirmRefusal(confirm.error)}</Banner> : null}
       {grant.isError ? <Banner kind="warn">{scopeRefusal(grant.error, "grant")}</Banner> : null}
       {reduce.isError ? <Banner kind="warn">{scopeRefusal(reduce.error, "reduce")}</Banner> : null}
+      {renew.isError ? <Banner kind="warn">{renewRefusal(renew.error)}</Banner> : null}
       {minted ? (
         <div className="stack">
           {expired ? (
