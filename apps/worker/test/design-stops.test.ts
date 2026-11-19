@@ -354,7 +354,7 @@ describe("the week's AI budget is a hard ceiling: a call is made only when its w
     });
   }
 
-  it("$19.80 spent: the call (its output alone up to $0.32) isn't made; the run stops at the weekly limit and proposes its reviewed draft", async () => {
+  it("$19.80 spent: the call (its output alone up to $0.64 at R1's 32,000-token ceiling) isn't made; the run stops at the weekly limit and proposes its reviewed draft", async () => {
     const a = await athlete();
     const runId = await nowRun(a.userId);
     const { deps, requests } = scripted([...REVIEWED, t(finish("Done."))]);
@@ -372,12 +372,12 @@ describe("the week's AI budget is a hard ceiling: a call is made only when its w
     expect((await lines(runId)).slice(-2)).toEqual([LINES.weeklyCap, LINES.proposed]);
   });
 
-  it("$19.50 spent: the call's worst case still fits, and it is made", async () => {
+  it("$19.20 spent: the call's worst case (32,000 tokens of output, $0.64, and its prompt) still fits, and it is made", async () => {
     const a = await athlete();
     const runId = await nowRun(a.userId);
     const { deps, requests } = scripted([...REVIEWED, t(finish("Done."))]);
     for (let i = 0; i < STEPS_TO_REVIEWED; i++) await runStep(db, env, runId, a.userId, new Date(NOW.getTime() + i * 1000), deps);
-    await spentThisWeek(a.userId, 19_500_000);
+    await spentThisWeek(a.userId, 19_200_000);
     const calls = requests.length;
     const out = await runStep(db, env, runId, a.userId, new Date(NOW.getTime() + 10_000), deps);
     expect(out.kind === "ok" && out.result.status).toBe("finished");

@@ -4,7 +4,7 @@
  *
  * Pinned: every role's call asks for at most 32,000 output tokens, and a new run keeps that ceiling in its settings; the
  * worst case a call reserves before it is made is what 32,000 output tokens and its prompt cost at the design model's price
- * (about $0.80 of output) — and a call is admitted only while that worst case fits under the $20 cutoff, which stays
+ * ($0.64 of output) — and a call is admitted only while that worst case fits under the $20 cutoff, which stays
  * $20 (warn $5, never past $25); the per-run ceilings stay $1.50 for one workout and $10 for a set; the step caps bound the
  * retries of a cut-off step (12, 10, 3 calls) and a failed call's (3). Synthetic data only.
  */
@@ -27,9 +27,9 @@ describe("the output ceiling", () => {
   it("a call's worst case — 32,000 output tokens — fits the $20 cutoff with room, and the cutoff stays $20", () => {
     const model = designModel({} as never);
     const output = messagesCostMicros(model, { inputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, outputTokens: 32_000 });
-    // About $0.80 at the design model's output price: twice 16,000's, still a small part of the week.
+    // $0.64 at the design model's output price (DESIGN-3 §3.8): twice 16,000's, still a small part of the week.
     expect(output).toBe(2 * messagesCostMicros(model, { inputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, outputTokens: 16_000 }));
-    expect(output).toBeLessThanOrEqual(1_000_000);
+    expect(output).toBe(640_000);
     expect(LLM_BUDGET).toEqual({ warnMicros: 5_000_000, cutoffMicros: 20_000_000, absoluteMaxMicros: 25_000_000 });
     // Near the cutoff a call is admitted only when its worst case fits: at $19.50 spent, one more 32k call with a large
     // prompt does not.

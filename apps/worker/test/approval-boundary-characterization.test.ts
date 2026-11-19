@@ -1319,14 +1319,16 @@ describe("4b. the same approval twice at once (the in-process interleaving: see 
     return { id: await shown(ctx), a, b };
   };
 
-  it("CHARACTERIZATION (harness limit): a bare `Promise.all` of two approves barely races here: `requireUser` hashes the session token, a real macrotask, and the rest of the winner runs in microtasks before the other gets past it. Only the gated tests below force an ordering", async () => {
-    const { id, a, b } = await twoChanges();
+  it("CHARACTERIZATION: a bare `Promise.all` of two approves races here since R1 — each change's take-back receipt id is hashed (`crypto.subtle`, a real macrotask) before the applier runs, so both read before either writes: one applies both, the other's guarded write is refused 409 `proposal_changed` (the forced test below, unforced), the applier's work done once", async () => {
+    const { id } = await twoChanges();
     const answers = await Promise.all([approve(id, {}), approve(id, {})]);
-    expect(answers.map((r) => r.status)).toEqual([200, 200]);
-    // Whichever hash came back first (their order isn't this test's to say): that one did it all, and the other found it done.
-    const [winner, other] = answers[0]!.json.changed.length > 0 ? answers : [answers[1]!, answers[0]!];
-    expect(winner!.json.changed).toHaveLength(2);
-    expect(other!.json).toMatchObject({ changed: [], settled: [{ opId: planAdjustId(a), outcome: "applied" }, { opId: planAdjustId(b), outcome: "applied" }] });
+    // Their order isn't this test's to say: one 200 that did it all; the other 200 that found it done, or 409 to ask again.
+    const winner = answers.find((r) => r.status === 200 && r.json.changed?.length > 0)!;
+    expect(winner.json.changed).toHaveLength(2);
+    const other = answers.find((r) => r !== winner)!;
+    expect([200, 409]).toContain(other.status);
+    if (other.status === 409) expect(other.json.error).toBe("proposal_changed");
+    else expect(other.json.changed).toEqual([]);
     expect((await counts()).receipts).toBe(1);
   });
 

@@ -162,7 +162,7 @@ export async function approveDesigned(c: C, p: DesignProposalRow & { expiresAt: 
   try {
     const meter = { left: 0 };
     const { version: _shown, ...asked } = parsed.data;
-    const answer = await approveDesignOps(db, userId, p, { ...asked, madeBy: madeByOf(device) }, { today, now: nowInstant(), prefs, runWire: runWireOf(c.env) }, undefined, meter);
+    const answer = await approveDesignOps(db, userId, p, { ...asked, madeBy: madeByOf(device), ...(device ? { forDevice: true } : {}) }, { today, now: nowInstant(), prefs, runWire: runWireOf(c.env) }, undefined, meter);
     // A change another approve is applying is left to it (Task 8b's recovery rule): 409 only when nothing else was named.
     const { inFlight, ...rest } = answer;
     const nothingElse = [rest.applied, rest.changed, rest.refused, rest.settled, rest.remaining, rest.planned ?? [], rest.pinned ?? [], rest.corrected ?? [], rest.objectives ?? []].every((xs) => xs.length === 0);

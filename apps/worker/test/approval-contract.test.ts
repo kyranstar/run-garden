@@ -340,7 +340,7 @@ describe("a request naming every op a card can draw", () => {
     expect((await db.select().from(plannedWorkouts).where(eq(plannedWorkouts.userId, userId))).filter((r) => r.title.startsWith("Calm"))).toHaveLength(12);
   });
 
-  it("exactly OPS_MAX (50) ids, every one the proposal's: accepted, and applied ten a request (PLAN_MAX), not all at once", async () => {
+  it("exactly OPS_MAX (50) ids, every one the proposal's: accepted, and applied nine a request (the budget, under PLAN_MAX), not all at once", async () => {
     const ctx = await mainRun();
     const first = await session("w-0", day(1));
     await act(ctx, "adjust_plan", adjust(first, { kind: "skip", reason: "Rest." }));
@@ -358,10 +358,11 @@ describe("a request naming every op a card can draw", () => {
     expect(new Set(named).size).toBe(50);
     let res = await approve(id, { opIds: named });
     expect(res.status).toBe(200);
-    expect(res.json.changed).toHaveLength(10);
+    // Nine, not PLAN_MAX's ten: each skip's take-back receipt (R1) is one statement more in its batch, declared.
+    expect(res.json.changed).toHaveLength(9);
     let rounds = 1;
     for (let i = 0; i < MAX_LOOP_ITERATIONS && res.json.remaining?.length; i++, rounds++) res = await approve(id, { opIds: res.json.remaining });
-    expect(rounds).toBe(5);
+    expect(rounds).toBe(6);
     expect(res.json.status).toBe("approved");
     expect((await db.select().from(plannedWorkouts).where(eq(plannedWorkouts.userId, userId))).filter((r) => r.completionState === "skipped")).toHaveLength(50);
   });

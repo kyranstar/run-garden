@@ -967,6 +967,9 @@ export interface ApproveInput {
   /** Who approves (R1: the take-back receipts' `made_by`): a device's `device:<id>`, else the laptop's `session`. Set by the
    * route, never the body. */
   madeBy?: string;
+  /** R1: a phone's approve — its answer also says the receipts written and the version left (the laptop's answer is as it
+   * was, key for key). Set by the route, never the body. */
+  forDevice?: boolean;
   /** Edit before approve: the athlete's version of one op's draft (a new workout's day and time may be theirs). */
   edit?: { opId: string; doc: Record<string, unknown>; date?: string; time?: string | null };
 }
@@ -1302,7 +1305,7 @@ export async function approveDesignOps(
   const unnamed = leftOut.length > 0 ? { notNamed: leftOut } : {};
   if (inPlan.length === 0 && declined.length === 0) {
     if (p.status === "superseded") throw new NotOpenError(p.status);
-    return { status: p.status as DesignProposalStatus, applied, changed, refused, settled, remaining: overflow, ...unnamed, version: await proposalVersion(p) };
+    return { status: p.status as DesignProposalStatus, applied, changed, refused, settled, remaining: overflow, ...unnamed, ...(input.forDevice ? { version: await proposalVersion(p) } : {}) };
   }
 
   const inHand = [...inPlan, ...declined];
@@ -1821,7 +1824,7 @@ export async function approveDesignOps(
   // The first op always goes, so `left` can fall below nothing: no room then.
   if (meter) meter.left = Math.max(0, left);
   const drain = {
-    ...(receipts.written.length > 0 ? { receipts: receipts.written } : {}),
+    ...(input.forDevice && receipts.written.length > 0 ? { receipts: receipts.written } : {}),
     ...(coachDrain ? { coachDrain: true as const } : {}),
     ...(planned.length > 0 ? { planned } : {}),
     ...(corrected.length > 0 ? { corrected } : {}),
@@ -1833,7 +1836,7 @@ export async function approveDesignOps(
   if (outcomes.size === 0) {
     // A superseded proposal with nothing to repair is no longer the athlete's.
     if (p.status === "superseded") throw new NotOpenError(p.status);
-    return { status: p.status as DesignProposalStatus, applied, changed, refused, settled, remaining, ...drain, version: await proposalVersion(current) };
+    return { status: p.status as DesignProposalStatus, applied, changed, refused, settled, remaining, ...drain, ...(input.forDevice ? { version: await proposalVersion(current) } : {}) };
   }
 
   const next = withOutcomes(current.ops, outcomes);
@@ -1853,7 +1856,7 @@ export async function approveDesignOps(
       console.error(JSON.stringify({ level: "error", msg: "design approve: applied, but the receipt failed", proposal: p.id, error: e instanceof Error ? e.message : "unknown" })),
     );
   }
-  return { status, applied, changed, refused, settled, remaining, ...drain, version: await proposalVersion({ status, ops: next }) };
+  return { status, applied, changed, refused, settled, remaining, ...drain, ...(input.forDevice ? { version: await proposalVersion({ status, ops: next }) } : {}) };
 }
 
 /** "Tue · Thu · 2 a week · 30 min — 6 sessions placed again": a programme change done, for the answer and the receipt. */
