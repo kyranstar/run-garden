@@ -53,8 +53,10 @@ describe("POST /api/coach/memory", () => {
     await on();
     const a = await tell({ kind: "rule", body: "Mornings work better on busy days.", clientId: "c-1" });
     expect(a.status, a.text).toBe(201);
-    expect(a.json.item).toMatchObject({ kind: "rule", body: "Mornings work better on busy days.", confidence: "stated", active: true, expiresAt: null });
-    expect(a.json.item.provenance).toEqual({ source: "lifeos", deviceId: v5.id, at: nowInstant() });
+    // The phone reads the item as its own DTO (review A MINOR-1): never the account's id or the ids in its provenance.
+    expect(a.json.item).toEqual({ id: expect.any(String), kind: "rule", body: "Mornings work better on busy days.", confidence: "stated", pinned: false, expiresAt: null, learnedAt: nowInstant(), source: "lifeos" });
+    const [row] = await w.db.select().from(coachMemory).where(eq(coachMemory.id, a.json.item.id));
+    expect([row!.active, row!.provenance]).toEqual([true, { source: "lifeos", deviceId: v5.id, at: nowInstant() }]);
     const again = await tell({ kind: "rule", body: "Mornings work better on busy days.", clientId: "c-1" });
     expect([again.status, again.json.repeated, again.json.item.id]).toEqual([200, true, a.json.item.id]);
     const same = await tell({ kind: "rule", body: "  mornings work better   on busy days. ", clientId: "c-2" });

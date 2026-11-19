@@ -8,7 +8,9 @@
  *  - `opsSummaryOf`: each op as typed fields only — what it does (add, revise, move, skip, ease, other), its day and time,
  *    its minutes before and after, its category and how it ended. No title, no words of the coach's: what LifeOS's digest
  *    may carry with switch B on (DESIGN-3 §3.3.1 `results`), and what the phone's grouped card lists.
- *  - `completenessOf`: a designed proposal is complete only when its main run ended through `finish` (`finished`). One that
+ *  - `completenessOf`: a designed proposal is complete only when its main run ended through its `finish` tool (`finished`
+ *    and `state.endedBy` "finish": review B-1). One that ended in words — a words-only last turn, or a tool refused on its
+ *    last call — is `complete: false` (`missing.status` "unfinished"), though it proposed what was reviewed. One that
  *    stopped — at its step cap or its ceiling, the week's cap, a failure, a cancel, its window closing — proposes what had
  *    been reviewed, and is `complete: false` with why: a device may never approve it (409 `incomplete`). Cut-off output
  *    never became an op in the first place: a turn that stopped at `max_tokens` runs no tools (coach-runs.ts), and an op
@@ -19,11 +21,13 @@ import { coachRuns } from "@rg/database";
 import type { Db } from "./db.js";
 import { endedLine, readRunState } from "./coach-runs.js";
 
-/** What a phone says of a proposal whose run ended without its finish. */
-export const UNFINISHED_LINE = "The coach stopped before it finished this: ask again, or open it on the laptop.";
 import { designProposalId } from "./design-tools/propose.js";
 import { allDesignedOps, type AnyDesignedOp } from "./design-approve.js";
+import { stripReadings } from "./device-view.js";
 import { isDocWorkoutOp, isPlanAdjustOp, opIdOf } from "./proposal-kinds.js";
+
+/** What a phone says of a proposal whose run ended without its finish (review B-1). */
+export const UNFINISHED_LINE = "The coach stopped before it finished this: ask again, or open it on the laptop.";
 
 export { canonicalJson, proposalVersion } from "./proposal-version.js";
 
@@ -40,6 +44,9 @@ export interface OpSummary {
   minutesAfter?: number;
   category?: string;
   outcome?: string;
+  /** A move's day and time before it (the change, before → after). */
+  dayBefore?: string;
+  startBefore?: string;
 }
 
 const num = (v: unknown): number | undefined => (typeof v === "number" && Number.isFinite(v) ? Math.round(v) : undefined);
@@ -81,6 +88,7 @@ export function opsSummaryOf(ops: unknown): OpSummary[] {
         workoutId: c.op.workoutId,
         day: k === "move" ? (c.op as { toDate: string }).toDate : c.date,
         start: clock(k === "move" ? (c.op as { toTime?: unknown }).toTime : c.row?.time),
+        ...(k === "move" ? { dayBefore: str(c.date), startBefore: clock(c.row?.time) } : {}),
         minutesBefore: num(c.row?.minutes),
         minutesAfter: after,
         category: category(c.row?.category),
@@ -89,6 +97,18 @@ export function opsSummaryOf(ops: unknown): OpSummary[] {
     }
     return compact({ opId: opIdOf(o as never), op: "other", day: str((o as { date?: unknown }).date) ?? "", outcome });
   });
+}
+
+/** Each designed workout's title, by op, as a phone reads it: every sentence naming a reading or a condition taken out. */
+export function titlesOf(ops: unknown): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const o of allDesignedOps(ops)) {
+    if (!isDocWorkoutOp(o)) continue;
+    const d = o as Extract<AnyDesignedOp, { kind: "doc_workout" }>;
+    const title = typeof d.doc?.title === "string" ? stripReadings(d.doc.title) : null;
+    if (title) out[opIdOf(d)] = title;
+  }
+  return out;
 }
 
 /** Whether a designed proposal came from a run that finished, and if not, why (its run's end). */

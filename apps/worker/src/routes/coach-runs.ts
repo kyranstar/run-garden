@@ -68,6 +68,7 @@ import { frameRefusal } from "../services/device-sharing.js";
 import { loadPreferences } from "../services/calendar-sync.js";
 import { addDays, todayInZone } from "@rg/domain";
 import { coachModelGate, deviceCoachGate } from "./coach-device-gate.js";
+import { deviceCoachView } from "../services/device-view.js";
 import {
   ANSWER_MAX_CHARS,
   REQUEST_MAX_CHARS,
@@ -139,6 +140,8 @@ export function makeCoachRunRoutes(deps: () => RunDeps = defaultRunDeps): Hono<A
   // R1: the QA account's phone has no coach (its switches are off only inside requireUser), and a phone's new run needs a
   // model it can reach.
   routes.use("*", deviceCoachGate);
+  // R1 review A/MAJOR-1: a phone reads the coach as a structured projection — never a reading, a condition or the trail.
+  routes.use("*", deviceCoachView);
 
   routes.post("/", coachModelGate, async (c) => {
     const body = (await c.req.json().catch(() => null)) as {

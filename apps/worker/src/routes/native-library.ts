@@ -156,7 +156,9 @@ nativeLibraryRoutes.get("/templates/:id", requireUser, async (c) => {
   const t = await templateOf(c, c.req.param("id")!);
   if (!t) return c.json({ error: "not_found" }, 404);
   const derived = t.doc ? deriveDoc(t.doc, (await libraryForDocs(db, userId, [t.doc])).all) : null;
-  return c.json({ id: t.id, name: t.name, doc: t.doc, derived, minutes: derived?.estimatedMinutes ?? null, discipline: derived?.discipline ?? null });
+  // Never a condition's name (review A NIT 2): `conditionMax` is keyed by profile; the library's verdicts say what is safe.
+  const { conditionMax: _byProfile, ...shown } = (derived ?? {}) as NonNullable<typeof derived>;
+  return c.json({ id: t.id, name: t.name, doc: t.doc, derived: derived ? shown : null, minutes: derived?.estimatedMinutes ?? null, discipline: derived?.discipline ?? null });
 });
 
 const word = z.string().regex(/^[a-z0-9_-]{1,40}$/);

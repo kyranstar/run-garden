@@ -22,6 +22,7 @@ import { todayInZone } from "@rg/domain";
 import type { AppContext } from "../auth/middleware.js";
 import { requireUser } from "../auth/middleware.js";
 import { deviceCoachGate } from "./coach-device-gate.js";
+import { deviceCoachView } from "../services/device-view.js";
 import { coachDesignerEnabled } from "../env.js";
 import { loadPreferences } from "../services/calendar-sync.js";
 import { parseSeen } from "../services/coach-opening-line.js";
@@ -40,6 +41,8 @@ export function makeCoachNudgesRoutes(deps: { now?: () => Date } = {}): Hono<App
   routes.use("*", requireUser);
   // R1: the QA account's phone has no coach (its switches are off only inside requireUser).
   routes.use("*", deviceCoachGate);
+  // R1 review A/MAJOR-1: a phone reads the coach as a structured projection — never a reading, a condition or the trail.
+  routes.use("*", deviceCoachView);
 
   routes.get("/", async (c) => {
     const db = c.get("db");

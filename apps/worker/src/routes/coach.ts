@@ -69,10 +69,11 @@ import { approveDesigned, declineDesigned, designedDraft, designedLines } from "
 import { EARLIEST_ZONE, liveMemoryWhere, MEMORY_PIN_CAP, memoryHistoryWhere, REHEARSAL_MEMORY } from "../services/memory-core.js";
 import { LIVE_STATUSES } from "../services/coach-runs.js";
 import { designProposalId } from "../services/design-tools/propose.js";
-import { completenessOf, opsSummaryOf } from "../services/design-version.js";
+import { completenessOf, opsSummaryOf, titlesOf } from "../services/design-version.js";
 import { proposalVersion } from "../services/proposal-version.js";
 import { receiptsOfProposal } from "../services/take-back.js";
 import { deviceCoachGate } from "./coach-device-gate.js";
+import { deviceCoachView } from "../services/device-view.js";
 import { addStatedMemory, STATED_KINDS, statedBodyOf } from "../services/coach-memory.js";
 import { sharingOf } from "../services/device-sharing.js";
 
@@ -90,6 +91,8 @@ export const THREAD_COACH_STEPPED_BACK = "Your coach is now behind the Coach but
 coachRoutes.use("*", requireUser);
 // R1: a phone reaches only the designer's routes here (training-v5), and none while the coach is off for its account.
 coachRoutes.use("*", deviceCoachGate);
+// R1 review A/MAJOR-1: a phone reads the coach as a structured projection — never a reading, a condition or the trail.
+coachRoutes.use("*", deviceCoachView);
 
 export async function receipt(
   db: Db,
@@ -628,6 +631,20 @@ coachRoutes.get("/proposals/:id", async (c) => {
   // typed fields, and the take-back receipts its approved ops wrote (open ones take-backable). Two statements more.
   const now = nowInstant();
   const [version, done, receipts] = await Promise.all([proposalVersion(p), completenessOf(c.get("db"), c.get("userId"), p.id), receiptsOfProposal(c.get("db"), c.get("userId"), p.id, now)]);
+  // A phone reads what it approves as typed fields and each workout's title (readings stripped): never the cards' steps,
+  // paces, notes or the coach's words (review A/MAJOR-1).
+  if (c.get("device")) {
+    return c.json({
+      ...status,
+      version,
+      complete: done.complete,
+      ...(done.missing ? { missing: done.missing } : {}),
+      opsSummary: opsSummaryOf(ops),
+      titles: titlesOf(ops),
+      receipts: receipts.map((r) => ({ opId: r.opId, receiptId: r.receiptId })),
+      takeBackable: receipts.filter((r) => r.open).map((r) => r.opId),
+    });
+  }
   return c.json({
     ...status,
     ...manifest,
