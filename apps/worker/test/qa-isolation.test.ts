@@ -375,7 +375,7 @@ describe("every v5 device route, sent the owner's ids by the QA phone", () => {
       ["GET", "/api/coach/memory", undefined, [404]],
       ["PATCH", `/api/coach/memory/${ownerMemory}`, { pinned: true }, [404]],
       ["DELETE", `/api/coach/memory/${ownerMemory}`, undefined, [404]],
-      ["POST", "/api/coach/memory", { kind: "rule", body: "QA rule.", clientId: `qa-${newId()}` }, [404]],
+      ["POST", "/api/coach/memory", { kind: "rule", body: "QA rule.", clientId: `qa-${newId()}`, consent: "qa.1" }, [404]],
       ["GET", "/api/coach/nudges", undefined, [404]],
       ["GET", "/api/coach/spend", undefined, [404]],
       ["POST", "/api/native/sign-out", undefined, [200]],
