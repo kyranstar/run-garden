@@ -587,7 +587,7 @@ export async function takeBack(
       continue;
     }
     left -= checking;
-    const checked = new Map<string, Checked>();
+    const checked = new Map<string, Exclude<Checked, { refusal: Refusal }>>();
     let refused: { id: string; error: Refusal } | null = null;
     for (const r of members) {
       const c = await preflightOf(db, r, rows.get(r.workoutId), bases, today);

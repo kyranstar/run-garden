@@ -31,7 +31,7 @@ export interface Kit {
   w: NativeWorld;
   v5: { token: string; id: string };
   place(date: string, time: string | null, clientId: string): Promise<{ workoutId: string; receiptId: string; time: string }>;
-  takeBack(receiptIds: string[], requestId?: string, bearer?: string): Promise<{ status: number; json: any; text: string; statements: string[] }>;
+  takeBack(receiptIds: string[], requestId?: string, bearer?: string): Promise<{ status: number; json: any; text: string; statements: string[]; writes: string[] }>;
   rowOf(id: string): Promise<typeof plannedWorkouts.$inferSelect>;
   receiptOf(id: string): Promise<typeof takeBackReceipts.$inferSelect>;
   onPlan(date: string, time?: string, doc?: object): Promise<string>;
