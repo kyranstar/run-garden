@@ -342,7 +342,7 @@ export interface NativeDeviceDto {
   expiresAt: string;
   /** Active and expiring within 7 days: re-pair soon. */
   expiresSoon: boolean;
-  /** What it may reach, as the worker stores it: `training-slice-v1`, `training-v2`, `training-v3` (or one a newer worker knows). */
+  /** What it may reach, as the worker stores it: `training-slice-v1`, `training-v2`, `training-v3`, `training-v4` (or one a newer worker knows). */
   scope: string;
   /** The scope Settings can grant it now (its next, while active), else null. */
   nextScope: string | null;
@@ -354,6 +354,119 @@ export interface NativeDevicesResponse {
   /** The kill switch: off, Pair answers 404 (listing and revoking still answer). */
   enabled: boolean;
   devices: NativeDeviceDto[];
+}
+
+// ── A `training-v4` phone's plan reads (stage 2c, DESIGN-2c §2): the shapes the worker answers, for the harness and tests ──
+
+/** A planned session on one of the phone's days (`GET /api/native/days`). */
+export interface NativeDaySessionDto {
+  id: string;
+  /** As stored: what LifeOS matches on. */
+  title: string;
+  /** The web's words for an opaque title; present only when they differ. */
+  label?: string;
+  sport: string;
+  category: string;
+  /** `HH:MM`, or null for an untimed row. */
+  time: string | null;
+  minutes: number | null;
+  /** `completion_state` as stored: scheduled, unresolved, completed, skipped, missed, or a later word. */
+  state: string;
+  doneAt: string | null;
+  doneBy: "app" | "coros" | "said_done" | null;
+  movedFrom: string | null;
+  kind: "course" | "programme" | "on_demand" | "studio" | "template" | "coach" | "watch_plan" | "other";
+  planName: string | null;
+  content: "document" | "engine" | "outline" | "stages" | "none";
+  written: boolean;
+  docRev: number | null;
+  underWay: boolean;
+  /** Advice only: what the plan routes would take now. */
+  can: { move: boolean; skip: boolean; unskip: boolean };
+}
+
+/** A run, lift or yoga session that completed no planned session, on its own day (never on a day ahead). */
+export interface NativeDayExtraDto {
+  id: string;
+  sport: "run" | "strength" | "yoga";
+  title: string;
+  /** The local start, `HH:MM`; null when the activity has none. */
+  time: string | null;
+  seconds: number;
+  /** A run's distance; null for any other sport. */
+  distanceMeters: number | null;
+  source: string;
+}
+
+export interface NativeDayDto {
+  date: string;
+  tense: "past" | "today" | "ahead";
+  rest: boolean;
+  partial: "capped" | null;
+  sessions: NativeDaySessionDto[];
+  extras: NativeDayExtraDto[];
+}
+
+/** `GET /api/native/days?from&to`. */
+export interface NativeDaysResponse {
+  version: 1;
+  /** The account's today: every tense and date rule follows it. */
+  today: string;
+  readAt: string;
+  /** The COROS connection's last read, or null. */
+  corosReadAt: string | null;
+  days: NativeDayDto[];
+}
+
+/** One row of the phone's History (`GET /api/native/history`). */
+export interface NativeHistoryRowDto {
+  /** The activity's id, or `said:<workoutId>`. */
+  id: string;
+  date: string;
+  time: string | null;
+  /** app | coros | import, or said_done. */
+  source: string;
+  sport: string;
+  title: string;
+  seconds: number | null;
+  distanceMeters: number | null;
+  planned: { workoutId: string; title: string; label?: string; category: string; date: string } | null;
+  extra: boolean;
+  moves: { done: number; planned: number | null } | null;
+  sets: Array<{
+    exerciseId: string;
+    name: string;
+    sets: Array<{ reps: number | null; seconds: number | null; load: { v: number; u: "lb" | "kg" } | null; side: "left" | "right" | null }>;
+  }> | null;
+  note: string | null;
+}
+
+/** `GET /api/native/history?before&limit`. */
+export interface NativeHistoryResponse {
+  version: 1;
+  today: string;
+  readAt: string;
+  corosReadAt: string | null;
+  rows: NativeHistoryRowDto[];
+  /** The next page's `before`, or null at the end of the year. */
+  next: string | null;
+  capped: boolean;
+}
+
+/** `GET /api/native/sessions/:id/ahead`: *What's in it*, built in memory. */
+export interface NativeAheadResponse {
+  workoutId: string;
+  date: string;
+  today: string;
+  basis: "document" | "engine" | "course" | "stages" | "none";
+  title: string;
+  label?: string;
+  minutes: number | null;
+  place: { id: string; name: string } | null;
+  moves: Array<{ exerciseId: string | null; name: string; dose: string }>;
+  summary: string | null;
+  docRev: number | null;
+  distanceMeters: number | null;
 }
 
 /** Settings → Developer → LifeOS QA (`GET /api/qa/status`; the owner's only — anyone else's is a 404). */

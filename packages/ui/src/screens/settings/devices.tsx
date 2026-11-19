@@ -10,9 +10,10 @@
  *  - Each phone says what it can do, in plain words (its scope; kit v0.15). An active phone with a next scope has one
  *    button for it, which first says in one line what that adds; Allow grants it in place — the same phone, token and
  *    expiry — and Not now puts the question away. Only while device sign-in is on.
- *  - The step-down (review r-m4): an active v3 phone has one button to stop what its grant allowed (only v3 → v2, review
- *    r2-m2: plan edits are stopped by Revoke), which first says in one line what stops and that it stays paired; Stop
- *    steps it down in place. Like Revoke, it answers whatever the switch: narrowing a phone never widens one.
+ *  - The step-down (review r-m4): an active v4 or v3 phone has one button to stop what its last grant allowed (one rung:
+ *    v4 → v3, v3 → v2, never below v2, review r2-m2: plan edits are stopped by Revoke), which first says in one line what
+ *    stops and that it stays paired; Stop steps it down in place. Like Revoke, it answers whatever the switch: narrowing a
+ *    phone never widens one.
  *  - Revoke all: every phone at once.
  *
  * The card shows nothing while the switch is off and no phone is paired, or when the list can't be read. With the switch
@@ -44,6 +45,7 @@ export const CAN: Readonly<Record<string, string>> = {
   "training-slice-v1": "play and save workouts",
   "training-v2": "play, save and move workouts",
   "training-v3": "play, save, move and fit workouts, and record your feedback",
+  "training-v4": "play, save, move and fit workouts, record your feedback, and read your plan and history",
 };
 
 /**
@@ -56,16 +58,26 @@ export const GRANTS: Readonly<Record<string, { button: string; line: string }>> 
     button: "Allow fitting and feedback",
     line: "It will also be able to fit a workout to the day (its time, place and moves) and record Not for me and harder-move switches. You can stop it here any time.",
   },
+  // Stage 2c (DESIGN-2c §4): reads only, but a year of the training record on a phone that could be lost, so it says what.
+  "training-v4": {
+    button: "Allow reading your plan and history",
+    line: "It will also be able to read your training plan, from three months back to two weeks ahead, and what you've done in the last year: titles, times, distances and the sets you logged. Never heart rate, pace, routes or health readings. You can stop it here any time.",
+  },
 };
 
 /**
  * The step-down from each scope (review r-m4): its button, and the one line that says what stops before anything is sent.
- * Only from v3 (review r2-m2): a phone taken below v2 drops the plan edits it hasn't sent, so stopping those is Revoke's.
+ * From v4 and v3 only, one rung (review r2-m2): a phone taken below v2 drops the plan edits it hasn't sent, so stopping
+ * those is Revoke's.
  */
 export const STEP_DOWNS: Readonly<Record<string, { button: string; line: string }>> = {
   "training-v3": {
     button: "Stop fitting and feedback",
     line: "It will no longer fit workouts to the day or record Not for me and harder-move switches. It stays paired.",
+  },
+  "training-v4": {
+    button: "Stop reading your plan and history",
+    line: "It will no longer read your plan or history. On that phone, Today's training and Train as planned stop updating until you allow it again. It stays paired.",
   },
 };
 

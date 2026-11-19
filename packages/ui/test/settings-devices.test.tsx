@@ -26,8 +26,12 @@ const pending = (over: Partial<NativeDeviceDto> = {}): NativeDeviceDto => ({
   scope: "training-v2", nextScope: null, previousScope: null, ...over,
 });
 /** The ladder the worker grants and steps down along (device-scope.ts `NEXT_DEVICE_SCOPE`, `PREVIOUS_DEVICE_SCOPE`). */
-const NEXT: Record<string, string | null> = { "training-slice-v1": "training-v2", "training-v2": "training-v3", "training-v3": null };
-const PREVIOUS: Record<string, string | null> = { "training-slice-v1": null, "training-v2": null, "training-v3": "training-v2" };
+const NEXT: Record<string, string | null> = { "training-slice-v1": "training-v2", "training-v2": "training-v3", "training-v3": "training-v4", "training-v4": null };
+const PREVIOUS: Record<string, string | null> = { "training-slice-v1": null, "training-v2": null, "training-v3": "training-v2", "training-v4": "training-v3" };
+const V4_CAN = "Can play, save, move and fit workouts, record your feedback, and read your plan and history.";
+const V4_GRANT =
+  "It will also be able to read your training plan, from three months back to two weeks ahead, and what you've done in the last year: titles, times, distances and the sets you logged. Never heart rate, pace, routes or health readings. You can stop it here any time.";
+const V4_STOP = "It will no longer read your plan or history. On that phone, Today's training and Train as planned stop updating until you allow it again. It stays paired.";
 /** An active phone at `scope` (v2 unless said), with the steps the worker offers it. */
 const active = (over: Partial<NativeDeviceDto> = {}): NativeDeviceDto => {
   const scope = over.scope ?? "training-v2";
@@ -300,11 +304,13 @@ describe("Settings → Devices", () => {
         active({ id: "c".repeat(64), label: "Old phone", scope: "training-slice-v1" }),
         active({ label: "Running phone" }),
         active({ id: "d".repeat(64), label: "New phone", scope: "training-v3" }),
+        active({ id: "f".repeat(64), label: "Newest phone", scope: "training-v4" }),
         active({ id: "e".repeat(64), label: "Odd phone", scope: "training-v9" }),
         pending(),
       ],
     });
     await mount();
+    expect(words(rowOf("Newest phone"))).toContain(V4_CAN);
     expect(words(rowOf("Old phone"))).toContain("Can play and save workouts.");
     expect(words(rowOf("Running phone"))).toContain("Can play, save and move workouts.");
     expect(words(rowOf("New phone"))).toContain("Can play, save, move and fit workouts, and record your feedback.");
@@ -331,7 +337,39 @@ describe("Settings → Devices", () => {
     const after = rowOf("Running phone");
     expect(words(after)).toContain("Can play, save, move and fit workouts, and record your feedback.");
     expect(words(after)).not.toContain("It will also");
-    expect([...after.querySelectorAll("button")].map(words)).toEqual(["Stop fitting and feedback", "Revoke"]);
+    // At v3: the next grant (v4) and its own step-down.
+    expect([...after.querySelectorAll("button")].map(words)).toEqual(["Allow reading your plan and history", "Stop fitting and feedback", "Revoke"]);
+  });
+
+  it("a v3 phone's grant of v4 (DESIGN-2c §4): its button, the one line naming what it reads and never, then Allow grants it", async () => {
+    worker({ devices: [active({ label: "New phone", scope: "training-v3" })] });
+    await mount();
+    await click(button("Allow reading your plan and history", rowOf("New phone")));
+    expect(calls.filter((c) => c.method === "POST")).toEqual([]);
+    const asking = rowOf("New phone");
+    expect(words(asking)).toContain(V4_GRANT);
+    expect([...asking.querySelectorAll("button")].map(words)).toEqual(["Allow", "Not now"]);
+    await click(button("Allow", asking));
+    expect(calls.filter((c) => c.method === "POST")).toEqual([{ method: "POST", path: `/api/native/devices/${"b".repeat(64)}/grant`, body: { scope: "training-v4" } }]);
+    const after = rowOf("New phone");
+    expect(words(after)).toContain(V4_CAN);
+    // At the top: no grant, and its own step-down.
+    expect([...after.querySelectorAll("button")].map(words)).toEqual(["Stop reading your plan and history", "Revoke"]);
+  });
+
+  it("a v4 phone's step-down: one line saying what stops (Today's training and Train as planned) and that it stays paired; Stop sends v3", async () => {
+    worker({ devices: [active({ label: "Newest phone", scope: "training-v4" })] });
+    await mount();
+    expect([...rowOf("Newest phone").querySelectorAll("button")].map(words)).toEqual(["Stop reading your plan and history", "Revoke"]);
+    await click(button("Stop reading your plan and history", rowOf("Newest phone")));
+    expect(calls.filter((c) => c.method === "POST")).toEqual([]);
+    const asking = rowOf("Newest phone");
+    expect(words(asking)).toContain(V4_STOP);
+    expect([...asking.querySelectorAll("button")].map(words)).toEqual(["Stop", "Not now"]);
+    await click(button("Stop", asking));
+    expect(calls.filter((c) => c.method === "POST")).toEqual([{ method: "POST", path: `/api/native/devices/${"b".repeat(64)}/reduce`, body: { scope: "training-v3" } }]);
+    expect(words(rowOf("Newest phone"))).toContain("Can play, save, move and fit workouts, and record your feedback.");
+    expect([...rowOf("Newest phone").querySelectorAll("button")].map(words)).toEqual(["Allow reading your plan and history", "Stop fitting and feedback", "Revoke"]);
   });
 
   it("a v3 phone's step-down: one button, one line saying what stops and that it stays paired, then Stop sends it", async () => {
@@ -418,7 +456,13 @@ describe("Settings → Devices", () => {
   });
 
   it("the pairing code says what a phone paired now can do, from the worker's answer", async () => {
-    // A new pairing is the newest scope (the worker's PAIRING_SCOPE): the code says all of what that allows.
+    // A new pairing is the newest scope (the worker's PAIRING_SCOPE, v4): the code says all of what that allows.
+    worker({ pairScope: "training-v4" });
+    await mount();
+    await click(button("Pair a phone"));
+    expect(words(host)).toContain("A phone paired now can play, save, move and fit workouts, record your feedback, and read your plan and history.");
+    act(() => root?.unmount());
+    host?.remove();
     worker({ pairScope: "training-v3" });
     await mount();
     await click(button("Pair a phone"));
