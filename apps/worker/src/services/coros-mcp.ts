@@ -1,4 +1,4 @@
-import { and, eq, inArray, sql, type SQL } from "drizzle-orm";
+import { and, eq, inArray, isNull, ne, sql, type SQL } from "drizzle-orm";
 import { oauthStates, providerConnections, sleepRecords } from "@rg/database";
 import {
   addDays,
@@ -41,7 +41,7 @@ const PROVIDER = "coros_mcp" as const;
 /** What every coach context says while the sleep connection has expired (audit C2: it stayed expired five weeks, and
  * only Settings said so). */
 export const SLEEP_RECONNECT_WORDS = "the watch's sleep connection needs reconnecting";
-/** Whether the sleep connection needs reconnecting: COROS expired it (`markNeedsReauth`) or stopped accepting it
+/** Whether the sleep connection needs reconnecting: COROS expired it (`needs_reauth`) or stopped accepting it
  * (`markCredentialsRejected`) — the only two ways its row reads `error`; Settings reads it so too. The sweep never
  * retries it: only a new grant helps. */
 export const sleepNeedsReconnect = (status: string | null | undefined): boolean => status === "error";
@@ -320,14 +320,18 @@ export async function corosMcpAccessToken(
   }
   const fresh = await refreshGrant(db, env, row, fetchImpl);
   if (fresh === "dead") {
-    await markNeedsReauth(db, row);
-    return null;
+    if (await markUnlessRotated(db, row, { status: "error", lastErrorCategory: "needs_reauth", updatedAt: nowInstant() })) {
+      return null;
+    }
+    // Another pull renewed the grant a moment ago, with the refresh token this one found spent.
+    return storedAccessToken(db, env, userId);
   }
   return fresh === "transient" ? null : fresh;
 }
 
 /** One refresh-token grant: the new access token (stored, the rotation kept), or `dead` (COROS turned the refresh
- * token down — invalid_grant — or there is none), or `transient` (anything else; the next try may work). */
+ * token down — invalid_grant — or there is none), or `transient` (anything else, the network included; the next try
+ * may work). */
 async function refreshGrant(
   db: Db,
   env: Env,
@@ -337,48 +341,76 @@ async function refreshGrant(
   const meta = row.meta as McpMeta | null;
   if (!row.encryptedRefreshToken || !meta?.tokenUrl || !meta.clientId) return "dead";
   const refreshToken = await decryptSecret(row.encryptedRefreshToken, env.TOKEN_ENCRYPTION_KEY);
-  const res = await fetchImpl(meta.tokenUrl, {
-    method: "POST",
-    headers: { "Content-Type": "application/x-www-form-urlencoded" },
-    body: new URLSearchParams({
-      grant_type: "refresh_token",
-      refresh_token: refreshToken,
-      client_id: meta.clientId,
-    }),
-  });
-  if (!res.ok) {
+  let res: Response;
+  let tokens: TokenResponse | null;
+  try {
+    res = await fetchImpl(meta.tokenUrl, {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({
+        grant_type: "refresh_token",
+        refresh_token: refreshToken,
+        client_id: meta.clientId,
+      }),
+    });
+    tokens = res.ok ? ((await res.json()) as TokenResponse) : null;
+  } catch (e) {
+    console.error("coros-mcp: refresh unreachable", e instanceof Error ? e.name : "unknown");
+    return "transient";
+  }
+  if (!res.ok || !tokens) {
     console.error("coros-mcp: refresh failed", res.status);
     // invalid_grant = the refresh token is dead; anything else is transient.
     return res.status === 400 || res.status === 401 ? "dead" : "transient";
   }
-  const tokens = (await res.json()) as TokenResponse;
   if (!tokens.access_token) return "dead";
   await storeTokens(db, env, row, tokens);
   return tokens.access_token;
 }
 
-async function markNeedsReauth(db: Db, row: ConnRow): Promise<void> {
-  await db
+/**
+ * Mark the grant (`set`) unless another pull rotated it since `spent` was read: rotating refresh tokens work once, so
+ * of two refreshes at once (the cron and a probe, a reconnect's own pull) one hears invalid_grant about a grant the
+ * other has just renewed. One conditional statement, so nothing can land between the look and the mark. True when it
+ * marked; false when the grant moved on (`storedAccessToken` is then the one to use).
+ */
+async function markUnlessRotated(
+  db: Db,
+  spent: ConnRow,
+  set: Partial<typeof providerConnections.$inferInsert>,
+): Promise<boolean> {
+  const unchanged =
+    spent.encryptedRefreshToken === null
+      ? isNull(providerConnections.encryptedRefreshToken)
+      : eq(providerConnections.encryptedRefreshToken, spent.encryptedRefreshToken);
+  const marked = await db
     .update(providerConnections)
-    .set({ status: "error", lastErrorCategory: "needs_reauth", updatedAt: nowInstant() })
-    .where(eq(providerConnections.id, row.id));
+    .set(set)
+    .where(and(eq(providerConnections.id, spent.id), ne(providerConnections.status, "disconnected"), unchanged))
+    .returning({ id: providerConnections.id });
+  return marked.length > 0;
+}
+
+/** The access token on the row now (another pull's renewal), or null when the grant is gone. */
+async function storedAccessToken(db: Db, env: Env, userId: string): Promise<string | null> {
+  const row = await connRow(db, userId);
+  if (!row?.encryptedAccessToken || row.status === "disconnected") return null;
+  return decryptSecret(row.encryptedAccessToken, env.TOKEN_ENCRYPTION_KEY);
 }
 
 /** COROS stopped accepting the grant: it refused a tool call (or answered 401) again after the one refresh and retry,
  * or turned the refresh down. The same `error` state an expired grant leaves — the sweep stops; Settings, the sync line
- * and the coach ask for a reconnect — with its own category, and what COROS said kept for diagnosis. */
-async function markCredentialsRejected(db: Db, userId: string, note: string): Promise<void> {
-  const row = await connRow(db, userId);
-  if (!row) return;
-  await db
-    .update(providerConnections)
-    .set({
-      status: "error",
-      lastErrorCategory: SLEEP_REFUSED_CATEGORY,
-      meta: { ...(row.meta as McpMeta | null), lastToolError: note.slice(0, 600) },
-      updatedAt: nowInstant(),
-    })
-    .where(eq(providerConnections.id, row.id));
+ * and the coach ask for a reconnect — with its own category, and what COROS said kept for diagnosis. With `spent` (the
+ * row whose refresh was turned down), only while no other pull has renewed the grant since; true when it marked. */
+async function markCredentialsRejected(db: Db, userId: string, note: string, spent?: ConnRow): Promise<boolean> {
+  const row = spent ?? (await connRow(db, userId));
+  if (!row) return false;
+  return markUnlessRotated(db, row, {
+    status: "error",
+    lastErrorCategory: SLEEP_REFUSED_CATEGORY,
+    meta: { ...(row.meta as McpMeta | null), lastToolError: note.slice(0, 600) },
+    updatedAt: nowInstant(),
+  });
 }
 
 /** Best-effort revoke, then forget the tokens. */
@@ -527,29 +559,40 @@ interface McpSession {
 /**
  * The grant's requests, with COROS's refusal handled exactly like a 401 (google-calendar.ts's rule): the first one
  * costs one refresh-token grant and one retry; a second, or a refresh COROS turns down, marks the connection
- * (`markCredentialsRejected`) and throws `McpNeedsReconnect`. A refresh that fails for a moment marks nothing — it
- * throws, the pull is an error, and the next sweep tries again. Null when there is no usable grant at all.
+ * (`markCredentialsRejected`) and throws `McpNeedsReconnect`. That is at most one refusal-triggered refresh a session
+ * (an expiry refresh as it opens may come before it). A refresh turned down because another pull had just renewed the
+ * grant (rotation) marks nothing: the retry uses that pull's token. A refresh that fails for a moment marks nothing
+ * either — it throws `McpGrantError`, the pull is an error, and the next sweep tries again. Null when there is no
+ * usable grant at all.
  */
 async function openMcpSession(db: Db, env: Env, userId: string, fetchImpl: typeof fetch): Promise<McpSession | null> {
   let token = await corosMcpAccessToken(db, env, userId, fetchImpl);
   if (!token) return null;
   let refreshed = false;
-  const rejected = async (e: McpAuthRejected, when: string): Promise<McpNeedsReconnect> => {
-    await markCredentialsRejected(db, userId, `${e.message} (${when})`);
-    return new McpNeedsReconnect(e.message);
-  };
   const request = async (method: string, params: unknown): Promise<unknown> => {
     try {
       return await mcpRequest(token!, method, params, fetchImpl);
     } catch (e) {
       if (!(e instanceof McpAuthRejected)) throw e;
-      if (refreshed) throw await rejected(e, "again after one refresh and retry");
+      if (refreshed) {
+        await markCredentialsRejected(db, userId, `${e.message} (again after one refresh and retry)`);
+        throw new McpNeedsReconnect(e.message);
+      }
       refreshed = true;
       const row = await connRow(db, userId);
       const fresh = row ? await refreshGrant(db, env, row, fetchImpl) : "dead";
-      if (fresh === "dead") throw await rejected(e, "and turned the refresh down");
       if (fresh === "transient") throw new McpGrantError("coros-mcp: the refresh after a refusal failed for now");
-      token = fresh;
+      if (fresh === "dead") {
+        if (!row || (await markCredentialsRejected(db, userId, `${e.message} (and turned the refresh down)`, row))) {
+          throw new McpNeedsReconnect(e.message);
+        }
+        // Not marked: another pull renewed the grant with the refresh token this one found spent. Its token is the retry.
+        const theirs = await storedAccessToken(db, env, userId);
+        if (!theirs) throw new McpGrantError("coros-mcp: the grant went away mid-pull");
+        token = theirs;
+      } else {
+        token = fresh;
+      }
       return request(method, params);
     }
   };
@@ -557,7 +600,8 @@ async function openMcpSession(db: Db, env: Env, userId: string, fetchImpl: typeo
 }
 
 /** The stateless-server handshake: initialize is cheap and spec-polite (its
- * failure is not the sync's — unless it means the grant is gone). */
+ * failure is not the sync's — unless the grant is the trouble, gone or only
+ * unrenewable for now: then the pull stops here, as at any other request). */
 async function mcpToolList(session: McpSession): Promise<McpToolDef[]> {
   await session
     .request("initialize", {
@@ -566,7 +610,7 @@ async function mcpToolList(session: McpSession): Promise<McpToolDef[]> {
       clientInfo: { name: "run.garden", version: "1.0" },
     })
     .catch((e: unknown) => {
-      if (e instanceof McpNeedsReconnect) throw e;
+      if (e instanceof McpGrantError) throw e;
     });
   const result = (await session.request("tools/list", {})) as { tools?: McpToolDef[] } | null | undefined;
   return result?.tools ?? [];
@@ -837,6 +881,14 @@ export function parseDailyHealthText(text: string): { recognized: boolean; night
   return { recognized: true, nights: nights.sort((a, b) => (a.date < b.date ? -1 : 1)) };
 }
 
+/** Whether a queryDailyHealthData reply really is the daily report, nights in it or not: not flagged an error, and
+ * listing at least one "--- YYYYMMDD ---" day (a real empty week still lists its days). A phrase is not enough — an
+ * isError "Sleep data query failed" once read as an empty week (review m1). */
+function isDailyReport(result: unknown): boolean {
+  if ((result as { isError?: unknown } | null)?.isError === true) return false;
+  return replyTexts(result).some((t) => /^--- \d{8} ---$/m.test(t));
+}
+
 /** A sanity cap, not a scale: COROS's stress scale is its own and we claim none. */
 const STRESS_SANITY_MAX = 1000;
 
@@ -1031,20 +1083,22 @@ export async function syncCorosMcpSleep(
     await db.select({ id: sleepRecords.id }).from(sleepRecords).where(eq(sleepRecords.userId, userId)).limit(1)
   )[0];
   // Steady state re-reads a week (nights land late). After a gap — COROS refusing the grant until a reconnect — the
-  // read reaches back the same week before the last good sync, so the gap fills, within the 42 days one read holds.
+  // read reaches back the same week before the last good sync (its own day counted, so a sync yesterday changes
+  // nothing), so the gap fills, within the 42 days one read holds.
   const lastSyncDay = row.lastSyncAt ? todayInZone(timezone, new Date(row.lastSyncAt)) : today;
   const startDate = anySleep
     ? maxLocalDate(
         addDays(today, -FIRST_SYNC_DAYS),
-        minLocalDate(addDays(today, -STEADY_SYNC_DAYS), addDays(lastSyncDay, -STEADY_SYNC_DAYS)),
+        minLocalDate(addDays(today, -STEADY_SYNC_DAYS), addDays(lastSyncDay, -(STEADY_SYNC_DAYS - 1))),
       )
     : addDays(today, -FIRST_SYNC_DAYS);
-  // A real read is the only thing that says synced — and it proves the grant good, refused before or not.
+  // A real read is the only thing that says synced — and it proves the grant good, refused before or not. A Disconnect
+  // that landed mid-pull stays one.
   const synced = () =>
     db
       .update(providerConnections)
       .set({ status: "connected", lastSyncAt: nowInstant(), lastErrorCategory: null, updatedAt: nowInstant() })
-      .where(eq(providerConnections.id, row.id));
+      .where(and(eq(providerConnections.id, row.id), ne(providerConnections.status, "disconnected")));
 
   try {
     const tools = await mcpToolList(session);
@@ -1069,9 +1123,9 @@ export async function syncCorosMcpSleep(
     }
     const tool = tools.find((t) => t.name === "querySleepData");
     if (!tool) {
-      // COROS no longer lists querySleepData (gone by 2026-09-24). A daily report it could read with no night in it
-      // is a real answer — a week the watch logged none.
-      if (replyTexts(dailyResult).some((t) => parseDailyHealthText(t).recognized || parseSleepText(t).recognized)) {
+      // COROS no longer lists querySleepData (gone by 2026-09-24). A daily report with no night in it is a real answer
+      // — a week the watch logged none — but only a report: not flagged an error, and listing its days.
+      if (isDailyReport(dailyResult)) {
         await synced();
         return { status: "ok", written: 0, skipped: 0 };
       }

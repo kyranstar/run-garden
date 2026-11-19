@@ -23,9 +23,11 @@ import { syncRoutes } from "../src/routes/sync.js";
 import { buildDossier } from "../src/services/coach-context.js";
 import {
   completeCorosMcpAuth,
+  corosMcpAccessToken,
   consumeCorosMcpState,
   corosMcpSleepSweep,
   corosRefusesGrant,
+  disconnectCorosMcp,
   probeMcpTool,
   SLEEP_RECONNECT_WORDS,
   startCorosMcpAuth,
@@ -78,15 +80,43 @@ interface MockOpts {
   nights?: LocalDate[];
   /** queryDailyHealthData's reply, overriding the report built from `nights`. */
   dailyReply?: unknown;
+  /** Which bearer tokens COROS refuses on `initialize` too (tools/list stays unrefused, as live). */
+  refusesInitialize?: (token: string) => boolean;
+  /** Answer tools/call over SSE (Streamable HTTP's other shape). */
+  sse?: boolean;
+  /** queryDailyHealthData takes startDate/endDate (YYYYMMDD integers) instead of `days`. */
+  rangeSchema?: boolean;
+  /** The token endpoint fails at the network (fetch throws) on a refresh grant. */
+  refreshThrows?: boolean;
+  /** Two pulls refresh at once: each refresh token works once (rotation), the first two refresh requests are held until
+   * both have arrived, and the one presenting a spent token hears invalid_grant 30 ms after the other is answered. */
+  refreshRace?: boolean;
+  /** Runs while COROS is answering queryDailyHealthData (something the athlete does mid-pull). */
+  duringDaily?: () => Promise<void>;
 }
+
+/** YYYYMMDD (a range schema's argument) as a LocalDate. */
+const fromCompact = (n: unknown): LocalDate => {
+  const s = String(n);
+  return `${s.slice(0, 4)}-${s.slice(4, 6)}-${s.slice(6, 8)}` as LocalDate;
+};
 
 function mockCoros(opts: MockOpts = {}) {
   const toolCalls: Array<{ name: string; token: string; args: Record<string, unknown> }> = [];
   let refreshGrants = 0;
   let minted = 1;
   const held = new Set(opts.nights ?? []);
+  const spent = new Set<string>();
+  const waiting: Array<() => void> = [];
   const json = (data: unknown, status = 200) =>
     new Response(JSON.stringify(data), { status, headers: { "Content-Type": "application/json" } });
+  const rpc = (result: unknown) =>
+    opts.sse
+      ? new Response(`event: message\ndata: ${JSON.stringify({ jsonrpc: "2.0", id: 1, result })}\n\n`, {
+          status: 200,
+          headers: { "Content-Type": "text/event-stream" },
+        })
+      : json({ jsonrpc: "2.0", id: 1, result });
   const fetchImpl = (async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input);
     const body = typeof init?.body === "string" ? init.body : (init?.body?.toString() ?? "");
@@ -105,6 +135,21 @@ function mockCoros(opts: MockOpts = {}) {
       const params = new URLSearchParams(body);
       if (params.get("grant_type") === "refresh_token") {
         refreshGrants += 1;
+        if (opts.refreshThrows) throw new TypeError("fetch failed");
+        if (opts.refreshRace) {
+          if (refreshGrants <= 2) {
+            await new Promise<void>((go) => {
+              waiting.push(go);
+              if (waiting.length === 2) for (const w of waiting) w();
+            });
+          }
+          const presented = params.get("refresh_token") ?? "";
+          if (spent.has(presented)) {
+            await new Promise((r) => setTimeout(r, 30));
+            return json({ error: "invalid_grant" }, 400);
+          }
+          spent.add(presented);
+        }
         const status = opts.refreshStatus ?? 200;
         if (status !== 200) return json({ error: status === 400 ? "invalid_grant" : "unavailable" }, status);
       }
@@ -114,7 +159,10 @@ function mockCoros(opts: MockOpts = {}) {
     if (url === MCP) {
       const token = new Headers(init?.headers).get("Authorization")?.replace(/^Bearer /, "") ?? "";
       const req = JSON.parse(body) as { method: string; params?: { name?: string; arguments?: Record<string, unknown> } };
-      if (req.method === "initialize") return json({ jsonrpc: "2.0", id: 1, result: { protocolVersion: "2025-06-18" } });
+      if (req.method === "initialize") {
+        if (opts.refusesInitialize?.(token)) return json({ jsonrpc: "2.0", id: 1, result: REFUSED_REPLY });
+        return json({ jsonrpc: "2.0", id: 1, result: { protocolVersion: "2025-06-18" } });
+      }
       // tools/list is unchanged under the refusal — the live server's list, querySleepData long gone, the FIT tools in it.
       if (req.method === "tools/list") {
         return json({
@@ -122,7 +170,17 @@ function mockCoros(opts: MockOpts = {}) {
           id: 1,
           result: {
             tools: [
-              { name: "queryDailyHealthData", inputSchema: { properties: { days: { type: "integer" } } } },
+              {
+                name: "queryDailyHealthData",
+                inputSchema: opts.rangeSchema
+                  ? {
+                      properties: {
+                        startDate: { type: "integer", description: "Start date, YYYYMMDD" },
+                        endDate: { type: "integer", description: "End date, YYYYMMDD" },
+                      },
+                    }
+                  : { properties: { days: { type: "integer" } } },
+              },
               { name: "querySleepOverview", inputSchema: { properties: { days: { type: "integer" } } } },
               { name: "querySleepHrv", inputSchema: { properties: { days: { type: "integer" } } } },
               { name: "queryRecoveryStatus", inputSchema: { properties: {} } },
@@ -136,16 +194,19 @@ function mockCoros(opts: MockOpts = {}) {
         const name = req.params?.name ?? "";
         toolCalls.push({ name, token, args: req.params?.arguments ?? {} });
         if (opts.unauthorized?.(token)) return new Response("unauthorized", { status: 401 });
-        if (opts.refuses?.(token)) return json({ jsonrpc: "2.0", id: 1, result: REFUSED_REPLY });
+        if (opts.refuses?.(token)) return rpc(REFUSED_REPLY);
         if (name === "queryDailyHealthData") {
-          if (opts.dailyReply !== undefined) return json({ jsonrpc: "2.0", id: 1, result: opts.dailyReply });
-          const n = Number(req.params?.arguments?.days ?? 7);
+          await opts.duringDaily?.();
+          if (opts.dailyReply !== undefined) return rpc(opts.dailyReply);
+          const args = req.params?.arguments ?? {};
           const today = todayInZone(TZ);
-          const days = Array.from({ length: n }, (_, i) => addDays(today, -(n - 1 - i)));
+          const end = args.endDate !== undefined ? fromCompact(args.endDate) : today;
+          const n = args.startDate !== undefined ? daysBetween(fromCompact(args.startDate), end) + 1 : Number(args.days ?? 7);
+          const days = Array.from({ length: n }, (_, i) => addDays(end, -(n - 1 - i)));
           const text = dailyReport(days, held);
-          return json({ jsonrpc: "2.0", id: 1, result: { content: [{ type: "text", text: JSON.stringify(text) }], isError: false } });
+          return rpc({ content: [{ type: "text", text: JSON.stringify(text) }], isError: false });
         }
-        return json({ jsonrpc: "2.0", id: 1, result: { content: [{ type: "text", text: JSON.stringify("Recovery: ok") }], isError: false } });
+        return rpc({ content: [{ type: "text", text: JSON.stringify("Recovery: ok") }], isError: false });
       }
     }
     return json({ error: `unexpected ${url}` }, 500);
@@ -337,7 +398,8 @@ describe("after reconnecting, the gap fills", () => {
     const lastSyncDay = todayInZone(TZ, new Date(at));
     const daily = accepting.toolCalls.filter((c) => c.name === "queryDailyHealthData");
     expect(daily).toHaveLength(1);
-    expect(daily[0]!.args.days).toBe(daysBetween(addDays(lastSyncDay, -7), today) + 1);
+    // A week before the last good sync, counting its own day (the steady window, moved back with it).
+    expect(daily[0]!.args.days).toBe(daysBetween(addDays(lastSyncDay, -6), today) + 1);
     expect(accepting.toolCalls.map((c) => c.name)).toEqual(["queryDailyHealthData"]);
     expect(fitCalls(accepting.toolCalls)).toEqual([]);
     const dates = (await db.select().from(sleepRecords)).map((r) => r.date).sort();
@@ -368,10 +430,27 @@ describe("after reconnecting, the gap fills", () => {
     expect(mock.toolCalls[0]!.args.days).toBe(42);
   });
 
+  it("…and so does a tool that takes start and end dates: the start is today − 42, never the old gap", async () => {
+    const mock = mockCoros({ nights: [addDays(today, -1)], rangeSchema: true });
+    await connect(mock.fetchImpl);
+    await lastGoodSync(60, addDays(today, -61));
+    expect(await syncCorosMcpSleep(db, ENV, userId, TZ, mock.fetchImpl)).toMatchObject({ status: "ok", written: 1 });
+    const compact = (d: LocalDate) => Number(d.replaceAll("-", ""));
+    expect(mock.toolCalls[0]!.args).toEqual({ startDate: compact(addDays(today, -42)), endDate: compact(today) });
+  });
+
   it("a healthy steady sync still re-reads a week", async () => {
     const mock = mockCoros({ nights: [addDays(today, -1)] });
     await connect(mock.fetchImpl);
     await lastGoodSync(0, addDays(today, -2));
+    await syncCorosMcpSleep(db, ENV, userId, TZ, mock.fetchImpl);
+    expect(mock.toolCalls[0]!.args.days).toBe(8);
+  });
+
+  it("a sync yesterday re-reads the same week — not a day more", async () => {
+    const mock = mockCoros({ nights: [addDays(today, -1)] });
+    await connect(mock.fetchImpl);
+    await lastGoodSync(1, addDays(today, -2));
     await syncCorosMcpSleep(db, ENV, userId, TZ, mock.fetchImpl);
     expect(mock.toolCalls[0]!.args.days).toBe(8);
   });
@@ -399,5 +478,118 @@ describe("the fallback tool COROS no longer lists", () => {
     expect(row.lastErrorCategory).toBe("tool_missing");
     expect((row.meta as { lastToolError?: string }).lastToolError).toMatch(/querySleepData/);
     expect(row.lastSyncAt).toBe(at);
+  });
+
+  // Review m1: "recognized" was a phrase in the first 200 characters, and isError was never read.
+  it("a daily reply COROS flags an error is not an empty week, whatever it mentions", async () => {
+    const mock = mockCoros({
+      dailyReply: { content: [{ type: "text", text: JSON.stringify("Sleep data query failed: upstream timeout") }], isError: true },
+    });
+    await connect(mock.fetchImpl);
+    const at = await lastGoodSync(1, addDays(today, -8));
+    expect((await syncCorosMcpSleep(db, ENV, userId, TZ, mock.fetchImpl)).status).toBe("tool_missing");
+    const row = await sleepRow();
+    expect(row.lastSyncAt).toBe(at);
+    expect(row.lastErrorCategory).toBe("tool_missing");
+  });
+
+  it("nor is a reply naming the daily report with no day in it", async () => {
+    const mock = mockCoros({
+      dailyReply: { content: [{ type: "text", text: JSON.stringify("Failed to query daily health data: timeout") }], isError: false },
+    });
+    await connect(mock.fetchImpl);
+    const at = await lastGoodSync(1, addDays(today, -8));
+    expect((await syncCorosMcpSleep(db, ENV, userId, TZ, mock.fetchImpl)).status).toBe("tool_missing");
+    expect((await sleepRow()).lastSyncAt).toBe(at);
+  });
+});
+
+describe("the grant's edges (review, 2026-11-19)", () => {
+  it("the refusal over SSE is the same refusal", async () => {
+    const mock = mockCoros({ refuses: () => true, sse: true });
+    await connect(mock.fetchImpl);
+    expect((await syncCorosMcpSleep(db, ENV, userId, TZ, mock.fetchImpl)).status).toBe("needs_reauth");
+    expect(mock.refreshGrants()).toBe(1);
+    expect((await sleepRow()).lastErrorCategory).toBe("credentials_rejected");
+  });
+
+  // Review m3: the initialize catch kept only McpNeedsReconnect, so the next refusal marked a grant nothing had tested.
+  it("a refusal on initialize whose refresh fails for a moment marks nothing: an error, retried next time", async () => {
+    const mock = mockCoros({ refusesInitialize: (t) => t === "access-2", refuses: (t) => t === "access-2", refreshStatus: 503 });
+    await connect(mock.fetchImpl);
+    const at = await lastGoodSync(1, addDays(today, -8));
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      expect((await syncCorosMcpSleep(db, ENV, userId, TZ, mock.fetchImpl)).status).toBe("error");
+    } finally {
+      error.mockRestore();
+    }
+    const row = await sleepRow();
+    expect(row.status).toBe("connected");
+    expect(row.lastErrorCategory).toBeNull();
+    expect(row.lastSyncAt).toBe(at);
+  });
+
+  // Review n1: a network failure at the token endpoint fell through as a tool failure ("queryDailyHealthData failed").
+  it("a token endpoint that cannot be reached is an error retried next time — never tool_missing", async () => {
+    const mock = mockCoros({ refuses: () => true, refreshThrows: true });
+    await connect(mock.fetchImpl);
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      expect((await syncCorosMcpSleep(db, ENV, userId, TZ, mock.fetchImpl)).status).toBe("error");
+    } finally {
+      error.mockRestore();
+    }
+    const row = await sleepRow();
+    expect(row.status).toBe("connected");
+    expect(row.lastErrorCategory).toBeNull();
+  });
+
+  // Review m2: two refused pulls refresh with the same rotating token; the loser heard invalid_grant and marked a grant
+  // the winner had just renewed.
+  it("two refused pulls at once (the cron and the probe): the loser of the refresh takes the winner's grant, nothing is marked", async () => {
+    const mock = mockCoros({ refuses: (t) => t === "access-2", refreshRace: true, nights: [addDays(today, -1)] });
+    await connect(mock.fetchImpl);
+    const [pull, probe] = await Promise.all([
+      syncCorosMcpSleep(db, ENV, userId, TZ, mock.fetchImpl),
+      probeMcpTool(db, ENV, userId, "queryDailyHealthData", 3, TZ, mock.fetchImpl),
+    ]);
+    expect(mock.refreshGrants()).toBe(2);
+    expect(pull).toMatchObject({ status: "ok", written: 1 });
+    expect(probe.error).toBeUndefined();
+    expect(probe.preview).toContain("Daily Health Data");
+    const row = await sleepRow();
+    expect(row.status).toBe("connected");
+    expect(row.lastErrorCategory).toBeNull();
+  });
+
+  it("two expiry refreshes at once: the loser takes the winner's token, never needs_reauth", async () => {
+    const mock = mockCoros({ refreshRace: true });
+    await connect(mock.fetchImpl);
+    await db
+      .update(providerConnections)
+      .set({ accessTokenExpiresAt: new Date(Date.now() - 1000).toISOString() })
+      .where(eq(providerConnections.userId, userId));
+    const tokens = await Promise.all([
+      corosMcpAccessToken(db, ENV, userId, mock.fetchImpl),
+      corosMcpAccessToken(db, ENV, userId, mock.fetchImpl),
+    ]);
+    expect(tokens).toEqual(["access-3", "access-3"]);
+    const row = await sleepRow();
+    expect(row.status).toBe("connected");
+    expect(row.lastErrorCategory).toBeNull();
+  });
+
+  // Review n5: synced() set `connected` unconditionally, so a Disconnect mid-pull came back as "Connected".
+  it("a Disconnect while a pull is reading stays disconnected", async () => {
+    const mock = mockCoros({
+      nights: [addDays(today, -1)],
+      duringDaily: () => disconnectCorosMcp(db, ENV, userId, (async () => new Response(null)) as typeof fetch),
+    });
+    await connect(mock.fetchImpl);
+    await syncCorosMcpSleep(db, ENV, userId, TZ, mock.fetchImpl);
+    const row = await sleepRow();
+    expect(row.status).toBe("disconnected");
+    expect(row.encryptedAccessToken).toBeNull();
   });
 });
