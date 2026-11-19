@@ -89,8 +89,8 @@ check("the laptop lists the pending phone with the phone's check number", !!pend
 check("Confirm: 200", (await call("POST", `/api/native/devices/${pending.id}/confirm`, { cookie: true, body: { check: won.check } })).status, 200);
 const me = await call("GET", "/api/native/me", { bearer: token });
 check("active: /api/native/me is {userId, device}", Object.keys(me.json).sort(), ["device", "userId"]);
-// A new pairing is minted at the newest scope (stage 2b RG-NOTES §3.5, §8: training-v3), and /me says so.
-check("…and its device is training-v3: {label, expiresAt, scope}", [Object.keys(me.json.device ?? {}).sort(), me.json.device?.scope], [["expiresAt", "label", "scope"], "training-v3"]);
+// A new pairing is minted at the newest scope (stage 2b RG-NOTES §3.5, §8; DESIGN-2c §3: training-v4), and /me says so.
+check("…and its device is training-v4: {label, expiresAt, scope}", [Object.keys(me.json.device ?? {}).sort(), me.json.device?.scope], [["expiresAt", "label", "scope"], "training-v4"]);
 
 // 3. Off the slice: refused.
 for (const [method, path] of [["GET", "/api/plan/today"], ["GET", "/api/auth/me"], ["POST", "/api/native/pairings"], ["GET", "/api/native/devices"], ["POST", "/api/settings/delete-all"]]) {
@@ -256,9 +256,10 @@ const deviceRowOf = (id) => sql(`select id, user_id, label, state, check_number,
 const fitted = await call("POST", "/api/workouts", { cookie: true, body: { doc: { ...doc, title: "Harness fit" }, date: day, time: "23:50", clientId: `harness-fit-${Date.now()}` } });
 check("the laptop makes another of today's sessions", fitted.status < 300, true);
 const fid = fitted.json.workout.id;
-// Paired at v3 (the newest), the phone starts here a rung down, as a phone paired before 2b's release is: the laptop's
-// step-down, in place, then the grant back.
-check("the phone paired at v3 is stepped down to v2 on the laptop, in place", (await call("POST", `/api/native/devices/${phoneId}/reduce`, { cookie: true, body: { scope: "training-v2" } })).json, { ok: true, scope: "training-v2", reduced: true });
+// Paired at v4 (the newest), the phone starts here two rungs down, as a phone paired before 2b's release is: the laptop's
+// step-down, in place, one rung at a time (v4 → v3, v3 → v2), then the grants back (here, and in 4f).
+check("the phone paired at v4 is stepped down to v3 on the laptop, in place", (await call("POST", `/api/native/devices/${phoneId}/reduce`, { cookie: true, body: { scope: "training-v3" } })).json, { ok: true, scope: "training-v3", reduced: true });
+check("…and to v2, one rung more", (await call("POST", `/api/native/devices/${phoneId}/reduce`, { cookie: true, body: { scope: "training-v2" } })).json, { ok: true, scope: "training-v2", reduced: true });
 const listedPhone = (await call("GET", "/api/native/devices", { cookie: true })).json.devices.find((d) => d.id === phoneId);
 check("the laptop lists the phone at v2, with v3 to grant", [listedPhone?.scope, listedPhone?.nextScope], ["training-v2", "training-v3"]);
 check("under v2, the phone's document read is 403 out_of_scope", (await call("GET", `/api/workouts/${fid}/doc`, { bearer: token })).json, { error: "out_of_scope" });
@@ -270,7 +271,7 @@ check("the laptop grants the phone v3: 200 granted", (await grantAs(phoneId, "tr
 check("…its row the same but its scope (token, account, label, state, expiry)", deviceRowOf(phoneId), { ...rowBefore, scope: "training-v3" });
 check("…with one audit", grantAudits() - auditsBefore, 1);
 check("the same grant again: 200 granted false, and no second audit", [(await grantAs(phoneId, "training-v3")).json, grantAudits() - auditsBefore], [{ ok: true, scope: "training-v3", granted: false }, 1]);
-check("never a downgrade: v3 → v2 is 409 not_next_scope", (await grantAs(phoneId, "training-v2")).json, { error: "not_next_scope", scope: "training-v3", next: null });
+check("never a downgrade: v3 → v2 is 409 not_next_scope", (await grantAs(phoneId, "training-v2")).json, { error: "not_next_scope", scope: "training-v3", next: "training-v4" });
 check("the same token, on its next request: /me says training-v3", (await call("GET", "/api/native/me", { bearer: token })).json.device?.scope, "training-v3");
 const docRead = await call("GET", `/api/workouts/${fid}/doc`, { bearer: token });
 check("…and its document read, refused a moment ago, answers: 200 at revision 1", [docRead.status, docRead.json.rev, docRead.json.origin], [200, 1, "studio"]);
@@ -342,6 +343,54 @@ const downs = await Promise.all([reduceAs(raceId, "training-v2"), reduceAs(raceI
 check("three step-downs at once on local D1: one reduced, two not, one audit", [downs.map((a) => `${a.status} ${a.json.reduced}`).sort(), reducedAudits() - raceReduced], [["200 false", "200 false", "200 true"], 1]);
 check("the laptop grants the phone v3 back: 200 granted, and its document read answers again", [(await grantAs(phoneId, "training-v3")).json.granted, (await call("GET", `/api/workouts/${fid}/doc`, { bearer: token })).status], [true, 200]);
 
+// 4f. Stage 2c on local D1 (kit v0.16, DESIGN-2c §2, §3): the laptop grants the v3 phone training-v4 in place; the same token,
+// refused the plan reads a moment before, reads its days, its history and What's in it for sessions ahead — and EVERY table
+// of the local D1 is byte-identical across those reads (the device row compared apart: only its hourly last use may move,
+// and its expiry never). Then the step-down to v3 refuses them again, and the grant back reads again.
+const allTables = sql(
+  "select name from sqlite_master where type = 'table' and name not like 'sqlite_%' and name not like '_cf_%' and name <> 'd1_migrations' order by name",
+).map((t) => t.name);
+/** Every table's rows but the device rows', in one wrangler call, hashed; and the phone's row without its last use. */
+const d1Hash = () =>
+  createHash("sha256")
+    .update(JSON.stringify(sqlAll(allTables.filter((t) => t !== "native_devices").map((t) => `select * from "${t}" order by rowid`))))
+    .digest("hex");
+const phoneRow = () => sql(`select id, user_id, label, state, scope, expires_at, confirmed_at, revoked_at from native_devices where id = '${phoneId}'`)[0];
+const window2c = [plusDays(day, -3), plusDays(day, 10)];
+const daysAs = (bearer, q = `?from=${window2c[0]}&to=${window2c[1]}`) => call("GET", `/api/native/days${q}`, { bearer });
+const listed2c = (await call("GET", "/api/native/devices", { cookie: true })).json.devices.find((d) => d.id === phoneId);
+check("2c: the laptop lists the phone at v3, with v4 to grant", [listed2c?.scope, listed2c?.nextScope], ["training-v3", "training-v4"]);
+check("2c: under v3, /days, /history and /ahead are 403 out_of_scope", await Promise.all([daysAs(token), call("GET", "/api/native/history", { bearer: token }), call("GET", `/api/native/sessions/${pid}/ahead`, { bearer: token })]).then((all) => all.map((a) => `${a.status} ${a.json.error}`)), Array(3).fill("403 out_of_scope"));
+const before2c = phoneRow();
+check("2c: the laptop grants the phone v4: 200 granted", (await grantAs(phoneId, "training-v4")).json, { ok: true, scope: "training-v4", granted: true });
+check("2c: …its row the same but its scope (token, account, label, state, expiry)", phoneRow(), { ...before2c, scope: "training-v4" });
+const hash2c = d1Hash();
+const days2c = await daysAs(token);
+check("2c: /days over 14 days: 200, each day once, today the account's", [days2c.status, days2c.json.days?.length, days2c.json.today, days2c.json.days?.find((d) => d.date === day)?.tense], [200, 14, day, "today"]);
+const done2c = days2c.json.days?.flatMap((d) => d.sessions).find((s) => s.id === id);
+check("2c: …the session the phone saved is done, by the app, at its save's start", [done2c?.state, done2c?.doneBy, typeof done2c?.doneAt], ["completed", "app", "string"]);
+const edit2c = days2c.json.days?.flatMap((d) => d.sessions).find((s) => s.id === pid);
+check("2c: …the session the phone moved stands on its day, a document, movable", [edit2c?.state, edit2c?.content, edit2c?.can?.move, days2c.json.days?.find((d) => d.sessions.some((x) => x.id === pid))?.date], ["scheduled", "document", true, d2]);
+check("2c: /days's query beyond its rule: 403 out_of_scope", (await daysAs(token, `?from=${day}&to=${day}&x=1`)).json, { error: "out_of_scope" });
+check("2c: /days beyond the horizon: 400 out_of_horizon", (await daysAs(token, `?from=${plusDays(day, 2)}&to=${plusDays(day, 15)}`)).json.error, "out_of_horizon");
+const history2c = await call("GET", "/api/native/history", { bearer: token });
+const saved2c = history2c.json.rows?.find((r) => r.id === performedId);
+check("2c: /history: 200, the phone's save with its planned session and its sets", [history2c.status, saved2c?.source, saved2c?.planned?.workoutId, Array.isArray(saved2c?.sets)], [200, "app", id, true]);
+check("2c: …each row's keys exactly the contract's", [...new Set((history2c.json.rows ?? []).map((r) => Object.keys(r).join(",")))], ["id,date,time,source,sport,title,seconds,distanceMeters,planned,extra,moves,sets,note"]);
+const ahead2c = await call("GET", `/api/native/sessions/${pid}/ahead`, { bearer: token });
+check("2c: /ahead of the session moved ahead: 200, its document's moves", [ahead2c.status, ahead2c.json.basis, (ahead2c.json.moves ?? []).map((m) => m.exerciseId)], [200, "document", ["bridge", "deadBug"]]);
+check("2c: /ahead of today's session: 409 not_ahead", (await call("GET", `/api/native/sessions/${id}/ahead`, { bearer: token })).json, { error: "not_ahead", date: day, today: day });
+const [slotAhead] = slot ? sql(`select id from planned_workouts where plan_id = '${programme.json.program?.id}' and archived_at is null and effective_date > '${day}' order by effective_date, id limit 1`) : [];
+if (slotAhead) {
+  const engine2c = await call("GET", `/api/native/sessions/${slotAhead.id}/ahead`, { bearer: token });
+  check("2c: /ahead of an engine slot ahead: 200, built in memory, with moves", [engine2c.status, engine2c.json.basis, (engine2c.json.moves ?? []).length > 0], [200, "engine", true]);
+}
+check("2c: every table of the local D1 byte-identical across the reads", d1Hash(), hash2c);
+check("2c: …and the phone's row too, but its last use (its expiry never moves)", phoneRow(), { ...before2c, scope: "training-v4" });
+check("2c: the laptop steps the phone down, v4 → v3: 200 reduced", (await reduceAs(phoneId, "training-v3")).json, { ok: true, scope: "training-v3", reduced: true });
+check("2c: …and the same token's /days is 403 at once, while its document read still answers", [(await daysAs(token)).json, (await call("GET", `/api/workouts/${fid}/doc`, { bearer: token })).status], [{ error: "out_of_scope" }, 200]);
+check("2c: the laptop grants v4 again: the reads answer again, no tap on the phone", [(await grantAs(phoneId, "training-v4")).json.granted, (await daysAs(token)).status], [true, 200]);
+
 // 4e. The LifeOS QA account on local D1 (the phone QA harness, routes/qa.ts): the laptop sets it up (account, fixtures, a code
 // and the run's tokens); a phone pairs to it, active at once, and does what the on-device suite does; the harness token reads
 // the state and purges; then EVERY table of the real local D1 that has a user_id column, and every child of the QA account's
@@ -370,9 +419,15 @@ const qaPair = await call("POST", "/api/native/pair", { body: { code: qaSetup.js
 check("QA: its code pairs a phone (the owner's wire shape: pending)", [qaPair.status, qaPair.json.state], [200, "pending"]);
 const qaToken = qaPair.json.token;
 const qaMe = await call("GET", "/api/native/me", { bearer: qaToken });
-check("QA: …active at once, as the QA account, at v3", [qaMe.status, qaMe.json.userId, qaMe.json.device?.scope], [200, qaId, "training-v3"]);
+check("QA: …active at once, as the QA account, at v4", [qaMe.status, qaMe.json.userId, qaMe.json.device?.scope], [200, qaId, "training-v4"]);
 const qaDay = (await call("GET", "/api/native/today", { bearer: qaToken })).json;
 check("QA: the phone's day is today's three QA fixtures, and nothing of the owner's", qaDay.sessions.map((s) => s.title).sort(), ["QA Easy run", "QA Hips and back", "QA Mobility"]);
+// Stage 2c's reads on the QA phone: its own days and record, never a row of the owner's (on real local D1).
+const qaDays = await call("GET", `/api/native/days?from=${plusDays(qaDay.today, -3)}&to=${plusDays(qaDay.today, 3)}`, { bearer: qaToken });
+const ownerIds2c = [id, pid, fid, performedId, ...sql(`select id from activities where user_id = '${me.json.userId}'`).map((r) => r.id)];
+check("QA: its /days is its own: today's three QA fixtures, no owner id", [qaDays.status, qaDays.json.days?.find((d) => d.date === qaDay.today)?.sessions.map((s) => s.title).sort(), ownerIds2c.some((x) => JSON.stringify(qaDays.json).includes(x))], [200, ["QA Easy run", "QA Hips and back", "QA Mobility"], false]);
+const qaHistory = await call("GET", "/api/native/history", { bearer: qaToken });
+check("QA: its /history holds no owner id; /ahead of an owner session is 404", [qaHistory.status, ownerIds2c.some((x) => JSON.stringify(qaHistory.json).includes(x)), (await call("GET", `/api/native/sessions/${pid}/ahead`, { bearer: qaToken })).status], [200, false, 404]);
 const qaPlan = await call("GET", `/api/lifeos/plan?from=${qaDay.today}&to=${qaDay.today}`, { bearer: qaSetup.json.planToken });
 check("QA: its plan token reads its plan at /api/lifeos/plan", [qaPlan.status, (qaPlan.json.days?.[0]?.sessions ?? []).map((s) => s.title).sort()], [200, ["QA Easy run", "QA Hips and back", "QA Mobility"]]);
 const hips = qaDay.sessions.find((s) => s.title === "QA Hips and back");
