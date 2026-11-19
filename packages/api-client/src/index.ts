@@ -1683,6 +1683,9 @@ export interface CoachRunDto {
   focus?: CoachRunFocus;
   /** Who asked (plans with a purpose §4.2): `plan_draft`, the app — its `request` is the app's words; absent, the athlete. */
   origin?: "plan_draft";
+  /** R1: asked from the owner's phone ("From LifeOS"), and the day frame's lines when one came with it. */
+  via?: "lifeos";
+  frameLines?: string[];
 }
 
 /** The design proposal a run holds open: its id, its status and its flags (a stop's note among them). */
@@ -1799,6 +1802,9 @@ export interface CoachConversationTurnDto {
   words: string | null;
   /** `app`: the words are the app's, not the athlete's (a plan's draft, plans with a purpose §4.2). Absent: the athlete's. */
   from?: "app";
+  /** R1: asked from the owner's phone ("From LifeOS"), and the day frame's lines when one came with it. */
+  via?: "lifeos";
+  frameLines?: string[];
   status: CoachRunStatus;
   /** The coach's finish line or answer, plain words; null while the run works (or when it stopped with none). */
   line: string | null;

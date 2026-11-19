@@ -11934,6 +11934,19 @@ a.stu-tpl-open:focus-visible::before {
   color: var(--ink-soft);
   font-style: italic;
 }
+/* A turn asked from the owner's phone (R1): a quiet mark under their words, and the day it shared, one line a day. */
+.coach-from-phone {
+  align-self: flex-end;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 2px;
+  color: var(--ink-soft);
+  font-size: 0.8125rem;
+}
+.coach-from-lifeos {
+  font-weight: 600;
+}
 .coach-msg--coach {
   display: flex;
   align-items: flex-start;

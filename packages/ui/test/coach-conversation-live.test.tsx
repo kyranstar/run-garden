@@ -498,6 +498,20 @@ describe("a plan's draft in the conversation (plans with a purpose §4.2)", () =
   });
 });
 
+describe("a run asked from the phone (R1, DESIGN-3 §3.10)", () => {
+  it("says From LifeOS, and the day frame's lines when one came — the athlete's words still theirs", async () => {
+    const lines = ["Thu 19 Nov · energy low · free 17:30–19:30 · day ends 23:00 · a full day"];
+    server(conversation([turn({ runId: "run-p", words: "Make today's 18:00 run easier.", via: "lifeos", frameLines: lines }), turn({ runId: "run-q", words: "And tomorrow?", via: "lifeos" }), turn({ runId: "run-l", words: "From the laptop" })]));
+    mount();
+    await openCoach();
+    await until(() => dialog()!.querySelectorAll(".coach-from-lifeos").length === 2, "the phone's turns");
+    const marks = [...dialog()!.querySelectorAll(".coach-turn")].map((li) => li.querySelector(".coach-from-lifeos")?.textContent ?? null);
+    expect(marks).toEqual(["From LifeOS", "From LifeOS", null]);
+    expect([...dialog()!.querySelectorAll(".coach-frame-line")].map((l) => l.textContent)).toEqual(lines);
+    expect([...dialog()!.querySelectorAll(".coach-msg--athlete")].map((p) => p.textContent)).toEqual(["Make today's 18:00 run easier.", "And tomorrow?", "From the laptop"]);
+  });
+});
+
 describe("the conversation, kept", () => {
   it("comes back on open: the turns, 'Reply' — and a send continues it by its id", async () => {
     const calls = server(conversation([turn()]), {

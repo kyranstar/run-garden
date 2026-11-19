@@ -500,6 +500,17 @@ export function CoachConversation({ ctx, loopDeps, request = null, seeing: seenA
                 <li key={t.runId} className="coach-turn">
                   {/* The athlete's words in their bubble; the app's own ask (a plan's draft) as a quiet line of the app's. */}
                   {t.words ? <p className={t.from === "app" ? "coach-msg coach-msg--app" : "coach-msg coach-msg--athlete"}>{t.words}</p> : null}
+                  {/* Asked from the phone (R1, DESIGN-3 §3.10): said so, with the day it shared when it shared one. */}
+                  {t.via === "lifeos" ? (
+                    <div className="coach-from-phone">
+                      <span className="coach-from-lifeos">From LifeOS</span>
+                      {(t.frameLines ?? []).map((l) => (
+                        <span key={l} className="coach-frame-line">
+                          {l}
+                        </span>
+                      ))}
+                    </div>
+                  ) : null}
                   {t.runId === liveId && (working || isLive(t.status)) && liveAnswer === null ? (
                     <CoachBoundary>
                       {liveRun && liveStatus ? (

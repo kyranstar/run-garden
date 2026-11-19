@@ -25,6 +25,7 @@ import { addDays, dayLabel, dayRangeLabel, todayInZone } from "@rg/domain";
 import { label } from "@rg/exercise-library";
 import type { Db } from "./db.js";
 import { markUntrusted } from "./design-prompt.js";
+import { dayFrameSchema, frameLines } from "./design-frame.js";
 import { clipProse } from "./design-prose.js";
 import { CHECK_ASKED } from "./design-tools/ask.js";
 import { ANSWER_MAX } from "./design-tools/finish.js";
@@ -96,6 +97,10 @@ export interface ConversationTurn {
   /** `app`: the words are the app's, not the athlete's — a plan's draft, which the hourly pass asks (plans with a purpose
    * §4.2). Absent: the athlete's. */
   from?: "app";
+  /** R1 (DESIGN-3 §3.10): asked from the owner's phone — the laptop says "From LifeOS" — and the day frame's lines when one
+   * came with it (switch A on), rendered by code from its typed fields. */
+  via?: "lifeos";
+  frameLines?: string[];
   status: string;
   /** The coach's line: its finish's words or its answer, a stop's own line; null while it works. */
   line: string | null;
@@ -472,6 +477,14 @@ export type EndedLine = (
 /** A turn the app asked (a plan's draft, plans with a purpose §4.2): its settings' `origin`. */
 const askedByApp = (settingsText: string | null): boolean => (parsed(settingsText) as { origin?: unknown } | null)?.origin === "plan_draft";
 
+/** A turn asked from the owner's phone (R1): its settings' `via`, and its frame's lines when it has one. */
+function phoneOf(settingsText: string | null): { via?: "lifeos"; frameLines?: string[] } {
+  const s = parsed(settingsText) as { via?: unknown; frame?: unknown } | null;
+  if (s?.via !== "lifeos") return {};
+  const frame = s.frame ? dayFrameSchema.safeParse(s.frame) : null;
+  return { via: "lifeos", ...(frame?.success ? { frameLines: frameLines(frame.data) } : {}) };
+}
+
 /** One run as a turn. */
 function turnOf(row: TurnRow, today: string, endedLine: EndedLine): ConversationTurn {
   const live = LIVE.includes(row.status);
@@ -482,6 +495,7 @@ function turnOf(row: TurnRow, today: string, endedLine: EndedLine): Conversation
     at: row.createdAt,
     words: row.request,
     ...(askedByApp(row.settings) ? { from: "app" as const } : {}),
+    ...phoneOf(row.settings),
     status: shownStatus(row.status),
     line,
     cards: cardsOf(row.scope, proposalOf(row.proposal), today),

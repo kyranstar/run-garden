@@ -70,6 +70,8 @@ export function toRun(v: unknown): CoachRunDto {
     ceilingUsd: num(r.ceilingUsd),
     // A plan's draft (plans with a purpose §4.2): its request is the app's words.
     ...(r.origin === "plan_draft" ? { origin: "plan_draft" as const } : {}),
+    // Asked from the owner's phone (R1).
+    ...(r.via === "lifeos" ? { via: "lifeos" as const, ...(texts(r.frameLines).length > 0 ? { frameLines: texts(r.frameLines) } : {}) } : {}),
   };
 }
 
@@ -607,6 +609,8 @@ function toTurn(v: unknown): Turn | null {
     words: textOrNull(t.words),
     // The app's words, not the athlete's (a plan's draft): said only when the server says so.
     ...(t.from === "app" ? { from: "app" as const } : {}),
+    // Asked from the owner's phone (R1): said only when the server says so, with the frame's lines as texts.
+    ...(t.via === "lifeos" ? { via: "lifeos" as const, ...(texts(t.frameLines).length > 0 ? { frameLines: texts(t.frameLines) } : {}) } : {}),
     status: (typeof t.status === "string" && t.status ? t.status : "finished") as CoachRunStatus,
     line: textOrNull(t.line),
     cards: list(t.cards).map(toCard).filter((c): c is CoachConversationCardDto => c !== null),
