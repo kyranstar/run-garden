@@ -13,8 +13,10 @@ import { loadPreferences, savePreferences } from "../src/services/calendar-sync.
 import {
   createQaUser,
   HARNESS_TOKEN_MAX_MS,
+  isQaAccount,
   isQaEmail,
   mintQaPairing,
+  qaTargetById,
   purgeQa,
   QA_EMAIL,
   qaHarnessToken,
@@ -33,6 +35,7 @@ import {
   verifyHarnessToken,
   type QaTarget,
 } from "../src/services/qa-account.js";
+import { notQaAccount, qaEnv } from "../src/auth/qa-identity.js";
 import { seedFullAccount } from "./account-fixture.js";
 import { makeTestDb, makeTestUser, pinMiddayToday } from "./helpers.js";
 import { nativeEnv, seedDevice } from "./native-fixture.js";
@@ -65,9 +68,30 @@ describe("who the QA account is", () => {
     expect(qaPossible({ ALLOWED_GOOGLE_EMAIL: "" })).toBe(false);
     expect(qaPossible({ ALLOWED_GOOGLE_EMAIL: " LifeOS-QA@invalid " })).toBe(false);
     expect(isQaEmail("lifeos-qa@invalid", env)).toBe(true);
-    expect(isQaEmail(" LIFEOS-QA@INVALID", env)).toBe(true);
+    // Exactly as stored, as SQL's `users.email = QA_EMAIL` matches (the review's N-1): a variant is no QA account.
+    expect(isQaEmail(" LIFEOS-QA@INVALID", env)).toBe(false);
+    expect(isQaEmail("lifeos-qa@invalid ", env)).toBe(false);
     expect(isQaEmail("lifeos-qa@invalid", { ALLOWED_GOOGLE_EMAIL: "lifeos-qa@invalid" })).toBe(false);
     expect(isQaEmail(env.ALLOWED_GOOGLE_EMAIL, env)).toBe(false);
+  });
+
+  it("its phone's requests see every switch that leaves run-garden off, the model URLs included", () => {
+    const on = { ...env, WATCH_PUSH_ENABLED: "1", AI_GATEWAY_API_KEY: "k", FIXTURE_MODEL_URL: "https://model.invalid", COROS_MCP_URL: "https://mcp.invalid", SAVES_IMPORT: "1" };
+    const seen = qaEnv(on);
+    for (const key of ["WATCH_PUSH_ENABLED", "AI_GATEWAY_API_KEY", "FIXTURE_MODEL_URL", "COROS_MCP_URL", "SAVES_IMPORT"] as const) expect(seen[key], key).toBeUndefined();
+    expect(seen.ALLOWED_GOOGLE_EMAIL).toBe(env.ALLOWED_GOOGLE_EMAIL);
+  });
+
+  it("matches the address one way everywhere: a variant row is the QA account to nothing — sign-in, the guard, the crons' filter", async () => {
+    const { userId: variant } = await makeTestUser(db);
+    await db.update(users).set({ email: "LifeOS-QA@invalid" }).where(eq(users.id, variant));
+    expect(await isQaAccount(db, env, variant)).toBe(false);
+    expect(await qaTargetById(db, env, variant)).toBeNull();
+    expect(await resolveQaTarget(db, env, ownerId)).toBeNull();
+    await expect(purgeQa(db, env, forged(variant))).rejects.toMatchObject({ code: "not_qa" });
+    // The SQL side agrees: `notQaAccount` excludes only the exact address (here, none).
+    const kept = await db.select({ id: users.id }).from(users).where(notQaAccount(users.id));
+    expect(kept.map((r) => r.id)).toContain(variant);
   });
 
   it("is made with no Google identity, no provider, AI and COROS writes off, no calendar, on the owner's timezone", async () => {

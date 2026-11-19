@@ -6,7 +6,10 @@
  *  - Nothing renders unless the worker answers the status: anyone but the owner gets a 404, and so sees no Developer group.
  *  - Set up: the account made if there is none, its fixtures seeded if it has none, and a pairing code (5 minutes) with the
  *    run's plan and harness tokens — shown once, with the line to paste into `scripts/phone-qa.sh`.
- *  - New pairing code: a fresh code (a run's build can outlive a code; phone-qa.sh can also mint one with the harness token).
+ *  - New pairing code: a fresh code, for pairing by hand (phone-qa.sh mints its own with the harness token, just before it
+ *    pairs, so its line carries no code).
+ *  - Revoke QA phone: every paired phone of the QA account ends at once — the owner's Devices list shows only the owner's
+ *    own, so a phone kept after a run (`phone-qa.sh --keep`) is ended here, or by the purge. The fixtures stay.
  *  - Purge: asks first; then everything the QA account holds is gone, every table checked, and the panel says how many rows
  *    remain — zero, or the worker refuses to call it done.
  */
@@ -28,9 +31,9 @@ export function statusOf(data: unknown): QaStatusDto | null {
   return "qa" in s && typeof s.today === "string" && typeof s.rows === "number" && Array.isArray(s.devices) && Array.isArray(s.plan) ? (s as QaStatusDto) : null;
 }
 
-/** The line `scripts/phone-qa.sh` takes, from a mint's answer. */
-export const harnessLine = (m: Pick<QaMintDto, "harnessToken" | "planToken" | "code">) =>
-  `QA_HARNESS_TOKEN=${m.harnessToken} QA_PLAN_TOKEN=${m.planToken} QA_PAIR_CODE=${m.code} scripts/phone-qa.sh`;
+/** The line `scripts/phone-qa.sh` takes, from a mint's answer: the run's two tokens (the script mints its own fresh code). */
+export const harnessLine = (m: Pick<QaMintDto, "harnessToken" | "planToken">) =>
+  `QA_HARNESS_TOKEN=${m.harnessToken} QA_PLAN_TOKEN=${m.planToken} scripts/phone-qa.sh`;
 
 /** Set up: the account made, its fixtures seeded (each skipped when already done), and a pairing code — three requests. */
 export async function setUp(): Promise<QaMintDto> {
@@ -69,11 +72,13 @@ export function QaSection() {
   const qc = useQueryClient();
   const [minted, setMinted] = useState<QaMintDto | null>(null);
   const [purged, setPurged] = useState<QaPurgeDto | null>(null);
+  const [revoked, setRevoked] = useState<number | null>(null);
   const [asking, setAsking] = useState(false);
   const status = useQuery({ queryKey: QA_STATUS_QUERY, queryFn: api.qaStatus, retry: false });
   const refresh = () => qc.invalidateQueries({ queryKey: QA_STATUS_QUERY });
   const setup = useMutation({ mutationFn: setUp, onSuccess: (m) => (setPurged(null), setMinted(m)), onSettled: refresh });
   const pair = useMutation({ mutationFn: api.qaPair, onSuccess: (m) => setMinted(m), onSettled: refresh });
+  const revoke = useMutation({ mutationFn: api.qaRevoke, onSuccess: (r) => setRevoked(r.revoked), onSettled: refresh });
   const purge = useMutation({
     mutationFn: purgeAll,
     onSuccess: (p) => (setMinted(null), setPurged(p)),
@@ -82,8 +87,9 @@ export function QaSection() {
 
   const data = statusOf(status.data);
   if (!data) return null;
-  const busy = setup.isPending || pair.isPending || purge.isPending;
-  const failed = setup.error ?? pair.error ?? purge.error;
+  const busy = setup.isPending || pair.isPending || revoke.isPending || purge.isPending;
+  const failed = setup.error ?? pair.error ?? revoke.error ?? purge.error;
+  const livePhone = data.devices.some((d) => d.state !== "revoked");
   const removed = purged ? Object.values(purged.removed).reduce((a, b) => a + b, 0) : 0;
   const expired = minted !== null && Date.parse(minted.expiresAt) <= Date.now();
 
@@ -131,6 +137,7 @@ export function QaSection() {
           Purged: {removed} rows removed, {purged.total} remain.
         </p>
       ) : null}
+      {revoked !== null ? <p>Revoked {revoked === 1 ? "1 QA phone" : `${revoked} QA phones`}.</p> : null}
       {failed ? <Banner kind="warn">{refusal(failed)}</Banner> : null}
       {asking ? (
         <div className="stack">
@@ -155,6 +162,11 @@ export function QaSection() {
               <button type="button" className="btn btn-small" disabled={busy} onClick={() => pair.mutate()}>
                 New pairing code
               </button>
+              {livePhone ? (
+                <button type="button" className="btn btn-small" disabled={busy} onClick={() => revoke.mutate()}>
+                  Revoke QA phone
+                </button>
+              ) : null}
               <button type="button" className="btn btn-small" disabled={busy} onClick={() => setAsking(true)}>
                 Purge
               </button>

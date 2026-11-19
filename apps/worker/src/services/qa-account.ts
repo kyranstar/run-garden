@@ -50,18 +50,18 @@ import {
 import { adaptiveConfigSchema, addDays, DEFAULT_USER_PREFERENCES, newId, nowInstant, todayInZone, type UserPreferences } from "@rg/domain";
 import { classifyWorkout } from "@rg/scheduling";
 import type { Env } from "../env.js";
-import { QA_EMAIL, qaPossible } from "../auth/qa-identity.js";
+import { isQaAddress, QA_EMAIL, qaPossible } from "../auth/qa-identity.js";
 import { sha256Hex } from "../auth/crypto.js";
 import { HARNESS_TOKEN_MAX_MS, qaHarnessToken, qaPlanToken, qaUserIdOf } from "../auth/qa-tokens.js";
 import { PAIRING_SCOPE } from "../auth/device-scope.js";
-import { mintPairing } from "../auth/native-devices.js";
+import { mintPairing, revokeAllDevices } from "../auth/native-devices.js";
 import { ACCOUNT_TABLES, accountTable, columnBySqlName, scopeWhere } from "./account-tables.js";
 import { loadPreferences, savePreferences } from "./calendar-sync.js";
 import { chunkIds, runAtomically, type Db } from "./db.js";
 import { createDocWorkout } from "./doc-workouts.js";
 import { slotId } from "./program-slots.js";
 
-export { isQaEmail, QA_EMAIL, qaPossible } from "../auth/qa-identity.js";
+export { isQaAddress, isQaEmail, QA_EMAIL, qaPossible } from "../auth/qa-identity.js";
 export {
   HARNESS_TOKEN_MAX_MS,
   qaHarnessToken,
@@ -112,7 +112,7 @@ const brand = (userId: string): QaTarget => ({ userId }) as QaTarget;
 export async function isQaAccount(db: Db, env: Pick<Env, "ALLOWED_GOOGLE_EMAIL"> | undefined, userId: string): Promise<boolean> {
   if (!qaPossible(env)) return false;
   const [row] = await db.select({ email: users.email }).from(users).where(eq(users.id, userId)).limit(1);
-  return row !== undefined && norm(row.email) === QA_EMAIL;
+  return row !== undefined && isQaAddress(row.email);
 }
 
 /**
@@ -132,7 +132,7 @@ export async function resolveQaTarget(db: Db, env: Pick<Env, "ALLOWED_GOOGLE_EMA
 export async function qaTargetById(db: Db, env: Pick<Env, "ALLOWED_GOOGLE_EMAIL">, userId: string): Promise<QaTarget | null> {
   if (!qaPossible(env)) return null;
   const [row] = await db.select({ email: users.email }).from(users).where(eq(users.id, userId)).limit(1);
-  if (!row || norm(row.email) !== QA_EMAIL) return null;
+  if (!row || !isQaAddress(row.email)) return null;
   return brand(userId);
 }
 
@@ -140,7 +140,7 @@ export async function qaTargetById(db: Db, env: Pick<Env, "ALLOWED_GOOGLE_EMAIL"
 async function assertQaRow(db: Db, env: Pick<Env, "ALLOWED_GOOGLE_EMAIL">, target: QaTarget): Promise<void> {
   if (!qaPossible(env)) throw new QaGuardError("qa_impossible");
   const [row] = await db.select({ email: users.email }).from(users).where(eq(users.id, target.userId)).limit(1);
-  if (!row || norm(row.email) !== QA_EMAIL || norm(row.email) === norm(env.ALLOWED_GOOGLE_EMAIL)) throw new QaGuardError("not_qa");
+  if (!row || !isQaAddress(row.email) || norm(row.email) === norm(env.ALLOWED_GOOGLE_EMAIL)) throw new QaGuardError("not_qa");
 }
 
 /** The QA account's preferences: the owner's timezone, and nothing that reaches a provider or a model. */
@@ -386,6 +386,16 @@ export async function mintQaPairing(
     harnessToken: await qaHarnessToken(env, target.userId, harnessExp),
     harnessExpiresAt: new Date(Math.floor(harnessExp / 1000) * 1000).toISOString(),
   };
+}
+
+/**
+ * REVOKE THE QA PHONE (the panel's button, the review's N-3): every paired phone of the QA account, at once — the owner's
+ * Settings → Devices lists only the owner's own, so this is the one way, short of the purge, to end a QA phone that was kept
+ * (`phone-qa.sh --keep`). The account and its fixtures stay. How many it revoked.
+ */
+export async function revokeQaPhones(db: Db, env: Pick<Env, "ALLOWED_GOOGLE_EMAIL">, target: QaTarget, now: string = nowInstant()): Promise<number> {
+  await assertQaRow(db, env, target);
+  return revokeAllDevices(db, target.userId, now);
 }
 
 // ── State ──────────────────────────────────────────────────────────────────────────────────────────────────

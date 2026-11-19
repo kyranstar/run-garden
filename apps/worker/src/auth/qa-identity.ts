@@ -11,8 +11,16 @@ import type { SQLiteColumn } from "drizzle-orm/sqlite-core";
 import { users } from "@rg/database";
 import type { Env } from "../env.js";
 
-/** The QA account's email. Lower case, and stored exactly so. */
+/**
+ * The QA account's email. Lower case, and stored exactly so (`createQaUser` writes this constant, and nothing else writes
+ * it). ONE PREDICATE, EXACT, EVERYWHERE (the review's N-1): `isQaAddress` in code and `users.email = QA_EMAIL` in SQL
+ * (`notQaAccount`, the purge, the reads). A variant row — another case, spaces — is no account's QA account: it neither signs
+ * in with the switches off nor escapes the crons.
+ */
 export const QA_EMAIL = "lifeos-qa@invalid";
+
+/** This stored address is the QA account's: exactly `QA_EMAIL`, as SQL's `users.email = QA_EMAIL` matches it. */
+export const isQaAddress = (email: string | null | undefined): boolean => email === QA_EMAIL;
 
 /**
  * A WHERE condition: the account in `userId` is not the QA account — one subquery in the statement it guards, so no read
@@ -38,6 +46,8 @@ export function qaEnv<E extends Env>(env: E): E {
     PLAN_DRAFTS: undefined,
     THREAD_COACH: undefined,
     AI_GATEWAY_API_KEY: undefined,
+    // Harmless with no key, and gone too (the review's question 4): no model URL of any kind.
+    FIXTURE_MODEL_URL: undefined,
     COROS_MCP_URL: undefined,
     COROS_MCP_TOKEN: undefined,
     SPOTIFY_CLIENT_ID: undefined,
@@ -56,4 +66,4 @@ export const qaPossible = (env: Pick<Env, "ALLOWED_GOOGLE_EMAIL"> | undefined): 
 
 /** This email is the QA account's (and the QA account can exist here). */
 export const isQaEmail = (email: string | null | undefined, env: Pick<Env, "ALLOWED_GOOGLE_EMAIL"> | undefined): boolean =>
-  qaPossible(env) && norm(email) === QA_EMAIL;
+  qaPossible(env) && isQaAddress(email);

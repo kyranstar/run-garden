@@ -120,17 +120,16 @@ async function ownerSignIns(qaId: string) {
 async function qaHoldingTables(qaId: string, n: number): Promise<void> {
   await seedFullAccount(w.db, qaId);
   const registry = ACCOUNT_TABLES.filter((t) => t.scope.kind === "user" || t.scope.kind === "child");
-  for (;;) {
-    const counts = await qaRowCounts(w.db, qaId, { all: true });
-    const holding = registry.filter((t) => (counts[t.name] ?? 0) > 0);
-    if (holding.length <= n) {
-      expect(holding.length).toBe(n);
-      return;
-    }
-    const leaf = holding.find((t) => !holding.some((c) => c.scope.kind === "child" && c.scope.parent === t.name))!;
+  const counts = await qaRowCounts(w.db, qaId, { all: true });
+  const holding = registry.filter((t) => (counts[t.name] ?? 0) > 0);
+  while (holding.length > n) {
+    const i = holding.findIndex((t) => !holding.some((c) => c.scope.kind === "child" && c.scope.parent === t.name));
+    const [leaf] = holding.splice(i, 1);
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    await w.db.delete(leaf.table as any).where(scopeWhere(leaf, qaId));
+    await w.db.delete(leaf!.table as any).where(scopeWhere(leaf!, qaId));
   }
+  const after = await qaRowCounts(w.db, qaId, { all: true });
+  expect(registry.filter((t) => (after[t.name] ?? 0) > 0).length).toBe(n);
 }
 
 describe("the owner's routes: the owner's cookie only", () => {
@@ -139,6 +138,7 @@ describe("the owner's routes: the owner's cookie only", () => {
     ["POST", "/user"],
     ["POST", "/seed"],
     ["POST", "/pairings"],
+    ["POST", "/revoke"],
     ["GET", "/state"],
     ["POST", "/purge", { confirm: "purge qa" }],
   ];
@@ -240,10 +240,11 @@ describe("the owner's routes: create, seed, mint, read, purge", () => {
     expect(await ownerSignIns(qaId)).toEqual(signIns);
   });
 
-  it("the purge's worst step keeps 2 statements under the request budget: rows in 24 to 29 tables, one step or two (MINOR-4)", async () => {
+  it("the purge's worst step keeps 2 statements under the request budget: rows in 25, 26 or 28 tables, one step or two (MINOR-4)", async () => {
     expect(PURGE_DELETES_PER_STEP).toBe(25);
     const seen: Array<[number, number[]]> = [];
-    for (const n of [24, 25, 26, 27, 28, 29]) {
+    // The step's limit (one step that is also the last: the worst), one past it, and the review's 28 (45 at the old limit).
+    for (const n of [PURGE_DELETES_PER_STEP, PURGE_DELETES_PER_STEP + 1, 28]) {
       expect((await owner("POST", "/user")).status).toBe(201);
       const qaId = (await owner("GET", "/status")).json.qa.userId as string;
       await qaHoldingTables(qaId, n);
@@ -273,6 +274,23 @@ describe("the owner's routes: create, seed, mint, read, purge", () => {
     expect(phone).toMatchObject({ state: "revoked", revokedReason: "owner_all" });
     expect((await w.call("GET", "/api/native/me", { bearer: token })).json).toEqual({ error: "device_revoked" });
     expect((await purgeAll(() => owner("POST", "/purge", { confirm: "purge qa" }))).total).toBe(0);
+  });
+
+  it("Revoke QA phone: the QA account's phones refused from then on, its fixtures kept, the owner's phone untouched (N-3)", async () => {
+    await ownerSignInRows();
+    const { minted } = await setUp();
+    const qaId = (await owner("GET", "/status")).json.qa.userId as string;
+    const { token } = (await w.call("POST", "/api/native/pair", { cookie: false, body: { code: minted.code, label: "QA" } })).json;
+    expect((await w.call("GET", "/api/native/me", { bearer: token })).status).toBe(200);
+    const signIns = await ownerSignIns(qaId);
+    const done = await owner("POST", "/revoke");
+    expect([done.status, done.json]).toEqual([200, { revoked: 1 }]);
+    expect(done.statements.length).toBeLessThanOrEqual(STATEMENT_BUDGET);
+    expect((await w.call("GET", "/api/native/me", { bearer: token })).json).toEqual({ error: "device_revoked" });
+    const status = (await owner("GET", "/status")).json;
+    expect([status.devices.map((d: { state: string }) => d.state), status.plan.length]).toEqual([["revoked"], 5]);
+    expect(await ownerSignIns(qaId)).toEqual(signIns);
+    expect((await owner("POST", "/revoke")).json).toEqual({ revoked: 0 });
   });
 
   it("every owner's route keeps within the request budget", async () => {

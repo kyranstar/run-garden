@@ -389,8 +389,26 @@ const qaSave = {
   movesDone: (qaBuilt.items ?? []).map((i) => ({ exerciseId: i.exerciseId, seconds: 60, ...(i.slotKey ? { slotKey: i.slotKey } : {}) })),
   entries: [{ exerciseId: qaBuilt.items?.[0]?.exerciseId ?? "bridge", implement: null, format: "straight", perSide: false, sets: [{ setIndex: 0, reps: 10, seconds: null, load: null }] }],
 };
+// The review's MAJOR-1, on real local D1: the QA phone's save naming one of the OWNER's activities (its app session's, here)
+// is refused, and the owner's activities, matches and source links are as they were, row for row.
+const ownerActivityRows = () =>
+  sqlAll([
+    `select * from activities where user_id = '${me.json.userId}' order by id`,
+    `select m.* from workout_completion_matches m join planned_workouts w on w.id = m.workout_id where w.user_id = '${me.json.userId}' order by m.id`,
+    `select l.* from activity_source_links l join activities a on a.id = l.activity_id where a.user_id = '${me.json.userId}' order by l.id`,
+  ]);
+const [ownerActivity] = sql(`select id from activities where user_id = '${me.json.userId}' order by id limit 1`);
+const ownerActivitiesBefore = ownerActivityRows();
+const crafted = ownerActivity
+  ? await call("PUT", `/api/sessions/performed/${ownerActivity.id}`, { bearer: qaToken, body: { ...qaSave, id: ownerActivity.id } })
+  : { status: 0, json: {} };
+check("QA: a save naming the owner's activity id is refused 409, and the owner's activities, matches and links are unchanged", [
+  Boolean(ownerActivity), crafted.status, crafted.json, JSON.stringify(ownerActivityRows()) === JSON.stringify(ownerActivitiesBefore),
+], [true, 409, { error: "conflict" }, true]);
 check("QA: the save", (await call("PUT", `/api/sessions/performed/${qaSaveId}`, { bearer: qaToken, body: qaSave })).json.status, "saved");
 const harnessAs = (method, path, body) => call(method, `/api/qa/run${path}`, { bearer: qaSetup.json.harnessToken, body });
+const qaFresh = await harnessAs("POST", "/pairings", {});
+check("QA: the harness token mints a fresh code, and only a code (no token to renew itself)", [qaFresh.status, Object.keys(qaFresh.json).sort()], [200, ["accountTag", "code", "expiresAt", "scope"]]);
 const qaState = (await harnessAs("GET", "/state")).json;
 check("QA: the harness reads it done at its new time, one move audit, one performed session, matched", [
   qaState.plan.find((p) => p.id === hips.id)?.state, qaState.plan.find((p) => p.id === hips.id)?.time,

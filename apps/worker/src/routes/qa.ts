@@ -7,6 +7,8 @@
  *   POST /user        the QA account made (201), or 409 `qa_exists`
  *   POST /seed        its fixtures for today and tomorrow, or 404 `no_qa_account` / 409 `already_seeded`
  *   POST /pairings    a pairing code for the QA account, with the run's plan and harness tokens (429 `too_many_codes`)
+ *   POST /revoke      {revoked}: every paired phone of the QA account revoked — the panel's "Revoke QA phone"; the account
+ *                     and its fixtures stay
  *   GET  /state       what the QA account holds (ids, states, kinds, counts — no detail text)
  *   POST /purge       {confirm: "purge qa"}: one bounded step of the purge (≤ 45 statements a request) — `{done: false,
  *                     removed, remaining}` until the step that empties the last table, its sign-ins and its user row, and
@@ -15,7 +17,8 @@
  *
  * The harness token's own door (`Authorization: Bearer rgq_…`, auth/qa-tokens.ts) — never a cookie, never a device token:
  *   GET  /run/state, POST /run/pairings, POST /run/purge {confirm}: as above, for the QA account the token names, while that
- *        account is the QA account (else 404 `no_qa_account`)
+ *        account is the QA account (else 404 `no_qa_account`) — except that /run/pairings answers the code alone, never a
+ *        token: a harness token can't mint its successor, so six hours from the owner's mint bounds it
  *   GET  /run/verify  {userId, exists, rows, total}: every table counted for the token's account — still answering after the
  *        purge, so the harness can check zero itself; never for an account that isn't the QA address
  * Every refusal of a token is the same 401 `unauthenticated`.
@@ -27,7 +30,7 @@ import { nowInstant, todayInZone } from "@rg/domain";
 import type { AppContext } from "../auth/middleware.js";
 import { requireUser } from "../auth/middleware.js";
 import { isOwnerEmail } from "../auth/native-devices.js";
-import { QA_EMAIL, qaPossible } from "../auth/qa-identity.js";
+import { isQaAddress, qaPossible } from "../auth/qa-identity.js";
 import { verifyHarnessToken } from "../auth/qa-tokens.js";
 import { loadPreferences } from "../services/calendar-sync.js";
 import {
@@ -43,6 +46,7 @@ import {
   qaState,
   qaTargetById,
   resolveQaTarget,
+  revokeQaPhones,
   seedQaFixtures,
   type QaTarget,
 } from "../services/qa-account.js";
@@ -167,6 +171,13 @@ qaRoutes.post("/pairings", ...owner, async (c) => {
   return mintAnswer(c, target, true);
 });
 
+qaRoutes.post("/revoke", ...owner, async (c) => {
+  const target = await ownersTarget(c);
+  if (target instanceof Response) return target;
+  if (!target) return noAccount(c);
+  return c.json({ revoked: await revokeQaPhones(c.get("db"), c.env, target) });
+});
+
 qaRoutes.get("/state", ...owner, async (c) => {
   const target = await ownersTarget(c);
   if (target instanceof Response) return target;
@@ -214,7 +225,7 @@ run.get("/verify", async (c) => {
   const userId = c.get("qaRunUserId");
   const [row] = await db.select({ email: users.email }).from(users).where(eq(users.id, userId)).limit(1);
   // Never a count of an account that isn't the QA address: only the QA account, or no account at all (purged).
-  if (row && row.email !== QA_EMAIL) return noAccount(c);
+  if (row && !isQaAddress(row.email)) return noAccount(c);
   const rows = await qaRowCounts(db, userId, { all: true });
   return c.json({ userId, exists: row !== undefined, rows, total: Object.values(rows).reduce((a, b) => a + b, 0) });
 });

@@ -59,6 +59,10 @@ function worker(init: { status?: number; body?: unknown; exists?: boolean } = {}
         pairs += 1;
         return json({ code: pairs === 1 ? "7K2QXM9D" : "ABCD1234", expiresAt: iso(5 * 60_000), scope: "training-v3", planToken: PLAN, harnessToken: HARNESS, harnessExpiresAt: iso(6 * 3_600_000), accountTag: "3f2a9c1e" });
       }
+      if (url === "/api/qa/revoke") {
+        status = { ...some, devices: some.devices.map((d) => ({ ...d, state: "revoked" })) };
+        return json({ revoked: 1 });
+      }
       if (url === "/api/qa/purge") {
         // Two steps: the worker purges within its per-request budget, and says when it's done.
         purgeSteps += 1;
@@ -155,7 +159,9 @@ describe("Settings → Developer → LifeOS QA", () => {
     expect(calls.filter((c) => c.method === "POST").map((c) => c.path)).toEqual(["/api/qa/user", "/api/qa/seed", "/api/qa/pairings"]);
     const text = words(host);
     expect(text).toContain("7K2Q-XM9D");
-    expect(text).toContain(`QA_HARNESS_TOKEN=${HARNESS} QA_PLAN_TOKEN=${PLAN} QA_PAIR_CODE=7K2QXM9D scripts/phone-qa.sh`);
+    // The run's two tokens: phone-qa.sh mints its own fresh code just before it pairs.
+    expect(text).toContain(`QA_HARNESS_TOKEN=${HARNESS} QA_PLAN_TOKEN=${PLAN} scripts/phone-qa.sh`);
+    expect(text).not.toContain("QA_PAIR_CODE");
     expect(text).toContain("42 rows");
     expect(text).toContain("QA Hips and back");
     expect(text).toContain("LifeOS phone");
@@ -166,6 +172,20 @@ describe("Settings → Developer → LifeOS QA", () => {
     await mount();
     await click(button("New pairing code"));
     expect(words(host)).toContain("7K2Q-XM9D");
+  });
+
+  it("Revoke QA phone ends its paired phones (the fixtures stay); with none live, there is no such button", async () => {
+    worker({ body: some });
+    await mount();
+    await click(button("Revoke QA phone"));
+    expect(calls.filter((c) => c.method === "POST").map((c) => c.path)).toEqual(["/api/qa/revoke"]);
+    expect(words(host)).toContain("Revoked 1 QA phone.");
+    expect(words(host)).toContain("QA Hips and back");
+    act(() => root?.unmount());
+    host?.remove();
+    worker({ body: { ...some, devices: [{ ...some.devices[0]!, state: "revoked" }] } });
+    await mount();
+    expect(button("Revoke QA phone")).toBeUndefined();
   });
 
   it("Purge asks first; Not now sends nothing; Purge says the rows that remain: zero", async () => {

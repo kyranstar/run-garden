@@ -366,7 +366,7 @@ export interface QaStatusDto {
   plan: Array<{ title: string; date: string; time: string; state: string }>;
 }
 
-/** A QA pairing code, with the run's tokens (`POST /api/qa/pairings`, `/api/qa/setup`). */
+/** A QA pairing code, with the run's tokens (`POST /api/qa/pairings`, the owner's laptop only). */
 export interface QaMintDto {
   code: string;
   expiresAt: string;
@@ -3115,6 +3115,8 @@ export const api = {
   qaSeed: () => post<{ today: string; tomorrow: string; fixtures: Array<{ id: string; title: string; date: string; time: string; kind: string }> }>("/api/qa/seed", {}),
   /** A fresh pairing code for the QA account (5 minutes), with the run's tokens. */
   qaPair: () => post<QaMintDto>("/api/qa/pairings", {}),
+  /** Revokes every paired phone of the QA account (its fixtures stay): how many. */
+  qaRevoke: () => post<{ revoked: number }>("/api/qa/revoke", {}),
   /** One step of the purge: everything the QA account owns, gone, and every table checked zero — ask again until `done`. */
   qaPurge: () => post<QaPurgeDto>("/api/qa/purge", { confirm: "purge qa" }),
   calendars: () => get<{ calendars: Array<{ id: string; summary: string; primary?: boolean }> }>("/api/calendar/calendars"),
