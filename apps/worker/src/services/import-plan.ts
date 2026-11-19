@@ -578,7 +578,8 @@ export async function importPlanSnapshot(
   // reason and the suppression row say the same thing when both exist; either
   // alone is enough (audit#3 D2: a row archived as a decision must stay out even
   // if its suppression row is ever swept).
-  const DECISION_REASONS = ["user_removed", "duplicate_mirror", "program_replaced", "abandoned_start_now"] as const satisfies readonly ArchiveReason[];
+  // `taken_back` (R1): the owner took back what a place or an approved coach op added — a decision, as a hand removal is.
+  const DECISION_REASONS = ["user_removed", "duplicate_mirror", "program_replaced", "abandoned_start_now", "taken_back"] as const satisfies readonly ArchiveReason[];
   const archiveEvidence = new Map<string, string>();
   for (const w of existing) {
     if (w.archivedAt && (DECISION_REASONS as readonly string[]).includes(w.archiveReason ?? "")) {

@@ -95,6 +95,7 @@ import {
   locations,
   motivationEvidence,
   nativeDevices,
+  nativeDeviceSharing,
   nativePairLimits,
   nativePairings,
   oauthStates,
@@ -119,6 +120,7 @@ import {
   syncIntents,
   syncNotes,
   syncRuns,
+  takeBackReceipts,
   trainingPlans,
   trainingPlanVersions,
   userConditions,
@@ -208,6 +210,8 @@ const ENTRIES: ReadonlyArray<readonly [SQLiteTable, TableScope]> = [
   [studioPlans, USER],
   // coach
   [coachMemory, USER],
+  // take-back (migration 0040): a receipt is the account's record of a write it can undo
+  [takeBackReceipts, USER],
   [coachQuestions, USER],
   [coachMessages, USER],
   [coachProposals, USER],
@@ -272,6 +276,10 @@ const ENTRIES: ReadonlyArray<readonly [SQLiteTable, TableScope]> = [
   [
     nativePairLimits,
     signIn("auth: pairing's rate-control counters (client addresses hashed), never data to carry or copy to staging; delete-all removes the account's"),
+  ],
+  [
+    nativeDeviceSharing,
+    signIn("auth: a paired phone's switch A (its day frame to the coach) — consent bookkeeping of that pairing, never carried or restored (a restore must never turn it back on); delete-all removes it"),
   ],
   [gardenSpecies, excluded("global catalog shared by every account")],
   [corosExercises, excluded("global COROS exercise catalog shared by every account")],

@@ -39,7 +39,7 @@ const COPIED_BEFORE = [
   "garden_wildlife", "garden_scene_layouts", "garden_snapshots", "garden_visitors", "garden_day_inputs",
   "garden_seen", "computed_metrics", "motivation_evidence", "weekly_reviews", "dismissed_insights",
   "llm_usage", "sync_runs", "sync_errors", "provider_cursor_state", "audit_events", "backfill_state",
-  "studio_plans", "coach_memory", "coach_questions", "coach_messages", "coach_proposals", "coach_triggers",
+  "studio_plans", "coach_memory", "take_back_receipts", "coach_questions", "coach_messages", "coach_proposals", "coach_triggers",
   "coach_plans", "coach_reads", "coach_locks", "programs", "session_builds", "performed_sessions",
   "condition_checks", "user_conditions", "locations", "exercise_prefs", "exercise_provenance",
   "workout_doc_revisions", "athlete_profiles", "objectives", "key_results", "athlete_answers",
@@ -52,7 +52,7 @@ const COPIED_BEFORE = [
   "schema_versions", "prompt_versions", "account_state",
 ];
 
-const SIGN_INS = ["sessions", "oauth_states", "native_devices", "native_pairings", "native_pair_limits"];
+const SIGN_INS = ["sessions", "oauth_states", "native_devices", "native_pairings", "native_pair_limits", "native_device_sharing"];
 
 async function seedDevice(db: Db, userId: string): Promise<string> {
   const token = `rgd_${randomToken(32)}`;
@@ -130,9 +130,9 @@ describe("a production phone never reaches staging", () => {
     await seedPairing(dst, user!.id);
     await seedLimit(dst, "redeem:global");
     await createSession(dst, user!.id, "test");
-    expect(await secretsRemaining(dst)).toEqual({ secrets: 0, sessions: 1, oauthStates: 0, nativeDevices: 1, nativePairings: 1, nativePairLimits: 1 });
+    expect(await secretsRemaining(dst)).toEqual({ secrets: 0, sessions: 1, oauthStates: 0, nativeDevices: 1, nativePairings: 1, nativePairLimits: 1, nativeDeviceSharing: 0 });
     await scrubSecrets(dst);
-    expect(await secretsRemaining(dst)).toEqual({ secrets: 0, sessions: 0, oauthStates: 0, nativeDevices: 0, nativePairings: 0, nativePairLimits: 0 });
+    expect(await secretsRemaining(dst)).toEqual({ secrets: 0, sessions: 0, oauthStates: 0, nativeDevices: 0, nativePairings: 0, nativePairLimits: 0, nativeDeviceSharing: 0 });
     expect(await findDevice(dst, token)).toBeNull();
   });
 });

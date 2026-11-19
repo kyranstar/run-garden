@@ -107,7 +107,7 @@ describe("migration 0038", () => {
       ["tries", "INTEGER", 1, 0],
       ["used_at", "TEXT", 0, 0],
     ]);
-    const indexes = raw(db).prepare(`select name, tbl_name from sqlite_master where type = 'index' and tbl_name like 'native_%' and name not like 'sqlite_%' order by name`).all();
+    const indexes = raw(db).prepare(`select name, tbl_name from sqlite_master where type = 'index' and tbl_name in ('native_devices', 'native_pairings', 'native_pair_limits') and name not like 'sqlite_%' order by name`).all();
     expect(indexes).toEqual([{ name: "native_devices_user_idx", tbl_name: "native_devices" }]);
   });
 });

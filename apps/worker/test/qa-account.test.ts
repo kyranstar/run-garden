@@ -254,7 +254,7 @@ describe("the purge", () => {
     expect(done.total).toBe(0);
     expect(Object.values(done.remaining).every((n) => n === 0)).toBe(true);
     expect(Object.keys(done.remaining).sort()).toEqual(
-      [...ACCOUNT_TABLES.filter((t) => t.scope.kind !== "excluded").map((t) => t.name), "sessions", "native_devices", "native_pairings", "native_pair_limits", "account_state"].sort(),
+      [...ACCOUNT_TABLES.filter((t) => t.scope.kind !== "excluded").map((t) => t.name), "sessions", "native_devices", "native_pairings", "native_pair_limits", "native_device_sharing", "account_state"].sort(),
     );
     expect(done.removed).toEqual(held);
     expect(await qaRowCounts(db, qa.userId)).toEqual({});

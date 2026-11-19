@@ -240,8 +240,8 @@ describe("the owner's routes: create, seed, mint, read, purge", () => {
     expect(await ownerSignIns(qaId)).toEqual(signIns);
   });
 
-  it("the purge's worst step keeps 2 statements under the request budget: rows in 25, 26 or 28 tables, one step or two (MINOR-4)", async () => {
-    expect(PURGE_DELETES_PER_STEP).toBe(25);
+  it("the purge's worst step keeps 2 statements under the request budget: rows in 24, 25 or 28 tables, one step or two (MINOR-4)", async () => {
+    expect(PURGE_DELETES_PER_STEP).toBe(24);
     const seen: Array<[number, number[]]> = [];
     // The step's limit (one step that is also the last: the worst), one past it, and the review's 28 (45 at the old limit).
     for (const n of [PURGE_DELETES_PER_STEP, PURGE_DELETES_PER_STEP + 1, 28]) {

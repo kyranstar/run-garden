@@ -92,5 +92,10 @@ export const ARCHIVE_REASONS = [
    * bookkeeping, not a person's decision: a save that arrives for it later brings it back (session-save.ts).
    */
   "abandoned_start_now",
+  /**
+   * Taken back by the owner (R1, the LifeOS migration's DESIGN-3 §3.4.3): a workout a place or an approved coach op added,
+   * archived — never deleted — by a receipt-bound take-back while it still read as that write left it.
+   */
+  "taken_back",
 ] as const;
 export type ArchiveReason = (typeof ARCHIVE_REASONS)[number];

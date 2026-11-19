@@ -33,6 +33,7 @@ import {
   nativeDevices,
   nativePairings,
   nativePairLimits,
+  nativeDeviceSharing,
   performedSessions,
   plannedWorkouts,
   programs,
@@ -517,6 +518,7 @@ const signInCounts = (userId: string): Count[] => [
   { name: "native_devices", query: countOf(nativeDevices, eq(nativeDevices.userId, userId)) },
   { name: "native_pairings", query: countOf(nativePairings, eq(nativePairings.userId, userId)) },
   { name: "native_pair_limits", query: countOf(nativePairLimits, eq(nativePairLimits.key, `mint:${userId}`)) },
+  { name: "native_device_sharing", query: countOf(nativeDeviceSharing, eq(nativeDeviceSharing.userId, userId)) },
   { name: "account_state", query: countOf(accountState, eq(accountState.userId, userId)) },
 ];
 
@@ -577,11 +579,11 @@ async function parentIdsOf(db: Db, userId: string): Promise<Map<string, string[]
 
 /**
  * Table deletes one purge step makes at most. A step that is also the last, at this many tables, runs 1 guard read + 1
- * parent-ids read + 3 counts + the phones' revoke + 25 deletes + 6 sign-in deletes + 3 counts = 40, and the owner's route 3
- * more: 43 of the repo's 45-statement budget (Workers Free: 50), with room for a statement more in `requireUser` or the
- * guard (the review's MINOR-4: at 28 it was exactly 45).
+ * parent-ids read + 3 counts + the phones' revoke + 24 deletes + 7 sign-in deletes (switch A's since migration 0040) + 3
+ * counts = 40, and the owner's route 3 more: 43 of the repo's 45-statement budget (Workers Free: 50), with room for a
+ * statement more in `requireUser` or the guard (the review's MINOR-4: at 28 it was exactly 45).
  */
-export const PURGE_DELETES_PER_STEP = 25;
+export const PURGE_DELETES_PER_STEP = 24;
 
 /** One step's answer: what it removed, and — once `done` — every table counted again (all zero) and their total. */
 export interface QaPurgeStep {
@@ -636,7 +638,7 @@ export async function purgeQaStep(db: Db, env: Pick<Env, "ALLOWED_GOOGLE_EMAIL">
     const left = Object.fromEntries(holding.filter((t) => !step.includes(t)).map((t) => [t.name, before[t.name] ?? 0]));
     return { done: false, removed, remaining: left, total: Object.values(left).reduce((a, b) => a + b, 0) };
   }
-  for (const name of ["users", "account_state", "sessions", "native_devices", "native_pairings", "native_pair_limits"]) {
+  for (const name of ["users", "account_state", "sessions", "native_devices", "native_pairings", "native_pair_limits", "native_device_sharing"]) {
     if ((before[name] ?? 0) > 0) removed[name] = before[name]!;
   }
   await runAtomically(db, [
@@ -645,6 +647,7 @@ export async function purgeQaStep(db: Db, env: Pick<Env, "ALLOWED_GOOGLE_EMAIL">
     db.delete(nativeDevices).where(eq(nativeDevices.userId, userId)),
     db.delete(nativePairings).where(eq(nativePairings.userId, userId)),
     db.delete(nativePairLimits).where(eq(nativePairLimits.key, `mint:${userId}`)),
+    db.delete(nativeDeviceSharing).where(eq(nativeDeviceSharing.userId, userId)),
     // Last, and only while it is still the QA address: the row the guard read.
     db.delete(users).where(and(eq(users.id, userId), eq(users.email, QA_EMAIL))),
   ]);
