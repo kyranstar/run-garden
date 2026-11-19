@@ -458,9 +458,15 @@ export async function takeBack(
   const rows = await rowsNow(db, userId, live.map((r) => r.workoutId));
   const compensated = await compensationOf(db, userId, done.map((r) => ({ workoutId: r.workoutId, since: r.takenBackAt ?? r.createdAt })));
   for (const r of done) {
-    const at = r.takenBackAt;
-    const base = { receiptId: r.id, op: r.op as ReceiptOp, workoutId: r.workoutId, at, compensation: compensated.get(r.workoutId) ?? [] };
-    outcomes.set(r.id, r.requestId === input.requestId ? { ...base, outcome: "taken_back", at: at ?? now } : { ...base, outcome: "already_taken_back" });
+    // The same shape, key for key, as the request that took it back answered (its compensation read live, as then).
+    const compensation = compensated.get(r.workoutId) ?? [];
+    const op = r.op as ReceiptOp;
+    outcomes.set(
+      r.id,
+      r.requestId === input.requestId
+        ? { receiptId: r.id, outcome: "taken_back", op, workoutId: r.workoutId, at: r.takenBackAt ?? now, compensation }
+        : { receiptId: r.id, outcome: "already_taken_back", op, workoutId: r.workoutId, at: r.takenBackAt, compensation },
+    );
   }
 
   // 2–3. Each receipt's own refusal, then its group's and its dependents'; a group refused in part is refused whole.

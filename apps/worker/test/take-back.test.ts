@@ -297,6 +297,8 @@ describe("races, retries and the account", () => {
     const rows = await w.db.select().from(plannedWorkouts);
     const again = await takeBack([receiptId], "req-a");
     expect(again.json).toEqual(first.json);
+    // Key for key, as the phone stored it (its decoder may compare the bytes).
+    expect(JSON.stringify(again.json)).toBe(JSON.stringify(first.json));
     expect(again.writes.filter((s) => !/native_devices/.test(s))).toEqual([]);
     const other = await takeBack([receiptId], "req-b");
     expect(other.json.outcomes).toEqual([{ receiptId, outcome: "already_taken_back", op: "create", workoutId, at: nowInstant(), compensation: [] }]);
