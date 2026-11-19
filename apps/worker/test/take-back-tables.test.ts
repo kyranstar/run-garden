@@ -53,6 +53,7 @@ describe("migration 0040: additive only", () => {
       "CREATE TABLE `take_back_receipts`",
       "CREATE UNIQUE INDEX `take_back_receipts_source_idx` ON `take_back_receipts`",
       "CREATE INDEX `take_back_receipts_workout_idx` ON `take_back_receipts`",
+      "CREATE INDEX `take_back_receipts_open_idx` ON `take_back_receipts`",
       "CREATE TABLE `native_device_sharing`",
       "CREATE INDEX `native_device_sharing_user_idx` ON `native_device_sharing`",
     ]);

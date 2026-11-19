@@ -804,7 +804,8 @@ export async function receiptsOfProposal(db: Db, userId: string, proposalId: str
   const rows = await db
     .select({ id: t.id, sourceKey: t.sourceKey, status: t.status, expiresAt: t.expiresAt })
     .from(t)
-    .where(and(eq(t.userId, userId), eq(t.source, "coach_approve"), sql`substr(${t.sourceKey}, 1, ${proposalId.length + 1}) = ${`${proposalId}:`}`));
+    // `<proposalId>:` up to `<proposalId>;` (the next character): a range the unique (user, source, key) index serves.
+    .where(and(eq(t.userId, userId), eq(t.source, "coach_approve"), sql`${t.sourceKey} >= ${`${proposalId}:`}`, sql`${t.sourceKey} < ${`${proposalId};`}`));
   return rows.map((r) => ({ opId: r.sourceKey.slice(proposalId.length + 1), receiptId: r.id, open: r.status === "open" && r.expiresAt > now }));
 }
 

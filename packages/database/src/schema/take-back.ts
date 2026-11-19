@@ -42,7 +42,7 @@ export const takeBackReceipts = sqliteTable(
     takenBackAt: text("taken_back_at"),
     result: text("result"),
   },
-  (t) => [uniqueIndex("take_back_receipts_source_idx").on(t.userId, t.source, t.sourceKey), index("take_back_receipts_workout_idx").on(t.userId, t.workoutId)],
+  (t) => [uniqueIndex("take_back_receipts_source_idx").on(t.userId, t.source, t.sourceKey), index("take_back_receipts_workout_idx").on(t.userId, t.workoutId), index("take_back_receipts_open_idx").on(t.userId, t.status, t.expiresAt)],
 );
 
 /**

@@ -504,8 +504,9 @@ export function CoachConversation({ ctx, loopDeps, request = null, seeing: seenA
                   {t.via === "lifeos" ? (
                     <div className="coach-from-phone">
                       <span className="coach-from-lifeos">From LifeOS</span>
-                      {(t.frameLines ?? []).map((l) => (
-                        <span key={l} className="coach-frame-line">
+                      {(t.frameLines ?? []).map((l, i) => (
+                        // By place: two days can read alike (review B N-4).
+                        <span key={`${i}:${l}`} className="coach-frame-line">
                           {l}
                         </span>
                       ))}
