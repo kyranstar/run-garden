@@ -35,7 +35,7 @@ const V4_STOP = "It will no longer be able to read your coming weeks and your hi
 /** R1's words (DESIGN-3 §3.5): what a v5 phone can do, its grant's line — saying plainly that it shares nothing of the day — and its step-down's. */
 const V5_CAN = "Can play, save, move and fit workouts, record your feedback, read your plan and history, use your library, and work with your coach.";
 const V5_GRANT =
-  "It will also be able to browse your saved workouts and moves and put one on your plan; ask your coach to design or change workouts, answer its questions, approve or decline what it suggests, and take back what it added within 8 days; and see, edit and add to what your coach remembers. Its coach use counts toward this account's weekly AI limit. This doesn't share anything about your day with your coach; that's a separate choice on the phone. You can stop it here any time.";
+  "It will also be able to browse your saved workouts and moves and put one on your plan; ask your coach to design or change workouts, answer its questions, and approve or decline what it suggests; take back a workout it put on your plan or a coach change it approved, until that day ends (8 days at most); and see, edit, add to and delete what your coach remembers. It sees your coach's progress, questions and suggestions, never the health readings, conditions or notes your coach reads to decide. Its coach use counts toward this account's weekly AI limit. This doesn't share anything about your day with your coach; that's a separate choice on the phone. You can stop it here any time.";
 const V5_STOP = "It will no longer use your library or coach. What it already added stays on your plan. It stays paired.";
 /** Renew's one line (LifeOS Q-172), and the hint beside a phone inside the warning while Renew is offered. */
 const RENEW_LINE = "It will keep working for 30 more days from now. Nothing else changes.";
@@ -586,6 +586,8 @@ describe("Settings → Devices", () => {
     await mount();
     await click(button("Pair a phone"));
     expect(words(host)).toContain("A phone paired now can play, save, move and fit workouts, record your feedback, read your plan and history, use your library, and work with your coach.");
+    // v5 is its consent: the AI limit, what it never sees, and that it shares nothing of the day (review A MAJOR-1).
+    expect(words(host)).toContain("Its coach use counts toward this account's weekly AI limit. It never sees your health readings or conditions, and shares nothing about your day unless you turn that on on the phone.");
     act(() => root?.unmount());
     host?.remove();
     worker({ pairScope: "training-v4" });

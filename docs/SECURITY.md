@@ -164,22 +164,46 @@ on the `training-v5` scope only (`apps/worker/src/auth/device-scope.ts`; routes 
 `routes/native-take-back.ts`, `routes/native.ts`, `routes/coach-runs.ts`, `routes/coach.ts`).
 
 - **Its own named consent, and it shares nothing.** v5 is a scope of its own: the laptop grants it in place to a v4 phone
-  (Settings → Devices, *Allow your library and coach*, whose line names everything it allows, that coach use counts
-  toward the week's AI limit, and that it shares nothing about the owner's day) and steps it back to v4 in place (*Stop
-  library and coach*: what it added stays). New pairings mint it. Revoke and the kill switch stop it as every device.
+  (Settings → Devices, *Allow your library and coach*, whose line names everything it allows, what it reads of the coach,
+  that coach use counts toward the week's AI limit, and that it shares nothing about the owner's day) and steps it back to
+  v4 in place (*Stop library and coach*: what it added stays). New pairings mint it, and the pairing says the same: the AI
+  limit, that it never sees health readings or conditions, and that it shares nothing of the day. Revoke and the kill
+  switch stop it as every device.
+- **What the phone reads of the coach: a structured projection, never the trail** (`services/device-view.ts`, review A
+  MAJOR-1). The laptop's coach answers carry the coach's working trail — what each tool read and was given. A v5 phone's
+  answers on every coach route are projected instead: a run's status and progress; each trail event's kind, time and a
+  fixed line of what the tool did (*Read your readiness*), never what it read (`data`) or was given (`input`); the
+  questions to answer, with chips; a proposal's ops as typed fields (day, time, minutes before and after, kind, a move's
+  day before) and each workout's title; the coach's lines (a finish, an answer, a card, a question's why) with every
+  sentence that names a reading, a pace or a condition taken out; a condition check asked as `check: "condition"` alone.
+  Never heart-rate variability, resting heart rate, sleep, stress, readiness, a pace, a condition's name or check, the
+  memory core, a document's steps or notes, or the account's id. Memory items are what the grant lets it see and edit:
+  `{id, kind, body, confidence, pinned, expiresAt, learnedAt, source}`, no ids of the account, its runs or devices. A
+  take-back's `changed_since` says how the session stands as `{date, time, state, archived, title, minutes}`. Pinned by
+  `device-never-list.test.ts`: readings, a condition and memory lines planted where the coach reads them reach no v5 answer.
+  The laptop's (cookie) answers are unchanged.
 - **Every training write is run-garden's own.** A saved workout is put on the plan through the Studio's own create (judged
   for its day, its watch copy owed and its calendar booked as a Studio save's); a coach proposal's ops are applied only by
   an approve naming its op ids and the proposal's `version` (a phone's approve without them is 403 at the gate, a stale
   version 409 `proposal_changed`, nothing written), and never one whose run didn't finish (409 `incomplete`). A phone
   approves the designer's proposals only, never the thread coach's. No automatic training writes, no notifications.
-- **Receipt-bound take-back.** Each place and each approved new or revised workout, move and skip writes a take-back receipt
-  (`take_back_receipts`, migration 0040) in the same batch as the write, holding the row's compare columns as the write
-  left them. `POST /api/native/take-back` claims a receipt only while its row still reads exactly that, and in the same
-  batch writes the inverse through run-garden's own writer (an archive, never a delete; a revision back as a new
+- **Receipt-bound take-back, of what this phone made.** Each place and each approved new or revised workout, move and skip
+  writes a take-back receipt (`take_back_receipts`, migration 0040) in the same batch as the write, holding the row's
+  compare columns as the write left them and who made it (`made_by`); an approve's revise that adopts a coach or imported
+  session writes none (it is changed on the laptop). A phone takes back only what it made — its own places and approves;
+  another phone's or the laptop's are `not_found` to it — until the session's day ends on the account's clock, 8 days at
+  most. `POST /api/native/take-back` claims a receipt only while its row still reads exactly that, and in the same batch
+  writes the inverse through run-garden's own writer (an archive, never a delete; a revision back as a new
   revision; a move back; an unskip) and checks it landed — so a later edit, a started, done, performed or matched session,
   a day gone, a race or a programme's session, a group not named whole, a dependent, or a receipt past its 8 days refuses
-  it in words and writes nothing. Retries are idempotent by `requestId`. What the watch and the calendar still have to undo
-  is read live (`GET /api/native/receipts/:id`) and said as pending until done. The account's own receipts only.
+  it in words and writes nothing. A group (one approve's ops) goes back newest first and is checked whole before anything
+  of it is written: an earlier version its day no longer allows is `cant_restore` for the whole group. Retries are
+  idempotent by `requestId`. What the watch and the calendar still have to undo is read live (`GET
+  /api/native/receipts/:id`): the watch's delete pending while owed or running, done only once verified, failed else; the
+  calendar's event pending until the sync has written it. The account's own receipts only.
+  *Rolling back:* code from before R1 leaves `take_back_receipts` and `native_device_sharing` rows in place on delete-all
+  (its registry doesn't know them); a rollback is followed by deleting both tables' rows of the account by `user_id`,
+  or by a forward fix — migration 0040 is additive and safe under the old code.
 - **The day frame: built, and off until the owner turns it on.** Switch A is per phone (`native_device_sharing`, a sign-in's
   bookkeeping: never exported, restored or copied; delete-all removes it; a step-down below v5 turns it off), set only by
   the phone with the disclosure version the owner accepted. A run with a `frame` is refused 409 `sharing_off` unless the
@@ -188,8 +212,9 @@ on the `training-v5` scope only (`apps/worker/src/auth/device-scope.ts`; routes 
   of LifeOS's day reaches run-garden. It is kept with the run, read into its opening context as data and shown on the
   laptop's run view. A phone run is marked `via: lifeos` from the device that signed it in, never from the body.
 - **What the coach remembers.** A phone reads, edits and deletes the account's memory as the laptop does; it may add one
-  stated line (≤ 140 characters, note, fact or rule) only on the owner's tap and only with switch A on, kept with
-  provenance `lifeos`; it never supersedes what the owner confirmed.
+  stated line (≤ 140 characters, note, fact or rule) only on the owner's tap and only with switch A on under the very
+  words the owner accepted (`consent`, as a frame), kept with provenance `lifeos`; it never supersedes what the owner
+  confirmed.
 - **The library, trimmed.** A move's row and page carry one verdict for the switched-on profiles together (ok, caution,
   never) — never a profile's name, its notes, the account's saved-post links or its corrections. Templates are listed
   without their documents. Every read is `no-store` and 503 during a restore.

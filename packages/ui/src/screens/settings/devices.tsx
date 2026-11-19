@@ -57,6 +57,14 @@ export const CAN: Readonly<Record<string, string>> = {
 };
 
 /**
+ * What a phone of each scope is told at pairing beside `CAN` (review A MAJOR-1): v5's AI limit, what it never sees, and that
+ * it shares nothing of the day — a new pairing mints v5 directly, so these are its consent's words.
+ */
+export const PAIRING_NOTES: Readonly<Record<string, string>> = {
+  "training-v5": "Its coach use counts toward this account's weekly AI limit. It never sees your health readings or conditions, and shares nothing about your day unless you turn that on on the phone.",
+};
+
+/**
  * The grant to each next scope: its button, and the one line that says what it adds — and that it can be stopped here —
  * before anything is sent.
  */
@@ -71,11 +79,12 @@ export const GRANTS: Readonly<Record<string, { button: string; line: string }>> 
     button: "Allow reading your plan and history",
     line: "It will also be able to read your training plan, from three months back to two weeks ahead, and what you've done in the last year: titles, times, distances and the sets you logged. Never heart rate, pace, routes or health readings. You can stop it here any time.",
   },
-  // R1 (DESIGN-3 §3.5): everything the phone may do with the library and the coach, that it counts toward the week's AI
-  // limit, and plainly that the grant shares nothing of the owner's day — that is the owner's own choice on the phone.
+  // R1 (DESIGN-3 §3.5; review A MAJOR-1, MINOR-4): everything the phone may do with the library and the coach — take-back
+  // only of what it made, until the session's day ends — exactly what it reads of the coach (never the readings it reads
+  // to decide), that it counts toward the week's AI limit, and plainly that the grant shares nothing of the owner's day.
   "training-v5": {
     button: "Allow your library and coach",
-    line: "It will also be able to browse your saved workouts and moves and put one on your plan; ask your coach to design or change workouts, answer its questions, approve or decline what it suggests, and take back what it added within 8 days; and see, edit and add to what your coach remembers. Its coach use counts toward this account's weekly AI limit. This doesn't share anything about your day with your coach; that's a separate choice on the phone. You can stop it here any time.",
+    line: "It will also be able to browse your saved workouts and moves and put one on your plan; ask your coach to design or change workouts, answer its questions, and approve or decline what it suggests; take back a workout it put on your plan or a coach change it approved, until that day ends (8 days at most); and see, edit, add to and delete what your coach remembers. It sees your coach's progress, questions and suggestions, never the health readings, conditions or notes your coach reads to decide. Its coach use counts toward this account's weekly AI limit. This doesn't share anything about your day with your coach; that's a separate choice on the phone. You can stop it here any time.",
   },
 };
 
@@ -214,6 +223,7 @@ export function DevicesSection({ timezone }: { timezone?: string | null } = {}) 
                 <small>Waiting for your confirmation · Check number {d.check}</small>
                 <small>Confirm only if your phone shows the same number.</small>
                 {can ? <small>Once confirmed, it can {can}.</small> : null}
+                {PAIRING_NOTES[d.scope] ? <small>{PAIRING_NOTES[d.scope]}</small> : null}
               </span>
               <span className="setting-row-end">
                 <button type="button" className="btn btn-small" disabled={busy} onClick={() => confirm.mutate(d)}>
@@ -312,6 +322,7 @@ export function DevicesSection({ timezone }: { timezone?: string | null } = {}) 
               </p>
               <small className="muted">Expires at {clockOf(minted.expiresAt)}</small>
               {pairedCan ? <small className="muted">A phone paired now can {pairedCan}.</small> : null}
+              {minted?.scope && PAIRING_NOTES[minted.scope] ? <small className="muted">{PAIRING_NOTES[minted.scope]}</small> : null}
             </>
           )}
           <div>

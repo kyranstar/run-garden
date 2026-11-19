@@ -398,12 +398,31 @@ export interface NativePlaceResponse {
 }
 
 export type NativeCompensation = { provider: "watch" | "calendar"; state: "pending" | "done" | "failed" };
-export type NativeTakeBackRefusal = "expired" | "past" | "executed" | "ineligible" | "has_dependents" | "group_incomplete" | "changed_since" | "group_refused" | "not_attempted";
+export type NativeTakeBackRefusal =
+  | "expired"
+  | "past"
+  | "executed"
+  | "ineligible"
+  | "cant_restore"
+  | "has_dependents"
+  | "group_incomplete"
+  | "changed_since"
+  | "group_refused"
+  | "not_attempted";
+/** How a session stands now, in the phone's words (a `changed_since` refusal's `now`). */
+export interface NativeSessionNow {
+  date: string | null;
+  time: string | null;
+  state: string | null;
+  archived: boolean;
+  title: string | null;
+  minutes: number | null;
+}
 export type NativeTakeBackOutcome =
   | { receiptId: string; outcome: "taken_back"; op: "create" | "revise" | "move" | "skip"; workoutId: string; at: string; compensation: NativeCompensation[] }
   | { receiptId: string; outcome: "already_taken_back"; op: "create" | "revise" | "move" | "skip"; workoutId: string; at: string | null; compensation: NativeCompensation[] }
   | { receiptId: string; outcome: "not_found" }
-  | { receiptId: string; outcome: "refused"; error: NativeTakeBackRefusal; why: string; receiptIds?: string[]; now?: Record<string, unknown> | null };
+  | { receiptId: string; outcome: "refused"; error: NativeTakeBackRefusal; why: string; receiptIds?: string[]; now?: NativeSessionNow | null };
 
 /** `POST /api/native/take-back`'s answer: each receipt's outcome in the order named, and those left for the next request. */
 export interface NativeTakeBackResponse {
@@ -432,14 +451,50 @@ export interface NativeSharingState {
   setAt: string | null;
 }
 
-/** A designed proposal's read, R1's fields beside its manifest. */
+/** A designed proposal's read, R1's fields: beside its manifest on the laptop; a phone's read is these alone, with `titles`. */
 export interface DesignProposalVersionFields {
   version: string;
   complete: boolean;
+  /** `status` "unfinished": its run ended without its finish (in words, at its cap) — never a phone's to approve. */
   missing?: { status: string; error: string | null; line: string | null };
-  opsSummary: Array<{ opId: string; op: "add" | "revise" | "move" | "skip" | "ease" | "other"; workoutId?: string; day: string; start?: string; minutesBefore?: number; minutesAfter?: number; category?: string; outcome?: string }>;
+  opsSummary: Array<{
+    opId: string;
+    op: "add" | "revise" | "move" | "skip" | "ease" | "other";
+    workoutId?: string;
+    day: string;
+    start?: string;
+    minutesBefore?: number;
+    minutesAfter?: number;
+    category?: string;
+    outcome?: string;
+    /** A move's day and time before it. */
+    dayBefore?: string;
+    startBefore?: string;
+  }>;
+  /** A phone's read: each designed workout's title by op (readings stripped). */
+  titles?: Record<string, string>;
   receipts: Array<{ opId: string; receiptId: string }>;
   takeBackable: string[];
+}
+
+/** `POST /api/coach/memory` from a phone: one stated line, under the words the owner accepted (switch A's version). */
+export interface CoachToldNoteBody {
+  kind: "note" | "fact" | "rule";
+  body: string;
+  clientId: string;
+  consent: string;
+}
+
+/** A memory item as a phone reads it (never the account's id or the ids in its provenance). */
+export interface CoachMemoryItemDevice {
+  id: string;
+  kind: string;
+  body: string;
+  confidence: string;
+  pinned: boolean;
+  expiresAt: string | null;
+  learnedAt: string | null;
+  source: string | null;
 }
 
 // ── A `training-v4` phone's plan reads (stage 2c, DESIGN-2c §2): the shapes the worker answers, for the harness and tests ──
