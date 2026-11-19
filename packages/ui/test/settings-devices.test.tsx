@@ -26,12 +26,17 @@ const pending = (over: Partial<NativeDeviceDto> = {}): NativeDeviceDto => ({
   scope: "training-v2", nextScope: null, previousScope: null, ...over,
 });
 /** The ladder the worker grants and steps down along (device-scope.ts `NEXT_DEVICE_SCOPE`, `PREVIOUS_DEVICE_SCOPE`). */
-const NEXT: Record<string, string | null> = { "training-slice-v1": "training-v2", "training-v2": "training-v3", "training-v3": "training-v4", "training-v4": null };
-const PREVIOUS: Record<string, string | null> = { "training-slice-v1": null, "training-v2": null, "training-v3": "training-v2", "training-v4": "training-v3" };
+const NEXT: Record<string, string | null> = { "training-slice-v1": "training-v2", "training-v2": "training-v3", "training-v3": "training-v4", "training-v4": "training-v5", "training-v5": null };
+const PREVIOUS: Record<string, string | null> = { "training-slice-v1": null, "training-v2": null, "training-v3": "training-v2", "training-v4": "training-v3", "training-v5": "training-v4" };
 const V4_CAN = "Can play, save, move and fit workouts, record your feedback, and read your plan and history.";
 const V4_GRANT =
   "It will also be able to read your training plan, from three months back to two weeks ahead, and what you've done in the last year: titles, times, distances and the sets you logged. Never heart rate, pace, routes or health readings. You can stop it here any time.";
 const V4_STOP = "It will no longer be able to read your coming weeks and your history. It stays paired.";
+/** R1's words (DESIGN-3 §3.5): what a v5 phone can do, its grant's line — saying plainly that it shares nothing of the day — and its step-down's. */
+const V5_CAN = "Can play, save, move and fit workouts, record your feedback, read your plan and history, use your library, and work with your coach.";
+const V5_GRANT =
+  "It will also be able to browse your saved workouts and moves and put one on your plan; ask your coach to design or change workouts, answer its questions, approve or decline what it suggests, and take back what it added within 8 days; and see, edit and add to what your coach remembers. Its coach use counts toward this account's weekly AI limit. This doesn't share anything about your day with your coach; that's a separate choice on the phone. You can stop it here any time.";
+const V5_STOP = "It will no longer use your library or coach. What it already added stays on your plan. It stays paired.";
 /** Renew's one line (LifeOS Q-172), and the hint beside a phone inside the warning while Renew is offered. */
 const RENEW_LINE = "It will keep working for 30 more days from now. Nothing else changes.";
 const RENEW_HINT = "Renew it to keep it working.";
@@ -442,14 +447,14 @@ describe("Settings → Devices", () => {
     expect(calls.filter((c) => c.method === "POST")).toEqual([{ method: "POST", path: `/api/native/devices/${"b".repeat(64)}/grant`, body: { scope: "training-v4" } }]);
     const after = rowOf("New phone");
     expect(words(after)).toContain(V4_CAN);
-    // At the top: no grant, and its own step-down.
-    expect([...after.querySelectorAll("button")].map(words)).toEqual(["Stop reading your plan and history", "Revoke"]);
+    // At v4: the next grant (v5) and its own step-down.
+    expect([...after.querySelectorAll("button")].map(words)).toEqual(["Allow your library and coach", "Stop reading your plan and history", "Revoke"]);
   });
 
   it("a v4 phone's step-down: one line saying what stops (what v4 does today: reading the coming weeks and history) and that it stays paired; Stop sends v3", async () => {
     worker({ devices: [active({ label: "Newest phone", scope: "training-v4" })] });
     await mount();
-    expect([...rowOf("Newest phone").querySelectorAll("button")].map(words)).toEqual(["Stop reading your plan and history", "Revoke"]);
+    expect([...rowOf("Newest phone").querySelectorAll("button")].map(words)).toEqual(["Allow your library and coach", "Stop reading your plan and history", "Revoke"]);
     await click(button("Stop reading your plan and history", rowOf("Newest phone")));
     expect(calls.filter((c) => c.method === "POST")).toEqual([]);
     const asking = rowOf("Newest phone");
@@ -459,6 +464,37 @@ describe("Settings → Devices", () => {
     expect(calls.filter((c) => c.method === "POST")).toEqual([{ method: "POST", path: `/api/native/devices/${"b".repeat(64)}/reduce`, body: { scope: "training-v3" } }]);
     expect(words(rowOf("Newest phone"))).toContain("Can play, save, move and fit workouts, and record your feedback.");
     expect([...rowOf("Newest phone").querySelectorAll("button")].map(words)).toEqual(["Allow reading your plan and history", "Stop fitting and feedback", "Revoke"]);
+  });
+
+  it("a v4 phone's grant of v5 (DESIGN-3 §3.5): its button, the one line saying what it allows and that it shares nothing of the day, then Allow grants it", async () => {
+    worker({ devices: [active({ label: "Newer phone", scope: "training-v4" })] });
+    await mount();
+    await click(button("Allow your library and coach", rowOf("Newer phone")));
+    expect(calls.filter((c) => c.method === "POST")).toEqual([]);
+    const asking = rowOf("Newer phone");
+    expect(words(asking)).toContain(V5_GRANT);
+    expect([...asking.querySelectorAll("button")].map(words)).toEqual(["Allow", "Not now"]);
+    await click(button("Allow", asking));
+    expect(calls.filter((c) => c.method === "POST")).toEqual([{ method: "POST", path: `/api/native/devices/${"b".repeat(64)}/grant`, body: { scope: "training-v5" } }]);
+    const after = rowOf("Newer phone");
+    expect(words(after)).toContain(V5_CAN);
+    // At the top: no grant, and its own step-down.
+    expect([...after.querySelectorAll("button")].map(words)).toEqual(["Stop library and coach", "Revoke"]);
+  });
+
+  it("a v5 phone's step-down: one line saying what stops, that what it added stays, and that it stays paired; Stop sends v4", async () => {
+    worker({ devices: [active({ label: "Newest phone", scope: "training-v5" })] });
+    await mount();
+    expect(words(rowOf("Newest phone"))).toContain(V5_CAN);
+    await click(button("Stop library and coach", rowOf("Newest phone")));
+    expect(calls.filter((c) => c.method === "POST")).toEqual([]);
+    const asking = rowOf("Newest phone");
+    expect(words(asking)).toContain(V5_STOP);
+    expect([...asking.querySelectorAll("button")].map(words)).toEqual(["Stop", "Not now"]);
+    await click(button("Stop", asking));
+    expect(calls.filter((c) => c.method === "POST")).toEqual([{ method: "POST", path: `/api/native/devices/${"b".repeat(64)}/reduce`, body: { scope: "training-v4" } }]);
+    expect(words(rowOf("Newest phone"))).toContain(V4_CAN);
+    expect([...rowOf("Newest phone").querySelectorAll("button")].map(words)).toEqual(["Allow your library and coach", "Stop reading your plan and history", "Revoke"]);
   });
 
   it("a v3 phone's step-down: one button, one line saying what stops and that it stays paired, then Stop sends it", async () => {
@@ -545,7 +581,13 @@ describe("Settings → Devices", () => {
   });
 
   it("the pairing code says what a phone paired now can do, from the worker's answer", async () => {
-    // A new pairing is the newest scope (the worker's PAIRING_SCOPE, v4): the code says all of what that allows.
+    // A new pairing is the newest scope (the worker's PAIRING_SCOPE, v5): the code says all of what that allows.
+    worker({ pairScope: "training-v5" });
+    await mount();
+    await click(button("Pair a phone"));
+    expect(words(host)).toContain("A phone paired now can play, save, move and fit workouts, record your feedback, read your plan and history, use your library, and work with your coach.");
+    act(() => root?.unmount());
+    host?.remove();
     worker({ pairScope: "training-v4" });
     await mount();
     await click(button("Pair a phone"));

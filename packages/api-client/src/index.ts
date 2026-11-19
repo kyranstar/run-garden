@@ -342,7 +342,7 @@ export interface NativeDeviceDto {
   expiresAt: string;
   /** Active and expiring within 7 days: re-pair soon. */
   expiresSoon: boolean;
-  /** What it may reach, as the worker stores it: `training-slice-v1`, `training-v2`, `training-v3`, `training-v4` (or one a newer worker knows). */
+  /** What it may reach, as the worker stores it: `training-slice-v1`, `training-v2`, `training-v3`, `training-v4`, `training-v5` (or one a newer worker knows). */
   scope: string;
   /** The scope Settings can grant it now (its next, while active), else null. */
   nextScope: string | null;

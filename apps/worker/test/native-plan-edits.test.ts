@@ -269,7 +269,7 @@ describe("a v1 phone is refused them, and keeps v1", () => {
     const { token, check } = (await w.call("POST", "/api/native/pair", { cookie: false, body: { code, label: "New phone" } })).json;
     expect((await w.call("POST", `/api/native/devices/${await sha256Hex(token)}/confirm`, { body: { check } })).status).toBe(200);
     // A new pairing no longer upgrades or touches the v1 phone; only the laptop's grant moves a phone up (stage 2b).
-    expect((await w.call("GET", "/api/native/me", { bearer: token })).json.device.scope).toBe("training-v4");
+    expect((await w.call("GET", "/api/native/me", { bearer: token })).json.device.scope).toBe("training-v5");
     expect((await w.call("GET", "/api/native/me", { bearer: v1 })).json.device.scope).toBe(V1);
     const id = await workoutOn(THU);
     expect((await move(id, { toDate: FRI, toTime: "07:00" }, v1)).status).toBe(403);

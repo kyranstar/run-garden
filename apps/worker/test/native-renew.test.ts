@@ -128,7 +128,7 @@ describe("Renew gives an active phone 30 days from now, in place", () => {
     expect((await w.call("GET", "/api/native/me", { bearer: d.token })).json.device).toEqual({ label: "Running phone", expiresAt: to, scope: V4 });
     // The laptop's list: the new expiry, no longer expiring soon, the same steps to offer.
     const listed = (await w.call("GET", "/api/native/devices")).json.devices.find((x: { id: string }) => x.id === d.id);
-    expect([listed.expiresAt, listed.expiresSoon, listed.scope, listed.nextScope, listed.previousScope]).toEqual([to, false, V4, null, V3]);
+    expect([listed.expiresAt, listed.expiresSoon, listed.scope, listed.nextScope, listed.previousScope]).toEqual([to, false, V4, "training-v5", V3]);
   });
 
   it("the expiry is 30 days from the server's acceptance (the pairing's own lifetime), never +30 on the old expiry", async () => {

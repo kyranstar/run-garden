@@ -6,30 +6,34 @@
  *  - `device`: on the scope's list (auth/device-scope.ts `DEVICE_SCOPES`) — for `training-slice-v1` exactly the eight
  *    pairs of SLICE-CONTRACT §10.3; for `training-v2` those and stage 2a's four (DESIGN §5.1, §9); for `training-v3` v2's
  *    twelve and stage 2b's two document routes (kit v0.15: Build and the save widen their body rules, not their pairs); for
- *    `training-v4` v3's fourteen and stage 2c's three plan reads (kit v0.16, DESIGN-2c §3), each with its query rule;
+ *    `training-v4` v3's fourteen and stage 2c's three plan reads (kit v0.16, DESIGN-2c §3), each with its query rule; for
+ *    `training-v5` v4's seventeen and R1's library, take-back, switch A and coach designer pairs (kit v0.20, DESIGN-3 §3.5),
+ *    each with its body or query rule;
  *  - `gated`: behind `requireUser`, so that scope's device token is 403 `out_of_scope`;
  *  - `open`: not behind `requireUser` — the device token is no credential there, and changes nothing;
  *  - `bearer`: behind its own bearer door (LifeOS, the saves extension), which the device token does not open.
  *
- * A route is one class for every scope, or a class per scope where they differ (`V2_DEVICE`, `V3_DEVICE`, `V4_DEVICE`): a scope added
+ * A route is one class for every scope, or a class per scope where they differ (`V2_DEVICE` … `V5_DEVICE`): a scope added
  * later must name its class for each of those, or the type fails. A new route that a device should reach is a new scope
  * (a later stage), never a widened one — reached by a new pairing or the laptop's grant of the next scope.
  */
 export type RouteClass = "device" | "gated" | "open" | "bearer";
 
 /** The device scopes, oldest first. */
-export const SCOPES = ["training-slice-v1", "training-v2", "training-v3", "training-v4"] as const;
+export const SCOPES = ["training-slice-v1", "training-v2", "training-v3", "training-v4", "training-v5"] as const;
 export type Scope = (typeof SCOPES)[number];
 
 /** A route's class: the same under every scope, or one per scope. */
 export type Classified = RouteClass | Readonly<Record<Scope, RouteClass>>;
 
-/** Stage 2a's plan edits and the watch drain: refused to a v1 device, reached by a v2 one (and a v3 or v4 one: each holds v2). */
-const V2_DEVICE: Readonly<Record<Scope, RouteClass>> = { "training-slice-v1": "gated", "training-v2": "device", "training-v3": "device", "training-v4": "device" };
-/** Stage 2b's document read and edit (kit v0.15, "Make it fit"): reached by a v3 device (and a v4 one: v4 holds v3). */
-const V3_DEVICE: Readonly<Record<Scope, RouteClass>> = { "training-slice-v1": "gated", "training-v2": "gated", "training-v3": "device", "training-v4": "device" };
-/** Stage 2c's plan reads (kit v0.16, DESIGN-2c §2): `/days`, `/history` and `/ahead`, reached only by a v4 device. */
-const V4_DEVICE: Readonly<Record<Scope, RouteClass>> = { "training-slice-v1": "gated", "training-v2": "gated", "training-v3": "gated", "training-v4": "device" };
+/** Stage 2a's plan edits and the watch drain: refused to a v1 device, reached by a v2 one (and a v3–v5 one: each holds v2). */
+const V2_DEVICE: Readonly<Record<Scope, RouteClass>> = { "training-slice-v1": "gated", "training-v2": "device", "training-v3": "device", "training-v4": "device", "training-v5": "device" };
+/** Stage 2b's document read and edit (kit v0.15, "Make it fit"): reached by a v3 device (and a v4 or v5 one: each holds v3). */
+const V3_DEVICE: Readonly<Record<Scope, RouteClass>> = { "training-slice-v1": "gated", "training-v2": "gated", "training-v3": "device", "training-v4": "device", "training-v5": "device" };
+/** Stage 2c's plan reads (kit v0.16, DESIGN-2c §2): `/days`, `/history` and `/ahead`, reached by a v4 device (and a v5 one). */
+const V4_DEVICE: Readonly<Record<Scope, RouteClass>> = { "training-slice-v1": "gated", "training-v2": "gated", "training-v3": "gated", "training-v4": "device", "training-v5": "device" };
+/** R1's (kit v0.20, DESIGN-3 §3.5): the library, take-back, switch A and the coach designer, reached only by a v5 device. */
+const V5_DEVICE: Readonly<Record<Scope, RouteClass>> = { "training-slice-v1": "gated", "training-v2": "gated", "training-v3": "gated", "training-v4": "gated", "training-v5": "device" };
 
 /** The class of a classified route under `scope`. */
 export const classUnder = (classified: Classified, scope: Scope): RouteClass => (typeof classified === "string" ? classified : classified[scope]);
@@ -75,17 +79,17 @@ export const ROUTE_CLASSES: Record<string, Classified> = {
   "POST /api/garden/rest-mode": "gated",
   "GET /api/garden/diagnostics": "gated",
   "ALL /api/coach/runs/*": "gated",
-  "POST /api/coach/runs": "gated",
-  "POST /api/coach/runs/:id/step": "gated",
-  "GET /api/coach/runs/current": "gated",
-  "GET /api/coach/runs/:id": "gated",
-  "POST /api/coach/runs/:id/answer": "gated",
-  "POST /api/coach/runs/:id/cancel": "gated",
-  "POST /api/coach/runs/:id/undo-answer": "gated",
+  "POST /api/coach/runs": V5_DEVICE,
+  "POST /api/coach/runs/:id/step": V5_DEVICE,
+  "GET /api/coach/runs/current": V5_DEVICE,
+  "GET /api/coach/runs/:id": V5_DEVICE,
+  "POST /api/coach/runs/:id/answer": V5_DEVICE,
+  "POST /api/coach/runs/:id/cancel": V5_DEVICE,
+  "POST /api/coach/runs/:id/undo-answer": V5_DEVICE,
   "ALL /api/coach/conversation/*": "gated",
-  "GET /api/coach/conversation": "gated",
+  "GET /api/coach/conversation": V5_DEVICE,
   "ALL /api/coach/nudges/*": "gated",
-  "GET /api/coach/nudges": "gated",
+  "GET /api/coach/nudges": V5_DEVICE,
   "ALL /api/coach/preferences/*": "gated",
   "GET /api/coach/preferences": "gated",
   "PUT /api/coach/preferences": "gated",
@@ -94,21 +98,21 @@ export const ROUTE_CLASSES: Record<string, Classified> = {
   "POST /api/coach/replay": "gated",
   "ALL /api/coach/*": "gated",
   "GET /api/coach/state": "gated",
-  "GET /api/coach/spend": "gated",
+  "GET /api/coach/spend": V5_DEVICE,
   "POST /api/coach/wake": "gated",
   "GET /api/coach/analyze/:activityId": "gated",
   "POST /api/coach/analyze/:activityId": "gated",
   "POST /api/coach/message": "gated",
-  "POST /api/coach/proposals/:id/approve": "gated",
-  "POST /api/coach/drain": "gated",
-  "GET /api/coach/proposals/:id": "gated",
-  "GET /api/coach/proposals/:id/ops/:opId/draft": "gated",
-  "POST /api/coach/proposals/:id/decline": "gated",
+  "POST /api/coach/proposals/:id/approve": V5_DEVICE,
+  "POST /api/coach/drain": V5_DEVICE,
+  "GET /api/coach/proposals/:id": V5_DEVICE,
+  "GET /api/coach/proposals/:id/ops/:opId/draft": V5_DEVICE,
+  "POST /api/coach/proposals/:id/decline": V5_DEVICE,
   "POST /api/coach/questions/:id/answer": "gated",
   "POST /api/coach/questions/:id/dismiss": "gated",
-  "GET /api/coach/memory": "gated",
-  "PATCH /api/coach/memory/:id": "gated",
-  "DELETE /api/coach/memory/:id": "gated",
+  "GET /api/coach/memory": V5_DEVICE,
+  "PATCH /api/coach/memory/:id": V5_DEVICE,
+  "DELETE /api/coach/memory/:id": V5_DEVICE,
   "GET /api/coach/plans": "gated",
   "GET /api/coach/plans/:id/detail": "gated",
   "POST /api/coach/plans/:id/rename": "gated",

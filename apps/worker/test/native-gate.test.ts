@@ -14,6 +14,7 @@ import { schema } from "@rg/database";
 import { nowInstant } from "@rg/domain";
 import { randomToken } from "../src/auth/crypto.js";
 import { authRoutes } from "../src/routes/auth.js";
+import { coachRoutes } from "../src/routes/coach.js";
 import { settingsRoutes } from "../src/routes/misc.js";
 import { planRoutes } from "../src/routes/plan.js";
 import { sessionRoutes } from "../src/routes/sessions.js";
@@ -199,6 +200,27 @@ describe("an active device", () => {
     expect(on.writes).toEqual([]);
     expect(await w.db.select().from(sessionBuilds)).toEqual([]);
     expect((await w.call("GET", `/api/sessions/${slot}`, { bearer: token })).status).toBe(200);
+  });
+
+  it("v5's PATCH and DELETE pass the gate like any write: off v4's list 403, on v5's list 423 while a restore runs", async () => {
+    // The coach's memory routes mounted beside the others: what the gate decides is the same whatever answers after it.
+    w.app.route("/api/coach", coachRoutes);
+    const v4 = await seedDevice(w.db, w.userId, { scope: "training-v4", lastUsedAt: nowInstant() });
+    const v5 = await seedDevice(w.db, w.userId, { scope: "training-v5", lastUsedAt: nowInstant() });
+    for (const [method, body] of [["PATCH", { pinned: true }], ["DELETE", undefined]] as const) {
+      const off = await w.call(method, "/api/coach/memory/m-1", { bearer: v4.token, ...(body ? { body } : {}) });
+      expect([method, off.status, off.json, off.writes]).toEqual([method, 403, { error: "out_of_scope" }, []]);
+      // Outside its body rule: 403 before any handler, whatever the scope.
+      const wide = await w.call(method, "/api/coach/memory/m-1", { bearer: v5.token, body: { kind: "rule" } });
+      expect([method, wide.status, wide.json]).toEqual([method, 403, { error: "out_of_scope" }]);
+    }
+    await w.db.insert(accountState).values({ userId: w.userId, restoreId: "r-1", restoreStartedAt: nowInstant(), updatedAt: nowInstant() });
+    for (const [method, body] of [["PATCH", { pinned: true }], ["DELETE", undefined]] as const) {
+      const on = await w.call(method, "/api/coach/memory/m-1", { bearer: v5.token, ...(body ? { body } : {}) });
+      expect([method, on.status, on.json, on.writes]).toEqual([method, 423, { error: "restore_in_progress" }, []]);
+    }
+    // A read still answers a v5 phone during the restore.
+    expect((await w.call("GET", "/api/coach/memory", { bearer: v5.token })).status).toBe(200);
   });
 
   it("Build carries exactly {}: a check, an override or a swap is 403 out_of_scope and builds nothing; {} builds", async () => {

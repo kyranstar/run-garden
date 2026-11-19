@@ -21,7 +21,8 @@
  * `out_of_scope`; wherever it did not, each device's answer must be the anonymous one. v1's list is pinned as it was
  * before v2 existed, and v2's is v1's, the same entries, plus four; v3's is v2's in v2's order with Build's and the save's
  * body rules widened (kit v0.15), plus two; v4's is v3's, the very same entries, plus three, each with a query rule (kit
- * v0.16, DESIGN-2c §2.5) — and every pair before them has none. Synthetic data only; `fetch` stubbed.
+ * v0.16, DESIGN-2c §2.5) — and every pair before them has none; v5's is v4's, the very same entries, plus R1's (kit v0.20,
+ * DESIGN-3 §3.5), each with a body or a query rule. Synthetic data only; `fetch` stubbed.
  */
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { eq } from "drizzle-orm";
@@ -54,7 +55,17 @@ vi.mock("../src/services/calendar-sync.js", async (importOriginal) => ({
 const { default: worker, mountedRoutes } = await import("../src/index.js");
 const {
   DEVICE_SCOPES,
+  deviceAfterSeqQuery,
   deviceAheadQuery,
+  deviceApproveBody,
+  deviceConversationQuery,
+  deviceDeclineBody,
+  deviceMemoryPatchBody,
+  deviceNudgesQuery,
+  deviceRunAnswerBody,
+  deviceRunCreateBody,
+  deviceUndoAnswerBody,
+  noQuery,
   deviceBuildBody,
   deviceDaysQuery,
   deviceDocBody,
@@ -92,12 +103,37 @@ const V2_PAIRS = [
 ];
 /** v3: v2 and stage 2b's document read and edit (kit v0.15). */
 const V3_PAIRS = [...V2_PAIRS, "GET /api/workouts/:id/doc", "PUT /api/workouts/:id/doc"];
-/** Each scope's pairs: v4 is v3 and stage 2c's three plan reads (kit v0.16, DESIGN-2c §2). */
+/** v4: v3 and stage 2c's three plan reads (kit v0.16, DESIGN-2c §2). */
+const V4_PAIRS = [...V3_PAIRS, "GET /api/native/days", "GET /api/native/history", "GET /api/native/sessions/:id/ahead"];
+/** v5: v4 and R1's (kit v0.20, DESIGN-3 §3.5): the coach designer's runs, conversation, proposals, drain, memory, nudges and spend. */
+const V5_PAIRS = [
+  ...V4_PAIRS,
+  "POST /api/coach/runs",
+  "POST /api/coach/runs/:id/step",
+  "GET /api/coach/runs/current",
+  "GET /api/coach/runs/:id",
+  "POST /api/coach/runs/:id/answer",
+  "POST /api/coach/runs/:id/cancel",
+  "POST /api/coach/runs/:id/undo-answer",
+  "GET /api/coach/conversation",
+  "GET /api/coach/proposals/:id",
+  "GET /api/coach/proposals/:id/ops/:opId/draft",
+  "POST /api/coach/proposals/:id/approve",
+  "POST /api/coach/proposals/:id/decline",
+  "POST /api/coach/drain",
+  "GET /api/coach/memory",
+  "PATCH /api/coach/memory/:id",
+  "DELETE /api/coach/memory/:id",
+  "GET /api/coach/nudges",
+  "GET /api/coach/spend",
+];
+/** Each scope's pairs. */
 const DEVICE_PAIRS: Record<Scope, readonly string[]> = {
   "training-slice-v1": V1_PAIRS,
   "training-v2": V2_PAIRS,
   "training-v3": V3_PAIRS,
-  "training-v4": [...V3_PAIRS, "GET /api/native/days", "GET /api/native/history", "GET /api/native/sessions/:id/ahead"],
+  "training-v4": V4_PAIRS,
+  "training-v5": V5_PAIRS,
 };
 /**
  * A probe's body where `{}` is outside the pair's body rule: a move in its grammar (the route then answers 404), and the
@@ -108,6 +144,10 @@ const PROBE_BODIES: Record<string, string> = {
   "POST /api/sessions/watch/drain": JSON.stringify({ workoutId: "probe-id" }),
   // A document edit in v3's grammar (the route then answers 404 for an id that isn't the account's).
   "PUT /api/workouts/:id/doc": JSON.stringify({ doc: {}, baseRev: 0 }),
+  // v5's in their grammars: the routes then answer 404 or 400 for ids that aren't the account's.
+  "POST /api/coach/runs/:id/undo-answer": JSON.stringify({ handle: "probe-handle" }),
+  "POST /api/coach/proposals/:id/approve": JSON.stringify({ opIds: ["probe-op"], version: "0".repeat(64) }),
+  "PATCH /api/coach/memory/:id": JSON.stringify({ pinned: true }),
 };
 /**
  * A probe's query where a pair's query rule refuses none (DESIGN-2c §2.5): `/days` takes exactly `from` and `to` (the route
@@ -265,8 +305,74 @@ describe("every mounted route is classified", () => {
       ["GET", String(/^\/api\/native\/history$/), null, deviceHistoryQuery],
       ["GET", String(/^\/api\/native\/sessions\/[^/]+\/ahead$/), null, deviceAheadQuery],
     ]);
-    // Only v4's three hold a query rule: every pair of v1–v3 behaves exactly as before, its query never checked.
-    for (const scope of SCOPES) for (const r of DEVICE_SCOPES[scope].filter((x) => !v4.slice(v3.length).includes(x))) expect(r.query).toBeUndefined();
+    // Only v4's three (and v5's own) hold a query rule: every pair of v1–v3 behaves exactly as before, its query never checked.
+    for (const r of v3) expect(r.query).toBeUndefined();
+  });
+
+  it("v5's list is v4's seventeen, the very same entries in v4's order, then R1's, each with its body or query rule", () => {
+    const v4 = DEVICE_SCOPES["training-v4"];
+    const v5 = DEVICE_SCOPES["training-v5"];
+    // A released scope is never widened: v5 holds v4 exactly, the same objects, so no rule of v4's moves.
+    v4.forEach((r, i) => expect(v5[i]).toBe(r));
+    expect(v5.slice(v4.length).map((r) => [r.method, String(r.pattern), r.body ?? null, r.query ?? null])).toEqual([
+      ["POST", String(/^\/api\/coach\/runs$/), deviceRunCreateBody, null],
+      ["POST", String(/^\/api\/coach\/runs\/[^/]+\/step$/), emptyBody, deviceAfterSeqQuery],
+      ["GET", String(/^\/api\/coach\/runs\/current$/), null, noQuery],
+      ["GET", String(/^\/api\/coach\/runs\/[^/]+$/), null, deviceAfterSeqQuery],
+      ["POST", String(/^\/api\/coach\/runs\/[^/]+\/answer$/), deviceRunAnswerBody, null],
+      ["POST", String(/^\/api\/coach\/runs\/[^/]+\/cancel$/), emptyBody, null],
+      ["POST", String(/^\/api\/coach\/runs\/[^/]+\/undo-answer$/), deviceUndoAnswerBody, null],
+      ["GET", String(/^\/api\/coach\/conversation$/), null, deviceConversationQuery],
+      ["GET", String(/^\/api\/coach\/proposals\/[^/]+$/), null, noQuery],
+      ["GET", String(/^\/api\/coach\/proposals\/[^/]+\/ops\/[^/]+\/draft$/), null, noQuery],
+      ["POST", String(/^\/api\/coach\/proposals\/[^/]+\/approve$/), deviceApproveBody, null],
+      ["POST", String(/^\/api\/coach\/proposals\/[^/]+\/decline$/), deviceDeclineBody, null],
+      ["POST", String(/^\/api\/coach\/drain$/), emptyBody, null],
+      ["GET", String(/^\/api\/coach\/memory$/), null, noQuery],
+      ["PATCH", String(/^\/api\/coach\/memory\/[^/]+$/), deviceMemoryPatchBody, null],
+      ["DELETE", String(/^\/api\/coach\/memory\/[^/]+$/), emptyBody, null],
+      ["GET", String(/^\/api\/coach\/nudges$/), null, deviceNudgesQuery],
+      ["GET", String(/^\/api\/coach\/spend$/), null, noQuery],
+    ]);
+    // Every v5 pair of its own holds a rule: none is reached with a query or a body it doesn't name.
+    for (const r of v5.slice(v4.length)) expect([String(r.pattern), r.body !== undefined || r.query !== undefined]).toEqual([String(r.pattern), true]);
+  });
+});
+
+describe("v5's body rules (DESIGN-3 §3.5): the shapes only, the routes check the values", () => {
+  const V = "a".repeat(64);
+  const j = (v: unknown) => JSON.stringify(v);
+  it("approve from the phone names its ops and the version it was shown — never a bare {} or ops without the version", () => {
+    for (const ok of [{ opIds: ["w1"], version: V }, { opIds: ["w1", "c:2"], version: V }, { edit: { opId: "w1", doc: {} }, version: V }, { edit: { opId: "w1", doc: {}, date: "2026-11-20", time: "07:00" }, version: V }]) {
+      expect([j(ok), deviceApproveBody(j(ok))]).toEqual([j(ok), true]);
+    }
+    for (const bad of [{}, { opIds: ["w1"] }, { version: V }, { opIds: [], version: V }, { opIds: ["w1"], version: "v1" }, { opIds: ["w1"], version: V.toUpperCase() }, { opIds: ["w1"], version: V, extra: 1 }, { opIds: ["w1"], edit: { opId: "w1", doc: {} }, version: V }, { edit: { opId: "w1" }, version: V }, { edit: { opId: "w1", doc: {}, title: "x" }, version: V }, { opIds: "w1", version: V }, { opIds: [1], version: V }, [], "x"]) {
+      expect([j(bad), deviceApproveBody(j(bad))]).toEqual([j(bad), false]);
+    }
+    expect(deviceApproveBody("not json")).toBe(false);
+  });
+  it("a run from the phone: keys among scope, request, focus, conversationId, nudge and frame — never rehearsal or savesBatchId", () => {
+    for (const ok of [{}, { scope: { kind: "later_today" }, request: "x" }, { focus: { kind: "day", id: "2026-11-20" } }, { frame: {} }, { conversationId: null, nudge: "missed" }]) {
+      expect([j(ok), deviceRunCreateBody(j(ok))]).toEqual([j(ok), true]);
+    }
+    for (const bad of [{ rehearsal: true }, { rehearsal: false }, { savesBatchId: "b1" }, { request: "x", extra: 1 }, { frame: "free 17:30" }, { frame: [] }, { frame: null }, [], "x"]) {
+      expect([j(bad), deviceRunCreateBody(j(bad))]).toEqual([j(bad), false]);
+    }
+  });
+  it("the rest: answers, undo, decline, memory edits, the step's and drain's empty bodies", () => {
+    expect([deviceRunAnswerBody(j({ answers: ["a"] })), deviceRunAnswerBody(j({ dismissed: true })), deviceRunAnswerBody(j({ answers: [], x: 1 }))]).toEqual([true, true, false]);
+    expect([deviceUndoAnswerBody(j({ handle: "h" })), deviceUndoAnswerBody(j({})), deviceUndoAnswerBody(j({ handle: "h", x: 1 })), deviceUndoAnswerBody(j({ handle: "" }))]).toEqual([true, false, false, false]);
+    expect([deviceDeclineBody(j({})), deviceDeclineBody(j({ opIds: ["w1"], reason: "no" })), deviceDeclineBody(j({ all: true }))]).toEqual([true, true, false]);
+    expect([deviceMemoryPatchBody(j({ pinned: true })), deviceMemoryPatchBody(j({ body: "x", confirm: true })), deviceMemoryPatchBody(j({})), deviceMemoryPatchBody(j({ kind: "rule" }))]).toEqual([true, true, false, false]);
+    expect([emptyBody(""), emptyBody("{}"), emptyBody(j({ afterSeq: 1 }))]).toEqual([true, true, false]);
+  });
+  it("the queries: afterSeq digits once; the conversation's id once; nudges' seen once; none elsewhere", () => {
+    const q = (s: string) => new URLSearchParams(s);
+    expect(["", "afterSeq=0", "afterSeq=123456789"].map((s) => deviceAfterSeqQuery(q(s)))).toEqual([true, true, true]);
+    expect(["afterSeq=-1", "afterSeq=1234567890", "afterSeq=1&afterSeq=2", "afterSeq=", "x=1"].map((s) => deviceAfterSeqQuery(q(s)))).toEqual([false, false, false, false, false]);
+    expect(["", "id=abc_1-2", "id=a&id=b", "id=a/b", "x=1"].map((s) => deviceConversationQuery(q(s)))).toEqual([true, true, false, false, false]);
+    expect(["", "seen=a,b", "seen=a&seen=b", "x=1"].map((s) => deviceNudgesQuery(q(s)))).toEqual([true, true, false, false]);
+    expect(["", "x=1", "&"].map((s) => noQuery(q(s)))).toEqual([true, false, true]);
   });
 });
 

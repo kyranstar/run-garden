@@ -63,12 +63,12 @@ describe("the QA account's code", () => {
     expect(a.json.check).toBe(await checkNumberOf(await sha256Hex(a.json.token)));
     const id = await sha256Hex(a.json.token);
     expect(await w.db.select().from(nativeDevices)).toEqual([
-      expect.objectContaining({ id, userId: qa.userId, scope: "training-v4", label: "LifeOS QA phone", state: "active", confirmedAt: nowInstant(), expiresAt: later(30 * DAY) }),
+      expect.objectContaining({ id, userId: qa.userId, scope: "training-v5", label: "LifeOS QA phone", state: "active", confirmedAt: nowInstant(), expiresAt: later(30 * DAY) }),
     ]);
     expect((await pairingOf(qa.userId))?.usedAt).toBe(nowInstant());
     // Its token signs in as the QA account, at once (no Confirm), and says so.
     const me = await w.call("GET", "/api/native/me", { bearer: a.json.token });
-    expect([me.status, me.json]).toEqual([200, { userId: qa.userId, device: { label: "LifeOS QA phone", expiresAt: later(30 * DAY), scope: "training-v4" } }]);
+    expect([me.status, me.json]).toEqual([200, { userId: qa.userId, device: { label: "LifeOS QA phone", expiresAt: later(30 * DAY), scope: "training-v5" } }]);
   });
 
   it("reads only the QA account's day: its fixtures, never the owner's sessions", async () => {

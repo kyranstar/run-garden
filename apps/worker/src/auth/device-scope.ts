@@ -12,6 +12,13 @@
  *    three READS of the plan and the record — `GET /api/native/days`, `GET /api/native/history` and
  *    `GET /api/native/sessions/:id/ahead` — none of which writes anything. Reads only, but a new class of data (90 days of
  *    the plan, a year of the training record) to a phone that could be lost, so it is its own named consent.
+ *  - `training-v5` (R1: the library, the coach on the phone; kit v0.20, DESIGN-3 §3.5): v4's seventeen entries, the very
+ *    same, then the saved workouts and the moves read trimmed (`GET /api/native/templates`, `/library`), a saved workout
+ *    put on the plan with a take-back receipt (`POST /api/native/templates/:id/place`), the receipt-bound take-back
+ *    (`POST /api/native/take-back`, `GET /api/native/receipts/:id`), switch A's flag (`GET`/`PUT /api/native/sharing`, off
+ *    until the owner turns it on, on the phone), and the coach designer's own routes — runs, the conversation, proposals
+ *    approved only by their ops and version, the watch drain, what it remembers, its nudges and the week's spend. Every
+ *    training write is run-garden's own route and rules; nothing writes the plan but an approve naming its ops.
  *
  * Exact (method, anchored pattern) pairs, matched against `c.req.path` (the same decoded path the router matches) and
  * `c.req.method`, for every method: HEAD is its own method here and is on no pair, so a device's HEAD is refused like any
@@ -37,18 +44,20 @@ export const DEVICE_SCOPE_V1 = "training-slice-v1";
 export const DEVICE_SCOPE_V2 = "training-v2";
 export const DEVICE_SCOPE_V3 = "training-v3";
 export const DEVICE_SCOPE_V4 = "training-v4";
-export type DeviceScope = typeof DEVICE_SCOPE_V1 | typeof DEVICE_SCOPE_V2 | typeof DEVICE_SCOPE_V3 | typeof DEVICE_SCOPE_V4;
+export const DEVICE_SCOPE_V5 = "training-v5";
+export type DeviceScope = typeof DEVICE_SCOPE_V1 | typeof DEVICE_SCOPE_V2 | typeof DEVICE_SCOPE_V3 | typeof DEVICE_SCOPE_V4 | typeof DEVICE_SCOPE_V5;
 
 /** The newest scope this Worker knows. */
-export const NEWEST_DEVICE_SCOPE: DeviceScope = DEVICE_SCOPE_V4;
+export const NEWEST_DEVICE_SCOPE: DeviceScope = DEVICE_SCOPE_V5;
 
 /**
- * THE SCOPE A NEW PAIRING IS MINTED AT: the newest, v4 (stage 2b RG-NOTES §3.5, §8; DESIGN-2c §3): one pairing gets
- * everything, and a phone paired again after its 30-day expiry needs no grant each time. The laptop's code says what it
- * allows. It rests on the release precondition: this Worker ships only once the installed LifeOS is at or after
- * `12e86ca8`, which reads scopes as ordered levels (v4 includes v3, v3 includes v2), so a fresh v4 pairing on a build
- * without 2c's screens keeps every v2 and v3 ability and simply never asks the new reads. (LifeOS `7f1388aa` read any
- * scope but exactly `training-v2` as v1.) The laptop's step-down narrows a pairing in place.
+ * THE SCOPE A NEW PAIRING IS MINTED AT: the newest, v5 (stage 2b RG-NOTES §3.5, §8; DESIGN-2c §3; DESIGN-3 §3.5): one
+ * pairing gets everything, and a phone paired again after its 30-day expiry needs no grant each time. The laptop's code
+ * says what it allows. It rests on the release precondition: this Worker ships only once the installed LifeOS is at or
+ * after `12e86ca8`, which reads scopes as ordered levels (`training-v<N>` is level N: v5 includes v4, v4 includes v3), so a
+ * fresh v5 pairing on a build without 3a's screens keeps every v2–v4 ability and simply never asks the new routes. (LifeOS
+ * `7f1388aa` read any scope but exactly `training-v2` as v1.) The laptop's step-down narrows a pairing in place. A v5
+ * pairing shares nothing of the phone's day: switch A starts off (`GET /api/native/sharing`).
  */
 export const PAIRING_SCOPE: DeviceScope = NEWEST_DEVICE_SCOPE;
 
@@ -60,7 +69,8 @@ export const NEXT_DEVICE_SCOPE: Readonly<Record<DeviceScope, DeviceScope | null>
   [DEVICE_SCOPE_V1]: DEVICE_SCOPE_V2,
   [DEVICE_SCOPE_V2]: DEVICE_SCOPE_V3,
   [DEVICE_SCOPE_V3]: DEVICE_SCOPE_V4,
-  [DEVICE_SCOPE_V4]: null,
+  [DEVICE_SCOPE_V4]: DEVICE_SCOPE_V5,
+  [DEVICE_SCOPE_V5]: null,
 };
 
 /**
@@ -74,6 +84,7 @@ export const PREVIOUS_DEVICE_SCOPE: Readonly<Record<DeviceScope, DeviceScope | n
   [DEVICE_SCOPE_V2]: null,
   [DEVICE_SCOPE_V3]: DEVICE_SCOPE_V2,
   [DEVICE_SCOPE_V4]: DEVICE_SCOPE_V3,
+  [DEVICE_SCOPE_V5]: DEVICE_SCOPE_V4,
 };
 
 /** True when the body, as raw text, is within the scope. */
@@ -83,11 +94,13 @@ type BodyRule = (raw: string) => boolean;
 type QueryRule = (params: URLSearchParams) => boolean;
 
 export interface DeviceRoute {
-  method: "GET" | "POST" | "PUT";
+  /** PATCH and DELETE since v5 (what the coach remembers): the restore rule's `MUTATING` holds both already. */
+  method: "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
   pattern: RegExp;
   /** Answers true when the body is in scope. */
   body?: BodyRule;
-  /** Answers true when the query is in scope. Absent: the query is never looked at (every pair of v1–v3). */
+  /** Answers true when the query is in scope. Absent: the query is never looked at (every pair of v1–v3, and v5's with a
+   * body rule). */
   query?: QueryRule;
 }
 
@@ -241,6 +254,148 @@ export const deviceHistoryQuery: QueryRule = (params) => {
 /** `GET /api/native/sessions/:id/ahead` from the phone: no query at all. */
 export const deviceAheadQuery: QueryRule = (params) => queryKeys(params).size === 0;
 
+// ── v5 (DESIGN-3 §3.5): the shapes only — each route checks the values, as for the web ───────────────────────────────
+
+/** A v5 read that takes no query at all (a template, a move, a receipt, the current run, a proposal, the memory list…). */
+export const noQuery: QueryRule = (params) => queryKeys(params).size === 0;
+
+/** Keys among `allowed`, each at most once, each value passing its own shape. */
+const queryOf =
+  (allowed: Readonly<Record<string, RegExp>>): QueryRule =>
+  (params) => {
+    for (const [k, values] of queryKeys(params)) {
+      const shape = Object.hasOwn(allowed, k) ? allowed[k] : undefined;
+      if (!shape || values.length !== 1 || !shape.test(values[0]!)) return false;
+    }
+    return true;
+  };
+
+/** A word of the library's vocabulary as a filter names one: a family, a body area, a piece of gear. */
+const VOCAB_WORD = /^[a-z0-9_-]{1,40}$/;
+/** `GET /api/native/library` from the phone: keys among `q` (1–80 characters), `family`, `region`, `equipment`, `limit`
+ * (1–100, no leading zero) and `cursor` (an offset, digits), each at most once. */
+export const deviceLibraryQuery: QueryRule = queryOf({
+  // eslint-disable-next-line no-control-regex
+  q: /^[^\u0000-\u001f\u007f]{1,80}$/,
+  family: VOCAB_WORD,
+  region: VOCAB_WORD,
+  equipment: VOCAB_WORD,
+  limit: /^(100|[1-9]\d?)$/,
+  cursor: /^\d{1,4}$/,
+});
+
+/** A run read's `afterSeq` (the step's arm too): digits, at most once; absent is 0. */
+export const deviceAfterSeqQuery: QueryRule = queryOf({ afterSeq: /^\d{1,9}$/ });
+/** `GET /api/coach/conversation` from the phone: `id` at most once (the route checks it is a conversation's id). */
+export const deviceConversationQuery: QueryRule = queryOf({ id: /^[A-Za-z0-9_-]{1,100}$/ });
+/** `GET /api/coach/nudges` from the phone: `seen` at most once (the chips the phone has shown; the route parses it). */
+// eslint-disable-next-line no-control-regex
+export const deviceNudgesQuery: QueryRule = queryOf({ seen: /^[^\u0000-\u001f\u007f]{0,2000}$/ });
+
+/** An id the phone holds of the server's (a template, a receipt, a client's key): 1–`max` visible characters. */
+// eslint-disable-next-line no-control-regex
+const isIdText = (v: unknown, max = 200): v is string => typeof v === "string" && v.length >= 1 && v.length <= max && !/[\u0000-\u001f\u007f]/.test(v);
+
+/**
+ * *Put it on…* from the phone (3a): exactly `{date, clientId}` and, when sent, `time` — a local date, a clock time or null,
+ * and the placement's key (made once on the phone, so a resend is the same row and the same receipt). The route checks the
+ * date is real and not gone, and the template is the account's.
+ */
+export const devicePlaceBody: BodyRule = (raw) => {
+  const p = parsed(raw);
+  if (!p.ok || !isPlainObject(p.value) || !keysAre(p.value, ["date", "clientId"], ["time"])) return false;
+  const { date, time, clientId } = p.value;
+  return typeof date === "string" && DATE_SHAPE.test(date) && isIdText(clientId, 100) && (time === undefined || time === null || (typeof time === "string" && CLOCK_TIME.test(time)));
+};
+
+/** The most receipts one take-back names: a grouped card's ops (DESIGN-3 §3.5, pair 6). */
+export const TAKE_BACK_MAX = 12;
+
+/** *Take back* from the phone (3a, 3b): exactly `{receiptIds, requestId}` — 1–12 distinct receipt ids and the take-back's own
+ * key, made once on the phone, so a resend answers what the first did. */
+export const deviceTakeBackBody: BodyRule = (raw) => {
+  const p = parsed(raw);
+  if (!p.ok || !isPlainObject(p.value) || !keysAre(p.value, ["receiptIds", "requestId"])) return false;
+  const { receiptIds, requestId } = p.value;
+  return (
+    Array.isArray(receiptIds) &&
+    receiptIds.length >= 1 &&
+    receiptIds.length <= TAKE_BACK_MAX &&
+    receiptIds.every((id) => isIdText(id, 100)) &&
+    new Set(receiptIds).size === receiptIds.length &&
+    isIdText(requestId, 100)
+  );
+};
+
+/** Switch A from the phone (Settings → Coach → *Your day and your training*): exactly `{toTraining, disclosureVersion}` —
+ * on or off, and the version of the words the owner was shown when they chose. */
+export const deviceSharingBody: BodyRule = (raw) => {
+  const p = parsed(raw);
+  if (!p.ok || !isPlainObject(p.value) || !keysAre(p.value, ["toTraining", "disclosureVersion"])) return false;
+  const { toTraining, disclosureVersion } = p.value;
+  return typeof toTraining === "boolean" && typeof disclosureVersion === "string" && /^[A-Za-z0-9._-]{1,40}$/.test(disclosureVersion);
+};
+
+/**
+ * Ask your training coach, from the phone (3b; `frame` 3c): keys among `scope`, `request`, `focus`, `conversationId`,
+ * `nudge` and `frame` — never `rehearsal` (the developer's lane) or `savesBatchId` (the laptop's saves flow). The route
+ * checks every value, the frame's exact keys and switch A among them (400, 403 `sharing_off`).
+ */
+export const deviceRunCreateBody: BodyRule = (raw) => {
+  const p = parsed(raw);
+  if (!p.ok || !isPlainObject(p.value) || !keysAre(p.value, [], ["scope", "request", "focus", "conversationId", "nudge", "frame"])) return false;
+  return p.value.frame === undefined || isPlainObject(p.value.frame);
+};
+
+/** An answer to the coach's question from the phone: keys among `answers`, `dismissed` and `conditionCheckId`. */
+export const deviceRunAnswerBody: BodyRule = (raw) => {
+  const p = parsed(raw);
+  return p.ok && isPlainObject(p.value) && keysAre(p.value, [], ["answers", "dismissed", "conditionCheckId"]);
+};
+
+/** Taking back what the coach kept from an answer, from the phone: exactly `{handle}`. */
+export const deviceUndoAnswerBody: BodyRule = (raw) => {
+  const p = parsed(raw);
+  return p.ok && isPlainObject(p.value) && keysAre(p.value, ["handle"]) && isIdText(p.value.handle, 300);
+};
+
+/** A proposal's version as the read gives it: 64 lower-case hex. */
+const VERSION = /^[0-9a-f]{64}$/;
+
+/**
+ * APPROVE FROM THE PHONE NAMES WHAT IT APPROVES (DESIGN-3 §3.4.4; v0.20): exactly `{opIds, version}` — at least one op id,
+ * and the version of the proposal the owner was shown — or exactly `{edit, version}`, one op's draft as the owner edited
+ * it. Never a bare `{}` (the web's "everything open"), never opIds without the version. The route checks the version
+ * against the proposal as it stands (409 `proposal_changed`) and refuses an incomplete one (409 `incomplete`).
+ */
+export const deviceApproveBody: BodyRule = (raw) => {
+  const p = parsed(raw);
+  if (!p.ok || !isPlainObject(p.value)) return false;
+  const body = p.value;
+  if (typeof body.version !== "string" || !VERSION.test(body.version)) return false;
+  if (keysAre(body, ["opIds", "version"])) return Array.isArray(body.opIds) && body.opIds.length >= 1 && body.opIds.every((id) => isIdText(id));
+  return keysAre(body, ["edit", "version"]) && isPlainObject(body.edit) && keysAre(body.edit, ["opId", "doc"], ["date", "time"]) && isPlainObject(body.edit.doc);
+};
+
+/** *Not this* from the phone: keys among `opIds` and `reason`. */
+export const deviceDeclineBody: BodyRule = (raw) => {
+  const p = parsed(raw);
+  return p.ok && isPlainObject(p.value) && keysAre(p.value, [], ["opIds", "reason"]);
+};
+
+/** A memory item edited, pinned or confirmed from the phone: keys among `body`, `pinned` and `confirm`, at least one. */
+export const deviceMemoryPatchBody: BodyRule = (raw) => {
+  const p = parsed(raw);
+  return p.ok && isPlainObject(p.value) && Object.keys(p.value).length > 0 && keysAre(p.value, [], ["body", "pinned", "confirm"]);
+};
+
+/** *Tell your training coach* (3c, the owner's tap): exactly `{kind, body, clientId}` — the route holds the body to one line
+ * of at most 140 characters and the kind to note, fact or rule. */
+export const deviceMemoryBody: BodyRule = (raw) => {
+  const p = parsed(raw);
+  return p.ok && isPlainObject(p.value) && keysAre(p.value, ["kind", "body", "clientId"]) && isIdText(p.value.clientId, 100);
+};
+
 /** One path segment, as Hono's `:param` matches one. */
 const SEG = "[^/]+";
 
@@ -295,12 +450,44 @@ const TRAINING_V4: readonly DeviceRoute[] = [
   { method: "GET", pattern: new RegExp(`^/api/native/sessions/${SEG}/ahead$`), query: deviceAheadQuery },
 ];
 
+/**
+ * R1 (kit v0.20, DESIGN-3 §3.5): v4's seventeen entries, the very same objects in v4's order, then the library (3a), the
+ * take-back, switch A's flag and the coach designer's own routes (3b, 3c), each with its body or query rule. Left out on
+ * purpose: the thread coach (`/state`, `/message`, `/wake`), `/analyze`, questions, plans (2d), preferences, replay, every
+ * `/api/templates` and `/api/library` write (2d) and `POST /api/workouts`.
+ */
+const TRAINING_V5: readonly DeviceRoute[] = [
+  ...TRAINING_V4,
+  // 3b: the coach designer's runs. `current` before `:id`, which would take it for an id.
+  { method: "POST", pattern: /^\/api\/coach\/runs$/, body: deviceRunCreateBody },
+  { method: "POST", pattern: new RegExp(`^/api/coach/runs/${SEG}/step$`), query: deviceAfterSeqQuery, body: emptyBody },
+  { method: "GET", pattern: /^\/api\/coach\/runs\/current$/, query: noQuery },
+  { method: "GET", pattern: new RegExp(`^/api/coach/runs/${SEG}$`), query: deviceAfterSeqQuery },
+  { method: "POST", pattern: new RegExp(`^/api/coach/runs/${SEG}/answer$`), body: deviceRunAnswerBody },
+  { method: "POST", pattern: new RegExp(`^/api/coach/runs/${SEG}/cancel$`), body: emptyBody },
+  { method: "POST", pattern: new RegExp(`^/api/coach/runs/${SEG}/undo-answer$`), body: deviceUndoAnswerBody },
+  { method: "GET", pattern: /^\/api\/coach\/conversation$/, query: deviceConversationQuery },
+  // Its proposals: read, a draft, approved by their ops and version, declined; the watch drain after.
+  { method: "GET", pattern: new RegExp(`^/api/coach/proposals/${SEG}$`), query: noQuery },
+  { method: "GET", pattern: new RegExp(`^/api/coach/proposals/${SEG}/ops/${SEG}/draft$`), query: noQuery },
+  { method: "POST", pattern: new RegExp(`^/api/coach/proposals/${SEG}/approve$`), body: deviceApproveBody },
+  { method: "POST", pattern: new RegExp(`^/api/coach/proposals/${SEG}/decline$`), body: deviceDeclineBody },
+  { method: "POST", pattern: /^\/api\/coach\/drain$/, body: emptyBody },
+  // What it remembers: read, edit, delete; and (3c, the owner's tap) a stated item.
+  { method: "GET", pattern: /^\/api\/coach\/memory$/, query: noQuery },
+  { method: "PATCH", pattern: new RegExp(`^/api/coach/memory/${SEG}$`), body: deviceMemoryPatchBody },
+  { method: "DELETE", pattern: new RegExp(`^/api/coach/memory/${SEG}$`), body: emptyBody },
+  { method: "GET", pattern: /^\/api\/coach\/nudges$/, query: deviceNudgesQuery },
+  { method: "GET", pattern: /^\/api\/coach\/spend$/, query: noQuery },
+];
+
 /** Each scope's list. Nothing else answers a device of that scope. */
 export const DEVICE_SCOPES: Readonly<Record<DeviceScope, readonly DeviceRoute[]>> = {
   [DEVICE_SCOPE_V1]: TRAINING_SLICE_V1,
   [DEVICE_SCOPE_V2]: TRAINING_V2,
   [DEVICE_SCOPE_V3]: TRAINING_V3,
   [DEVICE_SCOPE_V4]: TRAINING_V4,
+  [DEVICE_SCOPE_V5]: TRAINING_V5,
 };
 
 /** Whether a device row's scope is one this Worker knows (any other is refused 403 `out_of_scope`). */

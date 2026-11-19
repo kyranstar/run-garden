@@ -17,8 +17,8 @@
  *  - Each phone says what it can do, in plain words (its scope; kit v0.15). An active phone with a next scope has one
  *    button for it, which first says in one line what that adds; Allow grants it in place — the same phone, token and
  *    expiry — and Not now puts the question away. Only while device sign-in is on.
- *  - The step-down (review r-m4): an active v4 or v3 phone has one button to stop what its last grant allowed (one rung:
- *    v4 → v3, v3 → v2, never below v2, review r2-m2: plan edits are stopped by Revoke), which first says in one line what
+ *  - The step-down (review r-m4): an active v5, v4 or v3 phone has one button to stop what its last grant allowed (one rung:
+ *    v5 → v4, v4 → v3, v3 → v2, never below v2, review r2-m2: plan edits are stopped by Revoke), which first says in one line what
  *    stops and that it stays paired; Stop steps it down in place. Like Revoke, it answers whatever the switch: narrowing a
  *    phone never widens one.
  *  - Revoke all: every phone at once.
@@ -53,6 +53,7 @@ export const CAN: Readonly<Record<string, string>> = {
   "training-v2": "play, save and move workouts",
   "training-v3": "play, save, move and fit workouts, and record your feedback",
   "training-v4": "play, save, move and fit workouts, record your feedback, and read your plan and history",
+  "training-v5": "play, save, move and fit workouts, record your feedback, read your plan and history, use your library, and work with your coach",
 };
 
 /**
@@ -70,11 +71,17 @@ export const GRANTS: Readonly<Record<string, { button: string; line: string }>> 
     button: "Allow reading your plan and history",
     line: "It will also be able to read your training plan, from three months back to two weeks ahead, and what you've done in the last year: titles, times, distances and the sets you logged. Never heart rate, pace, routes or health readings. You can stop it here any time.",
   },
+  // R1 (DESIGN-3 §3.5): everything the phone may do with the library and the coach, that it counts toward the week's AI
+  // limit, and plainly that the grant shares nothing of the owner's day — that is the owner's own choice on the phone.
+  "training-v5": {
+    button: "Allow your library and coach",
+    line: "It will also be able to browse your saved workouts and moves and put one on your plan; ask your coach to design or change workouts, answer its questions, approve or decline what it suggests, and take back what it added within 8 days; and see, edit and add to what your coach remembers. Its coach use counts toward this account's weekly AI limit. This doesn't share anything about your day with your coach; that's a separate choice on the phone. You can stop it here any time.",
+  },
 };
 
 /**
  * The step-down from each scope (review r-m4): its button, and the one line that says what stops before anything is sent.
- * From v4 and v3 only, one rung (review r2-m2): a phone taken below v2 drops the plan edits it hasn't sent, so stopping
+ * From v5, v4 and v3 only, one rung (review r2-m2): a phone taken below v2 drops the plan edits it hasn't sent, so stopping
  * those is Revoke's.
  */
 export const STEP_DOWNS: Readonly<Record<string, { button: string; line: string }>> = {
@@ -87,6 +94,11 @@ export const STEP_DOWNS: Readonly<Record<string, { button: string; line: string 
   "training-v4": {
     button: "Stop reading your plan and history",
     line: "It will no longer be able to read your coming weeks and your history. It stays paired.",
+  },
+  // What it already added stays (a step-down takes nothing back); its switch for sharing the day turns off with it.
+  "training-v5": {
+    button: "Stop library and coach",
+    line: "It will no longer use your library or coach. What it already added stays on your plan. It stays paired.",
   },
 };
 
