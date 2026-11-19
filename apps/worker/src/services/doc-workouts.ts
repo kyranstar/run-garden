@@ -86,6 +86,7 @@ import { separateDayCollisions, windowTimeFor, type RetimedRow } from "./day-pla
 import { placeOrDefault } from "./default-place.js";
 import { loadBuildHistory } from "./engine-inputs.js";
 import { RestoreInProgressError } from "./programs.js";
+import { receiptsFollowRetime } from "./receipt-landed.js";
 import { bookedSeconds, pushJobId, sentBuildIdOf, slotChecks } from "./session-build.js";
 import { enqueueUnpushIfOurs, removeFromPlan } from "./plan-mutations.js";
 import type { IntentSource } from "./sync-intents.js";
@@ -733,7 +734,9 @@ export async function createDocWorkout(
   if (input.time == null) {
     const moved = await separateDayCollisions(db, userId, [date], ctx.prefs, { from: ctx.today, now: ctx.now });
     time = moved.find((m) => m.workoutId === id)?.to ?? time;
-    if (receipt.afterPlaced) await runAtomically(db, receipt.afterPlaced({ now: ctx.now, workoutId: id }));
+    // Its own receipt holds where it was placed; another row's, where the pass moved it (review B-9).
+    const follow = receiptsFollowRetime(db, userId, moved.filter((m) => m.workoutId !== id));
+    if (receipt.afterPlaced || follow.length > 0) await runAtomically(db, [...(receipt.afterPlaced ? receipt.afterPlaced({ now: ctx.now, workoutId: id }) : []), ...follow]);
   }
   return { workout: dtoOf({ ...row, effectiveTime: time }, doc, derived.estimatedMinutes), warnings };
 }
@@ -914,6 +917,8 @@ export async function reviseDocWorkout(
   warnings: DocIssue[];
   moved: MovedSession[];
   calendarChanged: boolean;
+  /** Its take-back receipt went into its batch (false for an adopting revise: B-10). */
+  receiptWritten: boolean;
 }> {
   const pw = plannedWorkouts;
   const [row] = await db
@@ -956,6 +961,9 @@ export async function reviseDocWorkout(
   // read now, before the batch.
   const adopting = verdict.adopts;
   const copyName = adopting && row.watchCopyName === null ? await heldCopyName(db, userId, row) : null;
+  // AN ADOPTING REVISE WRITES NO RECEIPT (R1 review B-10): taking it back would restore the document, never the session it
+  // took over (its stage rows, its origin, the copy on the watch) — so it is changed on the laptop. `receiptWritten` says.
+  const written = !adopting && receipt.alsoInBatch !== undefined;
 
   // Its length is the document's own; the calendar books the rounded block (I4).
   const seconds = derived.estimatedMinutes * 60;
@@ -1007,7 +1015,7 @@ export async function reviseDocWorkout(
         ]
       : []),
     revisionInsert(db, { userId, workoutId, sourceKind: source.sourceKind ?? "athlete_edit", sourceRef: source.sourceRef ?? null, now: ctx.now }),
-    ...(receipt.alsoInBatch ? receipt.alsoInBatch({ now: ctx.now, workoutId }) : []),
+    ...(written ? receipt.alsoInBatch!({ now: ctx.now, workoutId }) : []),
     ...(receipt.takeBack ? receipt.takeBack.after({ now: ctx.now, workoutId }) : []),
   ]);
   // A receipt that found the revise not landed failed the batch (nothing written): the read below says why, as for any
@@ -1045,7 +1053,10 @@ export async function reviseDocWorkout(
   const moved = booked !== row.calendarBlockDurationSeconds
     ? await separateDayCollisions(db, userId, [row.effectiveDate], ctx.prefs, { from: ctx.today, now: ctx.now })
     : [];
-  if (receipt.afterPlaced && moved.some((m) => m.workoutId === workoutId)) await runAtomically(db, receipt.afterPlaced({ now: ctx.now, workoutId }));
+  // Its own receipt holds where the pass put it; another row's, where it moved that one (review B-9).
+  const follow = receiptsFollowRetime(db, userId, moved.filter((m) => m.workoutId !== workoutId));
+  const own = written && receipt.afterPlaced && moved.some((m) => m.workoutId === workoutId) ? receipt.afterPlaced({ now: ctx.now, workoutId }) : [];
+  if (own.length > 0 || follow.length > 0) await runAtomically(db, [...own, ...follow]);
   const rev = after.workoutDocRev ?? null;
   const workout = dtoOf(
     {
@@ -1073,7 +1084,7 @@ export async function reviseDocWorkout(
     await enqueueUnpushIfOurs(db, userId, after, ctx.now, ctx.prefs, { sent, addressPath: false });
     await markMirrorOwed(db, userId, workoutId, ctx.now);
   }
-  return { workout, rev, watchHasOlder, warnings, moved: movedSessions(moved, workoutId), calendarChanged };
+  return { workout, rev, watchHasOlder, warnings, moved: movedSessions(moved, workoutId), calendarChanged, receiptWritten: written };
 }
 
 /**

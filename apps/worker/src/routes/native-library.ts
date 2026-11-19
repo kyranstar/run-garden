@@ -25,14 +25,15 @@
 import { Hono, type Context } from "hono";
 import { z } from "zod";
 import { and, eq, sql } from "drizzle-orm";
-import { workoutTemplates } from "@rg/database";
+import { plannedWorkouts, workoutTemplates } from "@rg/database";
 import { isLocalDate, nowInstant, parseStoredWorkoutDoc, todayInZone, type WorkoutDoc } from "@rg/domain";
 import { deriveDoc } from "@rg/workout";
 import { requireUser, type AppContext } from "../auth/middleware.js";
-import { libraryForDocs } from "../services/account-library.js";
+import { libraryForDocs, loadAccountLibrary } from "../services/account-library.js";
 import { restoreInProgress } from "../services/account-state.js";
 import { CALENDAR_OPS_PER_REQUEST, loadPreferences, syncCalendar } from "../services/calendar-sync.js";
-import { createDocWorkout } from "../services/doc-workouts.js";
+import { createDocWorkout, keyedRowId } from "../services/doc-workouts.js";
+import { approveTimeOf } from "../services/design-time.js";
 import { LibraryItemNotFoundError, libraryItem, listLibrary, MAX_LIBRARY_LIMIT, type LibraryItem, type LibraryRow, type Safety } from "../services/library-view.js";
 import { madeByOf, receiptExpiry, receiptIdOf, receiptInsert, receiptSettle } from "../services/take-back.js";
 import { listTemplates } from "../services/workout-templates.js";
@@ -226,7 +227,16 @@ nativeLibraryRoutes.post("/templates/:id/place", requireUser, async (c) => {
   const prefs = await loadPreferences(db, userId);
   const now = nowInstant();
   const ctx = { today: todayInZone(prefs.timezone), now, prefs };
-  const { date, time, clientId } = parsed.data;
+  const { date, clientId } = parsed.data;
+  // NEVER IN THE PAST (review B-8), as an approve places a new workout (design-time.ts `approveTimeOf`): today, a time
+  // already gone is 422 `past_time`; untimed after its window, the next quarter hour, pinned — or 422 `no_time_today`. A
+  // resend of a place made before its time went is answered as it was (its row is there: `repeated`).
+  const placed = approveTimeOf({ date, ...(parsed.data.time ? { time: parsed.data.time } : {}) }, deriveDoc(t.doc, (await loadAccountLibrary(db, userId)).all).category, { now: new Date(now), prefs });
+  if ("refused" in placed) {
+    const [made] = await db.select({ id: plannedWorkouts.id }).from(plannedWorkouts).where(and(eq(plannedWorkouts.id, await keyedRowId(userId, `place:${clientId}`)), eq(plannedWorkouts.userId, userId))).limit(1);
+    if (!made) return c.json({ error: placed.code, why: placed.refused }, 422);
+  }
+  const time = "refused" in placed ? (parsed.data.time ?? null) : placed.pinned ? placed.time : null;
   const receiptId = await receiptIdOf(userId, "place", clientId);
   const insert = receiptInsert(db, {
     id: receiptId,

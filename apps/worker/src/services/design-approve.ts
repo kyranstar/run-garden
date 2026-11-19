@@ -1804,7 +1804,7 @@ export async function approveDesignOps(
       outcomes.set(opId, { status: "refused", at: ctx.now, ...result.refusal });
     } else {
       applied.push({ opId, ...result.applied });
-      receipts.landed(opId);
+      if (!result.unreceipted) receipts.landed(opId);
       // A designed run's watch create waits for the client to drain it, as a change's watch job does.
       if (result.queued) coachDrain = true;
       if (op.target.kind === "new") added.set(result.applied.workout.date, (added.get(result.applied.workout.date) ?? 0) + 1);
@@ -2040,7 +2040,13 @@ const emptyDto = (id: string): DocWorkoutDto => ({
 });
 
 type OpResult =
-  | { applied: Omit<Applied, "opId">; /** A designed run's watch create was queued: the client drains it. */ queued?: boolean }
+  | {
+      applied: Omit<Applied, "opId">;
+      /** A designed run's watch create was queued: the client drains it. */
+      queued?: boolean;
+      /** Its write carries no take-back receipt (an adopting revise: B-10) — none is named in the answer. */
+      unreceipted?: true;
+    }
   | { refusal: Omit<Refused, "opId">; /** The Studio's own error, for edit before approve to answer with. */ error: Error };
 
 /** The plan a new workout's op was made for, as the Studio's create takes it: nothing for a one-off. */
@@ -2106,6 +2112,7 @@ async function applyOp(
         ...(edited ? { edited: true } : {}),
         ...(revised.watchHasOlder ? { watchHasOlder: true } : {}),
       },
+      ...(revised.receiptWritten ? {} : { unreceipted: true as const }),
     };
   } catch (e) {
     // A revise that met the base's next revision: a double tap of this op may have written it. Read it once more.

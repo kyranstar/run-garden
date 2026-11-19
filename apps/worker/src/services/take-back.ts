@@ -77,29 +77,8 @@ export type ReceiptStatus = "open" | "taken_back" | "expired";
 /** How long a receipt stays open at most: 8 days (DESIGN-3 §3.4.3). */
 export const RECEIPT_DAYS = 8;
 
-/**
- * THE COMPARE COLUMNS (DESIGN-3 §3.4.3): what the owner, the laptop or the coach can change of a session. Not compared — the
- * providers change these without the owner: `updated_at`, `coros_sync_state`, `calendar_sync_state`, `missing_reads`,
- * `last_verified_coros_date`. The document is held by its revision (`workout_doc_rev`), structure and parameters whole.
- */
-export const COMPARE_COLUMNS = [
-  "effective_date",
-  "effective_time",
-  "completion_state",
-  "content_state",
-  "archived_at",
-  "archive_reason",
-  "workout_doc_rev",
-  "sanctioned_by",
-  "category",
-  "title",
-  "calendar_block_duration_seconds",
-  "structured_json",
-  "session_params",
-] as const;
-
-/** A row's compare columns as canonical JSON, in SQL — the same text at the write and at every take-back. */
-export const POST_STATE_SQL: SQL = sql.raw(`json_object(${COMPARE_COLUMNS.map((c) => `'${c}', "planned_workouts"."${c}"`).join(", ")})`);
+export { COMPARE_COLUMNS, POST_STATE_SQL } from "./receipt-landed.js";
+import { POST_STATE_SQL } from "./receipt-landed.js";
 
 /** A receipt's id: `tb_` and 32 hex of sha-256 over the account, the source and its key — the same for a retried write. */
 export async function receiptIdOf(userId: string, source: ReceiptSource, sourceKey: string): Promise<string> {

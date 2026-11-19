@@ -40,6 +40,7 @@ import { RUN_REGIONS } from "./body-exposure.js";
 import { enqueueWatchCreate } from "./coach-apply.js";
 import { separateDayCollisions, windowTimeFor } from "./day-placement.js";
 import { insertBatches, runAtomically, type Db } from "./db.js";
+import { receiptsFollowRetime } from "./receipt-landed.js";
 import type { DocWriteReceipt } from "./doc-workouts.js";
 import { judgeDoc } from "./doc-build.js";
 import {
@@ -468,7 +469,9 @@ export async function createDesignedRun(
   if (input.time == null) {
     const moved = await separateDayCollisions(db, userId, [date], ctx.prefs, { from: ctx.today, now: ctx.now });
     time = moved.find((m) => m.workoutId === id)?.to ?? time;
-    if (receipt.afterPlaced) await runAtomically(db, receipt.afterPlaced({ now: ctx.now, workoutId: id }));
+    // Its own receipt holds where it was placed; another row's, where the pass moved it (review B-9).
+    const follow = receiptsFollowRetime(db, userId, moved.filter((m) => m.workoutId !== id));
+    if (receipt.afterPlaced || follow.length > 0) await runAtomically(db, [...(receipt.afterPlaced ? receipt.afterPlaced({ now: ctx.now, workoutId: id }) : []), ...follow]);
   }
   // To the watch when approved (decision 1): the athlete's approval is the consent; the job runs as the client drains.
   const queued = ctx.prefs.corosWritesEnabled === true && (await enqueueWatchCreate(db, userId, id, date, made.session, ctx.now, threshold ?? undefined, false, wire)) !== null;
