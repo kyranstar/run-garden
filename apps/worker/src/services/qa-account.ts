@@ -22,7 +22,7 @@
  *    sign-ins and its `users` row, then counts every table again for that id — children by the ids their parents held
  *    before the wipe — and refuses to call it done unless every count is zero. Nothing global is touched.
  */
-import { and, count, eq, inArray, isNull, sql, type SQL } from "drizzle-orm";
+import { and, count, eq, inArray, isNull, ne, sql, type SQL } from "drizzle-orm";
 import type { SQLiteTable } from "drizzle-orm/sqlite-core";
 import { DateTime } from "luxon";
 import {
@@ -323,32 +323,68 @@ export async function seedQaFixtures(db: Db, env: Pick<Env, "ALLOWED_GOOGLE_EMAI
  */
 export const accountTag = async (userId: string): Promise<string> => (await sha256Hex(`lifeos run-garden account v1\n${userId}`)).slice(0, 8);
 
+/** A QA pairing code, as the harness token's door answers it: the code alone, never a token (the review's MINOR-3). */
+export interface QaCode {
+  code: string;
+  expiresAt: string;
+  scope: string;
+  accountTag: string;
+}
+
+/** A QA pairing code with the run's tokens, as the owner's cookie route answers it: only the owner's laptop mints tokens. */
+export interface QaMint extends QaCode {
+  planToken: string;
+  harnessToken: string;
+  harnessExpiresAt: string;
+}
+
 /**
- * A pairing code for the QA account (the owner's laptop, or the harness token), with the run's tokens: the same code, HMAC,
- * lifetime and per-account mint bound as the owner's own (`mintPairing`). A phone that redeems it is the QA account's, active
- * at once, at `PAIRING_SCOPE`.
+ * A pairing code for the QA account: the same code, HMAC, lifetime and per-account mint bound as the owner's own
+ * (`mintPairing`). A phone that redeems it is the QA account's, active at once, at `PAIRING_SCOPE`. With `tokens` (the owner's
+ * cookie route only), the run's tokens too: a harness token good for `HARNESS_TOKEN_MAX_MS` from now, and the plan token.
+ * Without (the harness token's own door), the code alone — so a harness token can never renew itself, and six hours from
+ * the owner's mint bounds it (the review's MINOR-3).
  */
 export async function mintQaPairing(
   db: Db,
   env: Env,
   target: QaTarget,
+  opts: { tokens: true },
+  now?: string,
+): Promise<QaMint | { refused: true; retryAfterSeconds: number }>;
+export async function mintQaPairing(
+  db: Db,
+  env: Env,
+  target: QaTarget,
+  opts: { tokens: false },
+  now?: string,
+): Promise<QaCode | { refused: true; retryAfterSeconds: number }>;
+export async function mintQaPairing(
+  db: Db,
+  env: Env,
+  target: QaTarget,
+  opts: { tokens: boolean },
+  now?: string,
+): Promise<QaCode | QaMint | { refused: true; retryAfterSeconds: number }>;
+export async function mintQaPairing(
+  db: Db,
+  env: Env,
+  target: QaTarget,
+  opts: { tokens: boolean },
   now: string = nowInstant(),
-): Promise<
-  | { code: string; expiresAt: string; scope: string; planToken: string; harnessToken: string; harnessExpiresAt: string; accountTag: string }
-  | { refused: true; retryAfterSeconds: number }
-> {
+): Promise<QaCode | QaMint | { refused: true; retryAfterSeconds: number }> {
   await assertQaRow(db, env, target);
   // The redeem throttles stay as they are: they guard the owner's code too, and only the owner's own Pair lifts them.
   const minted = await mintPairing(db, env, target.userId, now, { liftRedeemThrottles: false });
   if ("refused" in minted) return minted;
+  const code: QaCode = { code: minted.code, expiresAt: minted.expiresAt, scope: PAIRING_SCOPE, accountTag: await accountTag(target.userId) };
+  if (!opts.tokens) return code;
   const harnessExp = Date.parse(now) + HARNESS_TOKEN_MAX_MS;
   return {
-    ...minted,
-    scope: PAIRING_SCOPE,
+    ...code,
     planToken: await qaPlanToken(env, target.userId),
     harnessToken: await qaHarnessToken(env, target.userId, harnessExp),
     harnessExpiresAt: new Date(Math.floor(harnessExp / 1000) * 1000).toISOString(),
-    accountTag: await accountTag(target.userId),
   };
 }
 
@@ -529,8 +565,13 @@ async function parentIdsOf(db: Db, userId: string): Promise<Map<string, string[]
   return out;
 }
 
-/** Table deletes one purge step makes at most: with its reads and the last step's sign-in batch, ≤ 45 statements a request. */
-export const PURGE_DELETES_PER_STEP = 28;
+/**
+ * Table deletes one purge step makes at most. A step that is also the last, at this many tables, runs 1 guard read + 1
+ * parent-ids read + 3 counts + the phones' revoke + 25 deletes + 6 sign-in deletes + 3 counts = 40, and the owner's route 3
+ * more: 43 of the repo's 45-statement budget (Workers Free: 50), with room for a statement more in `requireUser` or the
+ * guard (the review's MINOR-4: at 28 it was exactly 45).
+ */
+export const PURGE_DELETES_PER_STEP = 25;
 
 /** One step's answer: what it removed, and — once `done` — every table counted again (all zero) and their total. */
 export interface QaPurgeStep {
@@ -571,8 +612,15 @@ export async function purgeQaStep(db: Db, env: Pick<Env, "ALLOWED_GOOGLE_EMAIL">
     if (!children.every((c) => step.includes(c))) break;
     step.push(t);
   }
+  // The account's phones revoked first, in the batch before its first delete (the review's MINOR-5): a request that reads its
+  // device row after this commits is refused 401 `device_revoked`, so nothing a QA phone sends lands once the purge is under
+  // way — on rows about to go, or after `done` on an id no loop sees. One statement; it matches nothing on later steps.
+  const revoke = db
+    .update(nativeDevices)
+    .set({ state: "revoked", revokedAt: nowInstant(), revokedReason: "owner_all" })
+    .where(and(eq(nativeDevices.userId, userId), ne(nativeDevices.state, "revoked")));
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  if (step.length > 0) await runAtomically(db, step.map((t) => db.delete(t.table as any).where(scopeWhere(t, userId))));
+  if (step.length > 0) await runAtomically(db, [revoke, ...step.map((t) => db.delete(t.table as any).where(scopeWhere(t, userId)))]);
   const removed = Object.fromEntries(step.map((t) => [t.name, before[t.name] ?? 0]));
   if (step.length < holding.length) {
     const left = Object.fromEntries(holding.filter((t) => !step.includes(t)).map((t) => [t.name, before[t.name] ?? 0]));

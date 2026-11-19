@@ -42,7 +42,7 @@ async function qaAccount(): Promise<QaTarget> {
   return createQaUser(w.db, w.env, w.userId);
 }
 async function qaCode(target: QaTarget): Promise<string> {
-  const minted = await mintQaPairing(w.db, w.env, target);
+  const minted = await mintQaPairing(w.db, w.env, target, { tokens: false });
   if ("refused" in minted) throw new Error("refused");
   return minted.code;
 }

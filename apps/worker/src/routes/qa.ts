@@ -86,8 +86,12 @@ async function ownersTarget(c: Context<AppContext>): Promise<QaTarget | null | R
   }
 }
 
-async function mintAnswer(c: Context, target: QaTarget): Promise<Response> {
-  const minted = await mintQaPairing(c.get("db"), c.env, target, nowInstant());
+/**
+ * A fresh QA code. `tokens`: with the run's tokens — the owner's cookie route only. The harness token's door answers the code
+ * alone, so a harness token never mints its successor: six hours from the owner's mint is its bound (the review's MINOR-3).
+ */
+async function mintAnswer(c: Context, target: QaTarget, tokens: boolean): Promise<Response> {
+  const minted = await mintQaPairing(c.get("db"), c.env, target, { tokens }, nowInstant());
   c.header("Cache-Control", "no-store");
   if ("refused" in minted) return c.json({ error: "too_many_codes", retryAfter: minted.retryAfterSeconds }, 429);
   return c.json(minted);
@@ -160,7 +164,7 @@ qaRoutes.post("/pairings", ...owner, async (c) => {
   const target = await ownersTarget(c);
   if (target instanceof Response) return target;
   if (!target) return noAccount(c);
-  return mintAnswer(c, target);
+  return mintAnswer(c, target, true);
 });
 
 qaRoutes.get("/state", ...owner, async (c) => {
@@ -195,7 +199,8 @@ run.get("/state", async (c) => {
 run.post("/pairings", async (c) => {
   const target = await runTarget(c);
   if (!target) return noAccount(c);
-  return mintAnswer(c, target);
+  // The code alone: no harness token (it would renew this one) and no plan token.
+  return mintAnswer(c, target, false);
 });
 
 run.post("/purge", async (c) => {

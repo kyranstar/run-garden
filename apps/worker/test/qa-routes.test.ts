@@ -7,9 +7,9 @@
  * the real route modules on the repo's migrations, D1's bind cap on, `fetch` refused, the clock held at midday.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { eq } from "drizzle-orm";
+import { asc, eq, ne } from "drizzle-orm";
 import { schema } from "@rg/database";
-import { newId, performedSessionSaveSchema } from "@rg/domain";
+import { newId, nowInstant, performedSessionSaveSchema } from "@rg/domain";
 import { sha256Hex } from "../src/auth/crypto.js";
 import { createSession, SESSION_COOKIE } from "../src/auth/sessions.js";
 import { lifeosRoutes } from "../src/routes/lifeos.js";
@@ -17,13 +17,14 @@ import { nativeRoutes } from "../src/routes/native.js";
 import { planRoutes } from "../src/routes/plan.js";
 import { qaRoutes } from "../src/routes/qa.js";
 import { sessionRoutes } from "../src/routes/sessions.js";
+import { ACCOUNT_TABLES, scopeWhere } from "../src/services/account-tables.js";
 import { tableHashes } from "../src/services/parity.js";
-import { qaHarnessToken, QA_EMAIL } from "../src/services/qa-account.js";
+import { PURGE_DELETES_PER_STEP, qaHarnessToken, qaRowCounts, QA_EMAIL } from "../src/services/qa-account.js";
 import { seedFullAccount } from "./account-fixture.js";
 import { makeTestUser, pinMiddayToday } from "./helpers.js";
 import { nativeWorld, seedDevice, type NativeWorld } from "./native-fixture.js";
 
-const { users } = schema;
+const { accountState, nativeDevices, nativePairings, nativePairLimits, sessions, users } = schema;
 const OWNER_PLAN_TOKEN = "a".repeat(64);
 
 let today: string;
@@ -66,12 +67,14 @@ const STATEMENT_BUDGET = 45;
  */
 async function purgeAll(send: () => Promise<Awaited<ReturnType<NativeWorld["call"]>>>) {
   const removed: Record<string, number> = {};
+  const costs: number[] = [];
   for (let steps = 1; steps <= 10; steps++) {
     const a = await send();
     expect(a.status, a.text).toBe(200);
     expect(a.statements.length, `purge step ${steps}: ${a.statements.length} statements`).toBeLessThanOrEqual(STATEMENT_BUDGET);
+    costs.push(a.statements.length);
     for (const [name, n] of Object.entries(a.json.removed as Record<string, number>)) removed[name] = (removed[name] ?? 0) + n;
-    if (a.json.done) return { removed, remaining: a.json.remaining as Record<string, number>, total: a.json.total as number, steps };
+    if (a.json.done) return { removed, remaining: a.json.remaining as Record<string, number>, total: a.json.total as number, steps, costs };
   }
   throw new Error("the purge took more than 10 steps");
 }
@@ -84,6 +87,50 @@ async function setUp(): Promise<{ minted: Record<string, any>; fixtures: Array<R
   const minted = await owner("POST", "/pairings");
   expect(minted.status, minted.text).toBe(200);
   return { minted: minted.json, fixtures: seeded.json.fixtures };
+}
+
+/** The owner's own sign-ins, live: a code minted on the laptop (and its mint counter), a paired phone, an account_state row. */
+async function ownerSignInRows(): Promise<void> {
+  const minted = await w.call("POST", "/api/native/pairings");
+  expect(minted.status, minted.text).toBe(200);
+  await seedDevice(w.db, w.userId, { scope: "training-v3" });
+  await w.db.insert(accountState).values({ userId: w.userId, gardenChangedFrom: "2026-11-01", updatedAt: nowInstant() }).onConflictDoNothing();
+}
+
+/**
+ * The owner's sign-in rows as they stand — the users row, the cookie's session, the paired phones, the live pairing code,
+ * account_state, and every native_pair_limits row but the QA account's own mint counter (the owner's counter and the shared
+ * redeem throttles): a QA purge leaves each byte-identical (the review's MINOR-8; `tableHashes` covers the registry only).
+ */
+async function ownerSignIns(qaId: string) {
+  return {
+    users: await w.db.select().from(users).where(eq(users.id, w.userId)),
+    sessions: await w.db.select().from(sessions).where(eq(sessions.userId, w.userId)).orderBy(asc(sessions.id)),
+    devices: await w.db.select().from(nativeDevices).where(eq(nativeDevices.userId, w.userId)).orderBy(asc(nativeDevices.id)),
+    pairings: await w.db.select().from(nativePairings).where(eq(nativePairings.userId, w.userId)),
+    limits: await w.db.select().from(nativePairLimits).where(ne(nativePairLimits.key, `mint:${qaId}`)).orderBy(asc(nativePairLimits.key)),
+    accountState: await w.db.select().from(accountState).where(eq(accountState.userId, w.userId)),
+  };
+}
+
+/**
+ * The QA account holding rows in exactly `n` of the registry's tables: the full seed, then whole tables emptied, leaves first
+ * (a table none of whose children still hold rows), until `n` hold rows.
+ */
+async function qaHoldingTables(qaId: string, n: number): Promise<void> {
+  await seedFullAccount(w.db, qaId);
+  const registry = ACCOUNT_TABLES.filter((t) => t.scope.kind === "user" || t.scope.kind === "child");
+  for (;;) {
+    const counts = await qaRowCounts(w.db, qaId, { all: true });
+    const holding = registry.filter((t) => (counts[t.name] ?? 0) > 0);
+    if (holding.length <= n) {
+      expect(holding.length).toBe(n);
+      return;
+    }
+    const leaf = holding.find((t) => !holding.some((c) => c.scope.kind === "child" && c.scope.parent === t.name))!;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await w.db.delete(leaf.table as any).where(scopeWhere(leaf, qaId));
+  }
 }
 
 describe("the owner's routes: the owner's cookie only", () => {
@@ -156,8 +203,13 @@ describe("the owner's routes: create, seed, mint, read, purge", () => {
 
   it("purge asks for its words, then removes everything and says zero; the owner's account is as it was", async () => {
     await seedFullAccount(w.db, w.userId);
+    await ownerSignInRows();
     const before = await tableHashes(w.db, w.userId);
     await setUp();
+    const qaId = (await owner("GET", "/status")).json.qa.userId as string;
+    const signIns = await ownerSignIns(qaId);
+    expect([signIns.devices.length, signIns.pairings.length, signIns.accountState.length, signIns.sessions.length]).toEqual([1, 1, 1, 1]);
+    expect(signIns.limits.map((l) => l.key)).toContain(`mint:${w.userId}`);
     expect((await owner("POST", "/purge", {})).json).toEqual({ error: "confirmation_required" });
     const purged = await purgeAll(() => owner("POST", "/purge", { confirm: "purge qa" }));
     expect([purged.total, purged.steps]).toEqual([0, 1]);
@@ -165,20 +217,62 @@ describe("the owner's routes: create, seed, mint, read, purge", () => {
     expect(Object.values(purged.remaining).every((n) => n === 0)).toBe(true);
     expect((await owner("GET", "/status")).json.qa).toBeNull();
     expect(await tableHashes(w.db, w.userId)).toEqual(before);
+    // The owner's live code, its mint counter, the phone, account_state and the session: byte-identical (MINOR-8).
+    expect(await ownerSignIns(qaId)).toEqual(signIns);
+    expect(await w.db.select().from(nativePairLimits).where(eq(nativePairLimits.key, `mint:${qaId}`))).toEqual([]);
     expect((await owner("POST", "/purge", { confirm: "purge qa" })).status).toBe(404);
   });
 
   it("a QA account with rows in every table purges in steps, each within the request budget, to zero", async () => {
     await seedFullAccount(w.db, w.userId);
+    await ownerSignInRows();
     const before = await tableHashes(w.db, w.userId);
     expect((await owner("POST", "/user")).status).toBe(201);
     const qaId = (await owner("GET", "/status")).json.qa.userId as string;
     await seedFullAccount(w.db, qaId);
+    expect((await owner("POST", "/pairings")).status).toBe(200);
+    const signIns = await ownerSignIns(qaId);
     const purged = await purgeAll(() => owner("POST", "/purge", { confirm: "purge qa" }));
     expect(purged.steps).toBeGreaterThan(1);
     expect(purged.total).toBe(0);
     expect((await owner("GET", "/status")).json.qa).toBeNull();
     expect(await tableHashes(w.db, w.userId)).toEqual(before);
+    expect(await ownerSignIns(qaId)).toEqual(signIns);
+  });
+
+  it("the purge's worst step keeps 2 statements under the request budget: rows in 24 to 29 tables, one step or two (MINOR-4)", async () => {
+    expect(PURGE_DELETES_PER_STEP).toBe(25);
+    const seen: Array<[number, number[]]> = [];
+    for (const n of [24, 25, 26, 27, 28, 29]) {
+      expect((await owner("POST", "/user")).status).toBe(201);
+      const qaId = (await owner("GET", "/status")).json.qa.userId as string;
+      await qaHoldingTables(qaId, n);
+      const purged = await purgeAll(() => owner("POST", "/purge", { confirm: "purge qa" }));
+      expect(purged.total).toBe(0);
+      // Up to the step's limit, one step that is also the last; past it, two.
+      expect([n, purged.steps]).toEqual([n, n <= PURGE_DELETES_PER_STEP ? 1 : 2]);
+      for (const cost of purged.costs) expect(cost, `${n} tables: ${purged.costs.join(", ")}`).toBeLessThanOrEqual(STATEMENT_BUDGET - 2);
+      seen.push([n, purged.costs]);
+    }
+    console.log(`[qa purge] statements per step by tables holding rows: ${seen.map(([n, c]) => `${n}: [${c.join(", ")}]`).join("; ")}`);
+  });
+
+  it("the first step revokes the QA account's phones before any delete: from then on the phone is refused (MINOR-5)", async () => {
+    const { minted } = await setUp();
+    const qaId = (await owner("GET", "/status")).json.qa.userId as string;
+    await seedFullAccount(w.db, qaId);
+    const { token } = (await w.call("POST", "/api/native/pair", { cookie: false, body: { code: minted.code, label: "QA" } })).json;
+    expect((await w.call("GET", "/api/native/me", { bearer: token })).status).toBe(200);
+    const first = await owner("POST", "/purge", { confirm: "purge qa" });
+    expect([first.status, first.json.done]).toEqual([200, false]);
+    const revoke = first.statements.findIndex((s) => /^update "native_devices" set "state" = \?/.test(s));
+    const firstDelete = first.statements.findIndex((s) => /^delete from/.test(s));
+    expect(revoke).toBeGreaterThanOrEqual(0);
+    expect(revoke).toBeLessThan(firstDelete);
+    const [phone] = await w.db.select().from(nativeDevices).where(eq(nativeDevices.userId, qaId));
+    expect(phone).toMatchObject({ state: "revoked", revokedReason: "owner_all" });
+    expect((await w.call("GET", "/api/native/me", { bearer: token })).json).toEqual({ error: "device_revoked" });
+    expect((await purgeAll(() => owner("POST", "/purge", { confirm: "purge qa" }))).total).toBe(0);
   });
 
   it("every owner's route keeps within the request budget", async () => {
@@ -205,6 +299,12 @@ describe("the harness token's door: /api/qa/run/*", () => {
     expect([state.status, state.json.plan.length]).toEqual([200, 5]);
     const fresh = await harness("POST", "/pairings", token);
     expect(fresh.json).toMatchObject({ code: expect.stringMatching(/^[0-9A-HJKMNP-TV-Z]{8}$/) });
+    // The code alone (the review's MINOR-3): no harness token to renew this one, no plan token.
+    expect(Object.keys(fresh.json).sort()).toEqual(["accountTag", "code", "expiresAt", "scope"]);
+    expect([/rgq_/.test(fresh.text), fresh.text.includes(minted.planToken)]).toEqual([false, false]);
+    // The owner's cookie route still answers both.
+    const again = (await owner("POST", "/pairings")).json;
+    expect([/^rgq_/.test(again.harnessToken), again.planToken]).toEqual([true, minted.planToken]);
     expect((await harness("POST", "/purge", token, {})).json).toEqual({ error: "confirmation_required" });
     const purged = await purgeAll(() => harness("POST", "/purge", token, { confirm: "purge qa" }));
     expect(purged.total).toBe(0);

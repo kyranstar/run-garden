@@ -103,7 +103,7 @@ describe("the guard: every write re-reads its target, and the owner's account is
     const before = await tableHashes(db, ownerId);
     const owner = forged(ownerId);
     await expect(seedQaFixtures(db, env, owner)).rejects.toMatchObject({ code: "not_qa" });
-    await expect(mintQaPairing(db, env, owner)).rejects.toMatchObject({ code: "not_qa" });
+    await expect(mintQaPairing(db, env, owner, { tokens: true })).rejects.toMatchObject({ code: "not_qa" });
     await expect(purgeQa(db, env, owner)).rejects.toMatchObject({ code: "not_qa" });
     expect(await tableHashes(db, ownerId)).toEqual(before);
     expect(await db.select().from(nativePairings)).toEqual([]);
@@ -197,12 +197,15 @@ describe("the run's tokens", () => {
 
   it("the mint answers a code and both tokens, and counts against the QA account's own mint bound", async () => {
     const qa = await createQaUser(db, env, ownerId);
-    const minted = await mintQaPairing(db, env, qa);
+    const minted = await mintQaPairing(db, env, qa, { tokens: true });
     if ("refused" in minted) throw new Error("refused");
     expect(minted).toMatchObject({ code: expect.stringMatching(/^[0-9A-HJKMNP-TV-Z]{8}$/), scope: "training-v3", planToken: await qaPlanToken(env, qa.userId) });
     expect(await verifyHarnessToken(env, minted.harnessToken)).toBe(qa.userId);
-    for (let i = 0; i < 4; i++) await mintQaPairing(db, env, qa);
-    expect(await mintQaPairing(db, env, qa)).toMatchObject({ refused: true });
+    // Without `tokens` (the harness token's door), the code alone.
+    const bare = await mintQaPairing(db, env, qa, { tokens: false });
+    expect(Object.keys(bare).sort()).toEqual(["accountTag", "code", "expiresAt", "scope"]);
+    for (let i = 0; i < 3; i++) await mintQaPairing(db, env, qa, { tokens: true });
+    expect(await mintQaPairing(db, env, qa, { tokens: true })).toMatchObject({ refused: true });
     expect((await db.select().from(nativePairLimits).where(eq(nativePairLimits.key, `mint:${ownerId}`)))).toEqual([]);
   });
 });
@@ -215,7 +218,7 @@ describe("the purge", () => {
     await seedQaFixtures(db, env, qa).catch(() => undefined); // already holds plan rows: the full seed is the harder case
     await seedDevice(db, qa.userId, { scope: "training-v3" });
     await seedDevice(db, ownerId, { scope: "training-v2" });
-    await mintQaPairing(db, env, qa);
+    await mintQaPairing(db, env, qa, { tokens: true });
     const ownerBefore = await tableHashes(db, ownerId);
     const ownerDevices = await db.select().from(nativeDevices).where(eq(nativeDevices.userId, ownerId));
     const held = await qaRowCounts(db, qa.userId);
@@ -240,7 +243,7 @@ describe("the purge", () => {
   it("leaves no QA child row behind even when its parent went first (checked by the ids the parent held)", async () => {
     const qa = await createQaUser(db, env, ownerId);
     await seedQaFixtures(db, env, qa);
-    const minted = await mintQaPairing(db, env, qa);
+    const minted = await mintQaPairing(db, env, qa, { tokens: true });
     expect("code" in minted).toBe(true);
     const done = await purgeQa(db, env, qa);
     expect(done.removed.planned_workouts).toBe(5);
@@ -250,7 +253,7 @@ describe("the purge", () => {
 
   it("then a new QA account starts empty, and the old account's tokens name nothing", async () => {
     const qa = await createQaUser(db, env, ownerId);
-    const minted = await mintQaPairing(db, env, qa);
+    const minted = await mintQaPairing(db, env, qa, { tokens: true });
     if ("refused" in minted) throw new Error("refused");
     await purgeQa(db, env, qa);
     const again = await createQaUser(db, env, ownerId);

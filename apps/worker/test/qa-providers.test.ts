@@ -85,7 +85,7 @@ beforeEach(async () => {
   qa = await createQaUser(w.db, w.env, w.userId);
   ({ fixtures } = await seedQaFixtures(w.db, w.env, qa));
   await plantProviders(qa.userId);
-  const minted = await mintQaPairing(w.db, w.env, qa);
+  const minted = await mintQaPairing(w.db, w.env, qa, { tokens: false });
   if ("refused" in minted) throw new Error("refused");
   token = (await w.call("POST", "/api/native/pair", { cookie: false, body: { code: minted.code, label: "LifeOS phone" } })).json.token;
 });
