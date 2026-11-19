@@ -91,9 +91,19 @@ const renew = (id: string, opts: { body?: unknown; raw?: string; bearer?: string
     ...(opts.cookie !== undefined ? { cookie: opts.cookie } : {}),
     ...(opts.env ? { env: opts.env } : {}),
   });
-/** A device of the owner's, active, five days from its expiry, last used just now (so its requests write no last use). */
+/**
+ * A device of the owner's, active, five days from its expiry. Its time columns are all BEFORE the frozen now (review
+ * MINOR-1), so a renew that wrote any of them with "now" would show: made and confirmed at 07:00, last used at 08:30 —
+ * within the hour, so its own requests at 09:00 write no last use.
+ */
+const SEEDED = { createdAt: instant(D, "07:00"), confirmedAt: instant(D, "07:00"), lastUsedAt: instant(D, "08:30") };
 const phone = (over: Partial<typeof nativeDevices.$inferInsert> = {}) =>
-  seedDevice(w.db, w.userId, { scope: V4, label: "Running phone", expiresAt: NEAR, lastUsedAt: nowInstant(), ...over });
+  seedDevice(w.db, w.userId, { scope: V4, label: "Running phone", expiresAt: NEAR, ...SEEDED, ...over });
+/** Every column of a device row but its expiry, as stored: what a renew must leave byte-identical. */
+const allButExpiry = (id: string) => {
+  const { expires_at: _expiry, ...rest } = deviceRow(id);
+  return rest;
+};
 /** The writes a request made, outside the cookie's own session row. */
 const writesOf = (a: { writes: string[] }) => a.writes.filter((s) => !/^update "sessions"/i.test(s));
 const tablesWritten = (a: { writes: string[] }) => writesOf(a).map((s) => /^(insert into|update) "?(\w+)"?/i.exec(s)?.[2]).sort();
@@ -102,12 +112,16 @@ describe("Renew gives an active phone 30 days from now, in place", () => {
   it("200 renewed: the row identical but its expiry, one audit, and the phone's own /me says the new expiry", async () => {
     const d = await phone();
     const before = deviceRow(d.id);
+    const kept = allButExpiry(d.id);
     const to = thirtyFromNow();
     const a = await renew(d.id);
     expect([a.status, a.json], a.text).toEqual([200, { ok: true, expiresAt: to, renewed: true }]);
     // Exactly one column changed: the token (the id is its hash), account, label, state, scope, confirmation, last use and
-    // tries are kept.
+    // tries are kept, byte for byte — the time columns among them, each seeded before now.
     expect(deviceRow(d.id)).toEqual({ ...before, expires_at: to });
+    expect(allButExpiry(d.id)).toStrictEqual(kept);
+    expect([deviceRow(d.id).created_at, deviceRow(d.id).confirmed_at, deviceRow(d.id).last_used_at]).toEqual([SEEDED.createdAt, SEEDED.confirmedAt, SEEDED.lastUsedAt]);
+    expect(Object.keys(kept).sort()).toEqual(Object.keys(before).filter((k) => k !== "expires_at").sort());
     expect(audits()).toEqual([{ userId: w.userId, kind: "native_device_renewed", detail: { deviceId: d.id, label: "Running phone", from: NEAR, to } }]);
     expect(tablesWritten(a)).toEqual(["audit_events", "native_devices"]);
     // The same token, its scope unchanged, reads its new expiry on its next request.
@@ -227,6 +241,19 @@ describe("what Renew refuses, writing nothing", () => {
     expect((await w.call("GET", "/api/native/me", { bearer: pending.token })).json).toEqual({ error: "device_pending" });
   });
 
+  it("an expiry of exactly now is expired (review MINOR-2), as the device gate holds it: 409 device_expired, nothing written", async () => {
+    const d = await phone({ expiresAt: nowInstant() });
+    const held = everything();
+    const a = await renew(d.id);
+    expect([a.status, a.json]).toEqual([409, { error: "device_expired" }]);
+    expect(everything()).toEqual(held);
+    // The gate agrees: the phone itself is refused at that instant.
+    expect((await w.call("GET", "/api/native/me", { bearer: d.token })).json).toEqual({ error: "device_expired" });
+    // A millisecond later than now it is still live, and renews.
+    const e = await phone({ expiresAt: new Date(Date.now() + 1).toISOString() });
+    expect((await renew(e.id)).json).toEqual({ ok: true, expiresAt: thirtyFromNow(), renewed: true });
+  });
+
   it("another account's device, or none: 404 not_found, and theirs is untouched", async () => {
     const other = await makeTestUser(w.db, { timezone: LA });
     const theirs = await seedDevice(w.db, other.userId, { scope: V4, expiresAt: NEAR });
@@ -269,6 +296,23 @@ describe("what Renew refuses, writing nothing", () => {
     // The token and the cookie together: one request, one credential.
     const both = await w.call("POST", `/api/native/devices/${devices[3]!.id}/renew`, { body: {}, bearer: devices[3]!.token, cookie: true });
     expect([both.status, both.json]).toEqual([400, { error: "two_credentials" }]);
+    expect(everything()).toEqual(held);
+  });
+
+  it("the route's own cookie-only check (review NIT-1), apart from the allowlist: a request a device signed in is 403", async () => {
+    // The device-scope list already refuses a device token before the route (above). This pins the route's second layer
+    // alone: a request with the owner's cookie that a device nonetheless signed in (`c.get("device")` set) is refused.
+    const d = await phone();
+    const app = new Hono<AppContext>();
+    app.use("*", async (c, next) => {
+      c.set("db", w.db);
+      c.set("device", { id: d.id, label: "Running phone", expiresAt: NEAR, scope: V4 });
+      await next();
+    });
+    app.route("/api/native", nativeRoutes);
+    const held = everything();
+    const res = await app.request(`/api/native/devices/${d.id}/renew`, { method: "POST", headers: { Cookie: w.cookie, "Content-Type": "application/json" }, body: "{}" }, w.env);
+    expect([res.status, await res.json()]).toEqual([403, { error: "out_of_scope" }]);
     expect(everything()).toEqual(held);
   });
 

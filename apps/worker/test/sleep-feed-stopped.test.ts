@@ -10,6 +10,7 @@
  * Synthetic data only; every date is relative to the athlete's today.
  */
 import { beforeEach, describe, expect, it } from "vitest";
+import { eq } from "drizzle-orm";
 import { schema } from "@rg/database";
 import { addDays, newId, nowInstant, todayInZone, type UserPreferences } from "@rg/domain";
 import type { Env } from "../src/env.js";
@@ -137,5 +138,11 @@ describe("GET /api/sync/status", () => {
     await sleepConnection(true);
     // Expired (`needs_reauth`), not refused: the line keeps its own words.
     expect([(await status()).sleepNeedsReconnect, (await status()).sleepRefused]).toEqual([true, false]);
+    // A connected row still carrying an old refusal's category is not refused (review NIT-2): `sleepRefused` only while
+    // the connection needs reconnecting.
+    await db.update(schema.providerConnections).set({ status: "connected", lastErrorCategory: "credentials_rejected" }).where(eq(schema.providerConnections.provider, "coros_mcp"));
+    expect([(await status()).sleepNeedsReconnect, (await status()).sleepRefused]).toEqual([false, false]);
+    await db.update(schema.providerConnections).set({ status: "error" }).where(eq(schema.providerConnections.provider, "coros_mcp"));
+    expect([(await status()).sleepNeedsReconnect, (await status()).sleepRefused]).toEqual([true, true]);
   });
 });
