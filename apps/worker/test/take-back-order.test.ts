@@ -78,6 +78,28 @@ describe("the statement budget keeps a group's order (B-3)", () => {
   });
 });
 
+describe("a deferred receipt holds back the cheaper older ones of its group (B-3, its surviving mutant)", () => {
+  it("move, move, skip: the second move left for the next request holds back the skip that would still have fit", async () => {
+    const g = "g-defer";
+    const s = await k.onPlan(addDays(T, 1), "07:00");
+    const m2 = await k.onPlan(addDays(T, 2), "07:00");
+    const m1 = await k.onPlan(addDays(T, 3), "07:00");
+    k.tick();
+    const skipR = await k.approvedSkip(s, { groupId: g });
+    k.tick();
+    const move2 = await k.approvedMove(m2, addDays(T, 5), "07:00", { groupId: g, dependsOn: [skipR] });
+    k.tick();
+    const move1 = await k.approvedMove(m1, addDays(T, 6), "07:00", { groupId: g, dependsOn: [skipR, move2] });
+    k.tick();
+    // 35 to spend: the newest move (19) leaves 16 — the second move (19) doesn't fit, the skip (7) would.
+    const res = await k.takeBack([skipR, move2, move1], "req-defer");
+    expect(byReceipt(res.json)[move1].outcome).toBe("taken_back");
+    expect(res.json.remaining).toEqual([move2, skipR]);
+    expect([(await k.receiptOf(move2)).status, (await k.receiptOf(skipR)).status]).toEqual(["open", "open"]);
+    expect((await k.rowOf(s)).completionState).toBe("skipped");
+  });
+});
+
 describe("a group refused whole before anything of it is written (B-2)", () => {
   it("RB-1: a revise whose earlier document the day's condition now refuses: cant_restore, its partner group_refused, nothing written", async () => {
     await activateTmj(k.w.db, k.w.userId);

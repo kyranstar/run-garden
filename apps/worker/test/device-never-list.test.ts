@@ -183,6 +183,9 @@ describe("the never-list", () => {
     const proposalId = run.json.run.proposalId as string;
     const proposal = await read("proposal", device("GET", `/api/coach/proposals/${proposalId}`));
     expect(proposal.json.complete).toBe(true);
+    // Typed fields and titles only: never the cards' manifest, even stripped (the walker is the second line).
+    expect(Object.keys(proposal.json).sort()).toEqual(["complete", "id", "opsSummary", "receipts", "resolvedAt", "status", "takeBackable", "titles", "version"]);
+    expect(Object.values(proposal.json.titles)).toEqual(["Calm hips"]);
     const opId = proposal.json.opsSummary[0].opId as string;
     await read("draft", device("GET", `/api/coach/proposals/${proposalId}/ops/${opId}/draft`));
     const approved = await read("approve", device("POST", `/api/coach/proposals/${proposalId}/approve`, { opIds: [opId], version: proposal.json.version }));
