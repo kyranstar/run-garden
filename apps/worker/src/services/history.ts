@@ -11,8 +11,9 @@
  *
  * PAGES HOLD WHOLE DAYS. Rows are dated by run-garden's one rule (`activityDate`: the local start's day, else the UTC
  * start's), so a day's activities can lie a day either side of it in `start_time`: the page reads a bounded window of the
- * newest activities (`HISTORY_READ_ROWS`, by `start_time`, from the day before the year's first to the day after `before`)
- * and of the said-done rows, and takes only days it read whole — a day newer than two days past the oldest activity read
+ * newest activities (`HISTORY_READ_ROWS`, by `start_time`, from the day before the year's first to the day after `before`,
+ * and only those dated within the year and before `before`, in the statement itself) and of the said-done rows, and takes
+ * only days it read whole — a day newer than two days past the oldest activity read
  * (and than the oldest said-done day read), when either read was cut. Then the newest of those days, each whole, until the
  * rows reach `limit`; a single day over `HISTORY_DAY_CAP` rows is cut there and the page says `capped`.
  *
@@ -129,7 +130,18 @@ export async function historyPage(
         distanceMeters: activities.distanceMeters,
       })
       .from(activities)
-      .where(and(eq(activities.userId, userId), gte(activities.startTime, addDays(earliest, -1)), lt(activities.startTime, addDays(before, 1))))
+      .where(
+        and(
+          eq(activities.userId, userId),
+          // The index's bound: every activity whose day can be in the page, whatever its zone…
+          gte(activities.startTime, addDays(earliest, -1)),
+          lt(activities.startTime, addDays(before, 1)),
+          // …and only those dated in it (`activityDate`'s rule, in SQL), so a crowded day at or after `before` never spends
+          // the read (review MINOR-1: it could leave no older day read, and `next` pointed forward).
+          sql`coalesce(substr(${activities.startTimeLocal}, 1, 10), substr(${activities.startTime}, 1, 10)) >= ${earliest}`,
+          sql`coalesce(substr(${activities.startTimeLocal}, 1, 10), substr(${activities.startTime}, 1, 10)) < ${before}`,
+        ),
+      )
       .orderBy(desc(activities.startTime), desc(activities.id))
       .limit(HISTORY_READ_ROWS)
       .all(),
@@ -154,7 +166,9 @@ export async function historyPage(
 
   // The days read whole: past the margin of a read that was cut.
   let safeFrom = earliest;
-  if (acts.length === HISTORY_READ_ROWS) safeFrom = maxDate(safeFrom, addDays(acts.at(-1)!.startTime.slice(0, 10), 2));
+  // An activity the read left out started no later than the last one read, so its local day is no later than that start's
+  // at UTC + 14 (the farthest zone ahead): every day after that one was read whole.
+  if (acts.length === HISTORY_READ_ROWS) safeFrom = maxDate(safeFrom, addDays(new Date(Date.parse(acts.at(-1)!.startTime) + 14 * 3_600_000).toISOString().slice(0, 10), 1));
   if (said.length === HISTORY_READ_ROWS) safeFrom = maxDate(safeFrom, addDays(said.at(-1)!.effectiveDate, 1));
   const truncated = safeFrom > earliest;
 
@@ -190,6 +204,8 @@ export async function historyPage(
   // the next starts before the days read whole (or before the one day taken from a window with none).
   if (lastDay !== null && taken.length >= limit) next = dates.some((d) => d < lastDay) || truncated ? lastDay : null;
   else if (truncated) next = lastDay !== null && lastDay < safeFrom ? lastDay : safeFrom;
+  // The pager's invariant: the next page starts strictly before this one (never forward, so *Show more* can't loop).
+  if (next !== null && next >= before) next = lastDay !== null && lastDay < before ? lastDay : null;
   if (next !== null && next <= earliest) next = null;
 
   return { rows: await rowsOf(db, userId, taken, opts.unit), next, capped: held.capped };

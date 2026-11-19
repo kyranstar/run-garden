@@ -299,6 +299,43 @@ describe("pages of whole days", () => {
     expect([seen.length, new Set(seen).size]).toEqual([140, 140]);
   });
 
+  it("a crowded day past a page's read (review MINOR-1): next is always before `before`, and the days behind it are reached", async () => {
+    // The reviewer's probe: 140 activities on T − 1, one on each of T − 2 … T − 5, and 20 more today. Each of T − 1's starts
+    // before 16:00 in Los Angeles, so before midnight UTC: inside the read of a page before T − 1, though dated T − 1.
+    const crowded = addDays(T, -1);
+    for (let i = 0; i < 140; i += 1) {
+      const hh = String(Math.floor(i / 10)).padStart(2, "0");
+      const mm = String((i % 10) * 5).padStart(2, "0");
+      await activity({ startTime: at(crowded, `${hh}:${mm}`), startTimeLocal: `${crowded}T${hh}:${mm}:00` });
+    }
+    const older = [];
+    for (let n = 2; n <= 5; n += 1) older.push(await activity({ startTime: at(addDays(T, -n), "07:00"), startTimeLocal: `${addDays(T, -n)}T07:00:00` }));
+    for (let i = 0; i < 20; i += 1) await activity({ startTime: at(T, `0${i % 10}:${i < 10 ? "05" : "35"}`), startTimeLocal: `${T}T0${i % 10}:${i < 10 ? "05" : "35"}:00` });
+    const pages: Array<{ before: string | null; dates: string[]; next: string | null; capped: boolean }> = [];
+    const seen: string[] = [];
+    // From the first page (no before: the account's tomorrow), as the phone pages.
+    let before: string | null = null;
+    for (let n = 0; n < 8; n += 1) {
+      const body = await page(`?limit=30${before ? `&before=${before}` : ""}`);
+      pages.push({ before, dates: [...new Set(body.rows.map((r) => r.date as string))], next: body.next, capped: body.capped });
+      seen.push(...body.rows.map((r) => r.id as string));
+      // The pager's invariant: the next page starts strictly before this one.
+      if (body.next !== null) expect([before, body.next < (before ?? addDays(T, 1))]).toEqual([before, true]);
+      before = body.next;
+      if (before === null) break;
+    }
+    expect(pages).toEqual([
+      // Today (the read so full that no day of it is surely whole, so said capped); the crowded day, cut at 60 and said so;
+      // then the days behind it, each whole; then the end. Every page's next is before its own.
+      { before: null, dates: [T], next: T, capped: true },
+      { before: T, dates: [crowded], next: crowded, capped: true },
+      { before: crowded, dates: [addDays(T, -2), addDays(T, -3), addDays(T, -4), addDays(T, -5)], next: null, capped: false },
+    ]);
+    expect(seen).toHaveLength(20 + 60 + 4);
+    for (const id of older) expect(seen).toContain(id);
+    expect(new Set(seen).size).toBe(seen.length);
+  });
+
   it("the query: a before that isn't a date is 400 bad_range, a limit outside 1–30 400 bad_limit; the gate refuses the rest", async () => {
     expect((await history("?limit=31")).json).toEqual({ error: "bad_limit" });
     expect((await history("?before=2026-02-30")).json).toEqual({ error: "bad_range" });
