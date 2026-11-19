@@ -494,8 +494,9 @@ async function validated(
   userId: string,
   raw: unknown,
   day: { date: string; today: string; workoutId: string },
-  opts: { playedOffline?: boolean } = {},
-): Promise<{ doc: WorkoutDoc; derived: DocDerived; warnings: DocIssue[] }> {
+  /** `dayContext`: the day as a check in this same request read it (a take-back's preflight, `reviseJudged`): not read again. */
+  opts: { playedOffline?: boolean; dayContext?: ValidateCtx } = {},
+): Promise<{ doc: WorkoutDoc; derived: DocDerived; warnings: DocIssue[]; ctx: ValidateCtx }> {
   const doc = await parsedDoc(db, userId, raw);
   if (opts.playedOffline && !(await appAuthored(db, userId, doc))) throw new PlayedOfflineRefusedError("source");
   // A run is told by its share of the document's seconds, and a move's seconds come from its record: derived in the
@@ -504,12 +505,35 @@ async function validated(
   const library = (await loadAccountLibrary(db, userId)).all;
   const derived = deriveDoc(doc, library);
   if (derived.discipline === "run") throw new RunUnsupportedError();
-  const ctx = await docDayContext(db, userId, { ...day, placeId: doc.setting?.placeId });
+  const ctx = opts.dayContext ?? (await docDayContext(db, userId, { ...day, placeId: doc.setting?.placeId }));
   // Played offline: what was done is recorded, not planned — the day was judged on the device, and its gate is skipped
   // here (judged as a template is: every reading-dependent rule on the calmest day). Everything else still holds.
   const warnings = accepted(judgeDoc(doc, opts.playedOffline ? { ...ctx, day: null } : ctx));
   // Its personal moves count in what is derived (its minutes, its kind).
-  return { doc, derived, warnings };
+  return { doc, derived, warnings, ctx };
+}
+
+/**
+ * A revise to `raw` judged as `reviseDocWorkout` judges it, writing nothing (R1 review B-2: a take-back's preflight, before
+ * anything of its group is written): the row's revisability on `today`, then the document for the row's day — the
+ * condition gate, a run. The day's context it was judged in (for the revise in this same request: `dayContext`), or the
+ * error the revise would throw (`PastDateError`, `RunUnsupportedError`, `NotEditableError`, `DocInvalidError`).
+ */
+export async function reviseJudged(
+  db: Db,
+  userId: string,
+  row: RevisableRow & { id: string },
+  raw: unknown,
+  today: string,
+): Promise<{ ok: true; dayContext: ValidateCtx } | { ok: false; error: Error }> {
+  const verdict = await revisabilityOf(db, userId, row, today);
+  if (!verdict.ok) return { ok: false, error: notRevisable(verdict) };
+  try {
+    return { ok: true, dayContext: (await validated(db, userId, raw, { date: row.effectiveDate, today, workoutId: row.id })).ctx };
+  } catch (e) {
+    if (e instanceof DocInvalidError || e instanceof RunUnsupportedError) return { ok: false, error: e };
+    throw e;
+  }
 }
 
 // ── Writes ───────────────────────────────────────────────────────────────────────────────────────────────────
@@ -880,8 +904,9 @@ export async function reviseDocWorkout(
   ctx: DocWorkoutCtx,
   source: DocWriteSource = {},
   /** R1: a take-back receipt's statements (`DocWriteReceipt`); and a take-back's own (`takeBack`: its claim first, its
-   * check and audit after) with `onlyIf`, a further condition the row must meet as it is revised (held to that claim). */
-  receipt: DocWriteReceipt & { onlyIf?: SQL; takeBack?: TakeBackBatch } = {},
+   * check and audit after) with `onlyIf`, a further condition the row must meet as it is revised (held to that claim), and
+   * `dayContext`, the day its preflight judged the same document in (`reviseJudged`), in this request. */
+  receipt: DocWriteReceipt & { onlyIf?: SQL; takeBack?: TakeBackBatch; dayContext?: ValidateCtx } = {},
 ): Promise<{
   workout: DocWorkoutDto;
   rev: number | null;
@@ -921,7 +946,7 @@ export async function reviseDocWorkout(
   if (!verdict.ok) throw notRevisable(verdict);
   if ((row.workoutDocRev ?? 0) !== input.baseRev) throw new StaleRevisionError(row.workoutDocRev ?? null);
 
-  const { doc, derived, warnings } = await validated(db, userId, input.doc, { date: row.effectiveDate, today: ctx.today, workoutId });
+  const { doc, derived, warnings } = await validated(db, userId, input.doc, { date: row.effectiveDate, today: ctx.today, workoutId }, receipt.dayContext ? { dayContext: receipt.dayContext } : {});
   if (await restoreInProgress(db, userId)) throw new RestoreInProgressError();
   // Adopted (a coach session, a COROS-plan import): decided by this read, and the update's guard still holds its
   // revision. The same document again adopts it too, with no new revision — a deliberate save of it is the athlete (or

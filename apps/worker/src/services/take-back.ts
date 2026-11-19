@@ -45,7 +45,19 @@ import { runWireOf, type Env } from "../env.js";
 import { loadPreferences } from "./calendar-sync.js";
 import type { AlsoInBatch, AtomicStatement, Db, TakeBackBatch } from "./db.js";
 import { startOfLocalDate } from "./design-context.js";
-import { DocWorkoutNotFoundError, NotEditableError, PastDateError, reviseDocWorkout, StaleRevisionError, type DocWriteReceipt } from "./doc-workouts.js";
+import type { ValidateCtx } from "@rg/workout";
+import {
+  DocInvalidError,
+  DocWorkoutNotFoundError,
+  NotEditableError,
+  PastDateError,
+  reviseDocWorkout,
+  reviseJudged,
+  RunUnsupportedError,
+  StaleRevisionError,
+  type DocWriteReceipt,
+} from "./doc-workouts.js";
+import { RestoreInProgressError } from "./programs.js";
 import { applyMove } from "./jobs.js";
 import { removeFromPlan, unskipWorkout } from "./plan-mutations.js";
 
@@ -221,13 +233,29 @@ export class ReceiptLog {
 // ── The take-back ───────────────────────────────────────────────────────────
 
 /** The Worker's statement budget for one request (Workers Free: 50, the repo keeps 45), and what a take-back always spends:
- * the gate, the receipts, the preferences, the rows, the revisions, compensation (two) and slack. */
+ * the gate, the receipts, the preferences, the rows, the base revisions, compensation (two) and slack. */
 export const TAKE_BACK_BUDGET = 45;
 export const TAKE_BACK_FIXED = 10;
-/** What one receipt's inverse write can cost, at most, by op (its writer's reads, its batch, the receipt and audit, its tail). */
-export const TAKE_BACK_COST: Readonly<Record<ReceiptOp, number>> = { create: 14, revise: 32, move: 19, skip: 7 };
+/**
+ * What one receipt's inverse write can cost, at most, by op (its writer's reads, its batch, the receipt and audit, its tail).
+ * A revise's day is not read again: its preflight read it (`TAKE_BACK_PREFLIGHT`).
+ */
+export const TAKE_BACK_COST: Readonly<Record<ReceiptOp, number>> = { create: 14, revise: 22, move: 19, skip: 7 };
+/** What checking a receipt before its group is written costs (`preflightOf`): a revise's revisability (the library) and the
+ * day its base document is judged for (the place, the profiles, the history, the day's checks: 10). */
+export const TAKE_BACK_PREFLIGHT: Readonly<Record<ReceiptOp, number>> = { create: 0, revise: 11, move: 0, skip: 0 };
 
-export type Refusal = "expired" | "past" | "executed" | "ineligible" | "has_dependents" | "group_incomplete" | "changed_since" | "group_refused" | "not_attempted";
+export type Refusal =
+  | "expired"
+  | "past"
+  | "executed"
+  | "ineligible"
+  | "cant_restore"
+  | "has_dependents"
+  | "group_incomplete"
+  | "changed_since"
+  | "group_refused"
+  | "not_attempted";
 
 export type CompensationState = "pending" | "done" | "failed";
 export interface Compensation {
@@ -254,6 +282,7 @@ export const REFUSAL_WORDS: Readonly<Record<Refusal, string>> = {
   past: "Its day has gone, so it stays as it is.",
   executed: "You've started or done this session, so it stays as it is.",
   ineligible: "This session can't be taken back from the phone: change it on the laptop.",
+  cant_restore: "Its earlier version can't go back on that day now: change it on the laptop.",
   has_dependents: "Something added after it relies on it: take that back first, or with it.",
   group_incomplete: "These were added together, so they go back together: take them back at once.",
   changed_since: "It changed after it was added, so it stays as it is now.",
@@ -327,7 +356,7 @@ function landedOf(r: ReceiptRow, at: string): SQL {
  * insert — only once the claim landed, and with a kind that is NULL (failing the whole batch, the claim with it) when the
  * inverse didn't land as it should (`landedOf`). So a receipt is taken back exactly when its inverse lands, and never else.
  */
-function takeBackBatchOf(db: Db, r: ReceiptRow, requestId: string, madeBy: string, at: string): TakeBackBatch {
+export function takeBackBatchOf(db: Db, r: ReceiptRow, requestId: string, madeBy: string, at: string): TakeBackBatch {
   const detail = JSON.stringify({ receiptId: r.id, op: r.op, workoutId: r.workoutId, source: r.source, requestId, by: madeBy });
   return {
     first: () => [claimOf(db, r, requestId, at)],
@@ -384,6 +413,9 @@ interface RowNow {
   effectiveDate: string;
   completionState: string;
   contentState: string | null;
+  /** What its revisability reads (a revise's preflight). */
+  sport: string | null;
+  workoutDoc: string | null;
   performed: number;
   matched: number;
 }
@@ -400,6 +432,8 @@ async function rowsNow(db: Db, userId: string, ids: readonly string[]): Promise<
       effectiveDate: pw.effectiveDate,
       completionState: pw.completionState,
       contentState: pw.contentState,
+      sport: pw.sport,
+      workoutDoc: sql<string | null>`${pw.workoutDoc}`,
       // Correlated by explicit names: a column inside a select's own SQL is written unqualified.
       performed: sql<number>`exists (select 1 from "performed_sessions" ps where ps."workout_id" = "planned_workouts"."id" and ps."user_id" = ${userId})`,
       matched: sql<number>`exists (select 1 from "workout_completion_matches" m where m."workout_id" = "planned_workouts"."id")`,
@@ -500,32 +534,64 @@ export async function takeBack(
     });
   }
 
-  // 4. Apply: each group newest first (a receipt depends on the ones written before it), within the request's budget.
+  // 4. Apply, group by group, each newest first (a receipt relies on the ones written before it), within the request's
+  // budget. A group is checked whole before anything of it is written: what its writers would refuse whatever the moment
+  // refuses it whole (`preflightOf`, review B-2). And once one of a group is left for the next request, every older one of
+  // it is too (review B-3): a group never goes back out of order.
   const eligible = live.filter((r) => !outcomes.has(r.id)).sort((a, b) => idsOf(b.dependsOn).length - idsOf(a.dependsOn).length || b.createdAt.localeCompare(a.createdAt));
+  const groups = new Map<string, ReceiptRow[]>();
+  for (const r of eligible) groups.set(r.groupId, [...(groups.get(r.groupId) ?? []), r]);
+  const bases = await baseDocsOf(db, userId, eligible);
   const remaining: string[] = [];
   let left = TAKE_BACK_BUDGET - TAKE_BACK_FIXED;
   let first = true;
-  const stoppedGroups = new Set<string>();
   const applied: Array<{ r: ReceiptRow; at: string }> = [];
-  for (const r of eligible) {
-    if (stoppedGroups.has(r.groupId)) {
-      outcomes.set(r.id, { receiptId: r.id, outcome: "refused", error: "not_attempted", why: REFUSAL_WORDS.not_attempted });
+  const refuse = (r: ReceiptRow, error: Refusal, now?: RowNow) =>
+    outcomes.set(r.id, { receiptId: r.id, outcome: "refused", error, why: REFUSAL_WORDS[error], ...(error === "changed_since" ? { now: stateNow(now) } : {}) });
+  for (const members of groups.values()) {
+    const checking = members.reduce((n, r) => n + TAKE_BACK_PREFLIGHT[r.op as ReceiptOp], 0);
+    if (!first && checking + costOf(members[0]!) > left) {
+      remaining.push(...members.map((r) => r.id));
       continue;
     }
-    const cost = TAKE_BACK_COST[r.op as ReceiptOp] ?? TAKE_BACK_COST.revise;
-    if (!first && cost > left) {
-      remaining.push(r.id);
+    left -= checking;
+    const checked = new Map<string, Checked>();
+    let refused: { id: string; error: Refusal } | null = null;
+    for (const r of members) {
+      const c = await preflightOf(db, r, rows.get(r.workoutId), bases, today);
+      if ("refusal" in c) {
+        refused = { id: r.id, error: c.refusal };
+        break;
+      }
+      checked.set(r.id, c);
+    }
+    if (refused) {
+      for (const r of members) refuse(r, r.id === refused.id ? refused.error : "group_refused", rows.get(r.workoutId));
       continue;
     }
-    first = false;
-    left -= cost;
-    const done = await inverseOf(db, env, prefs, r, input, today, now);
-    if ("at" in done) {
-      applied.push({ r, at: done.at });
-    } else {
-      stoppedGroups.add(r.groupId);
-      const [again] = done.refusal === "changed_since" ? await rowsNowList(db, userId, r.workoutId) : [undefined];
-      outcomes.set(r.id, { receiptId: r.id, outcome: "refused", error: done.refusal, why: REFUSAL_WORDS[done.refusal], ...(done.refusal === "changed_since" ? { now: stateNow(again) } : {}) });
+    let deferred = false;
+    let stopped = false;
+    for (const r of members) {
+      if (stopped) {
+        refuse(r, "not_attempted");
+        continue;
+      }
+      const cost = costOf(r);
+      if (deferred || (!first && cost > left)) {
+        deferred = true;
+        remaining.push(r.id);
+        continue;
+      }
+      first = false;
+      left -= cost;
+      const done = await inverseOf(db, env, prefs, r, input, today, now, checked.get(r.id)!);
+      if ("at" in done) {
+        applied.push({ r, at: done.at });
+      } else {
+        stopped = true;
+        const [again] = done.refusal === "changed_since" ? await rowsNowList(db, userId, r.workoutId) : [undefined];
+        refuse(r, done.refusal, again);
+      }
     }
   }
 
@@ -541,6 +607,66 @@ async function rowsNowList(db: Db, userId: string, workoutId: string): Promise<A
   return [(await rowsNow(db, userId, [workoutId])).get(workoutId)];
 }
 
+const costOf = (r: ReceiptRow): number => TAKE_BACK_COST[r.op as ReceiptOp] ?? TAKE_BACK_COST.revise;
+
+/** A receipt its preflight passed: a revise's base document, and the day it was judged for (its write judges it there). */
+type Checked = { refusal: Refusal } | { ok: true; doc?: unknown; dayContext?: ValidateCtx };
+
+/** The base revisions' documents the named revises go back to, by `<workoutId>:<rev>` (one statement). */
+async function baseDocsOf(db: Db, userId: string, receipts: readonly ReceiptRow[]): Promise<Map<string, string | null>> {
+  const wanted = receipts.flatMap((r) => {
+    const rev = r.op === "revise" ? (parsedJson(r.preState) as { rev?: unknown } | null)?.rev : undefined;
+    return typeof rev === "number" ? [{ workoutId: r.workoutId, rev }] : [];
+  });
+  if (wanted.length === 0) return new Map();
+  const v = workoutDocRevisions;
+  const rows = await db
+    .select({ workoutId: v.workoutId, rev: v.rev, doc: v.doc })
+    .from(v)
+    .where(and(eq(v.userId, userId), or(...wanted.map((x) => and(eq(v.workoutId, x.workoutId), eq(v.rev, x.rev))))));
+  return new Map(rows.map((x) => [`${x.workoutId}:${x.rev}`, x.doc as string | null]));
+}
+
+/** The refusal a writer's error is, when it refuses a take-back's inverse whatever the moment. */
+function writerRefusal(e: unknown): Refusal | null {
+  if (e instanceof PastDateError) return "past";
+  if (e instanceof NotEditableError) return "ineligible";
+  if (e instanceof DocInvalidError || e instanceof RunUnsupportedError) return "cant_restore";
+  if (e instanceof RestoreInProgressError) return "not_attempted";
+  if (e instanceof Error && e.message === "races_cannot_move") return "ineligible";
+  return null;
+}
+
+/**
+ * What a receipt's writer would refuse whatever the moment, found before anything of its group is written (review B-2): a
+ * move with no day and time to go back to (`ineligible`); a revise whose base revision is gone or unreadable
+ * (`cant_restore`), whose row its writer would no longer revise (`past`, `ineligible`), or whose base document its day no
+ * longer allows — the condition gate, a run (`reviseJudged`: `cant_restore`). A revise that passes carries its base
+ * document and the day it was judged for, for its write to use.
+ */
+async function preflightOf(db: Db, r: ReceiptRow, row: RowNow | undefined, bases: Map<string, string | null>, today: string): Promise<Checked> {
+  const pre = parsedJson(r.preState) as Record<string, unknown> | null;
+  switch (r.op as ReceiptOp) {
+    case "create":
+    case "skip":
+      return { ok: true };
+    case "move":
+      return typeof pre?.date === "string" && typeof pre.time === "string" ? { ok: true } : { refusal: "ineligible" };
+    case "revise": {
+      const rev = typeof pre?.rev === "number" ? pre.rev : null;
+      const post = parsedJson(r.postState) as { workout_doc_rev?: unknown } | null;
+      if (rev === null || typeof post?.workout_doc_rev !== "number") return { refusal: "ineligible" };
+      const doc = parseStoredWorkoutDoc(bases.get(`${r.workoutId}:${rev}`) ?? null);
+      if (!row) return { refusal: "changed_since" };
+      if (!doc) return { refusal: "cant_restore" };
+      const judged = await reviseJudged(db, r.userId, { ...row, id: r.workoutId }, doc, today);
+      if (judged.ok) return { ok: true, doc, dayContext: judged.dayContext };
+      return { refusal: writerRefusal(judged.error) ?? "cant_restore" };
+    }
+  }
+  return { refusal: "ineligible" };
+}
+
 /**
  * The inverse write of one receipt, through run-garden's own writer, in one batch with its claim and check: the instant it
  * landed, or why it didn't — its row no longer as the write left it (`changed_since`: a race after preflight), or the
@@ -554,6 +680,7 @@ async function inverseOf(
   input: { requestId: string; madeBy: string },
   today: string,
   at: string,
+  checked: Exclude<Checked, { refusal: Refusal }>,
 ): Promise<{ at: string } | { refusal: Refusal }> {
   const takeBack = takeBackBatchOf(db, r, input.requestId, input.madeBy, at);
   const onlyIf = claimedBy(r, input.requestId, at);
@@ -571,26 +698,19 @@ async function inverseOf(
         await applyMove(db, { userId: r.userId, workoutId: r.workoutId, toDate: pre.date, toTime: pre.time, source: "app", corosWritesEnabled: prefs.corosWritesEnabled ?? false, onlyIf, takeBack, now: at });
         break;
       case "revise": {
-        const rev = typeof pre?.rev === "number" ? pre.rev : null;
         const post = parsedJson(r.postState) as { workout_doc_rev?: unknown } | null;
         const postRev = typeof post?.workout_doc_rev === "number" ? post.workout_doc_rev : null;
-        if (rev === null || postRev === null) return { refusal: "ineligible" };
-        // The base's own document, as its revision row kept it: the take-back is a NEW revision of it (history kept).
-        const [base] = await db
-          .select({ doc: workoutDocRevisions.doc })
-          .from(workoutDocRevisions)
-          .where(and(eq(workoutDocRevisions.userId, r.userId), eq(workoutDocRevisions.workoutId, r.workoutId), eq(workoutDocRevisions.rev, rev)))
-          .limit(1);
-        const doc = parseStoredWorkoutDoc(base?.doc ?? null);
-        if (!doc) return { refusal: "ineligible" };
+        // The base's own document, as its revision row kept it (read and judged at preflight): the take-back is a NEW
+        // revision of it (history kept), judged for the day its preflight read.
+        if (postRev === null || !checked.doc) return { refusal: "ineligible" };
         await reviseDocWorkout(
           db,
           r.userId,
           r.workoutId,
-          { doc, baseRev: postRev },
+          { doc: checked.doc, baseRev: postRev },
           { today, now: at, prefs, runWire: runWireOf(env) },
           { sourceKind: "athlete_edit", sourceRef: `take_back:${r.id}` },
-          { onlyIf, takeBack },
+          { onlyIf, takeBack, ...(checked.dayContext ? { dayContext: checked.dayContext } : {}) },
         );
         break;
       }
@@ -598,9 +718,10 @@ async function inverseOf(
         return { refusal: "ineligible" };
     }
   } catch (e) {
-    if (e instanceof NotEditableError) return { refusal: "ineligible" };
-    if (e instanceof PastDateError) return { refusal: "past" };
-    if (e instanceof Error && e.message === "races_cannot_move") return { refusal: "ineligible" };
+    // A writer's own refusal is this receipt's, never a 500 (review B-2): found here only when the moment changed it since
+    // its preflight.
+    const refusal = writerRefusal(e);
+    if (refusal) return { refusal };
     const changed = takeBackNotLanded(e) || e instanceof StaleRevisionError || e instanceof DocWorkoutNotFoundError || (e instanceof Error && ["session_changed", "workout_not_found"].includes(e.message));
     if (!changed) throw e;
   }
