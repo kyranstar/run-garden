@@ -82,6 +82,7 @@ describe("the half-hourly COROS half has its own run row", () => {
     expect(stats).toHaveProperty("coachReads");
     expect(stats).toHaveProperty("garden");
     expect(stats.sleep).toBe(false);
+    expect(stats.sleepStatus).toBeNull();
     expect(stats.backfill).toBe(false);
   });
 

@@ -956,8 +956,12 @@ function BackfillRow() {
  * ONE opt-in that adds nightly duration and depth: OAuth on the athlete's
  * own COROS account via the first-party MCP server — never the mobile API
  * that logs the phone app out. Nightly sleep HRV already flows without it.
+ *
+ * Needing a reconnect reads `error`; its category says why: COROS refused the
+ * grant in place of data (`credentials_rejected`, from 2026-11-18) or let it
+ * expire (`needs_reauth`). Neither ever reads "synced".
  */
-function CorosSleepRow({
+export function CorosSleepRow({
   conn,
 }: {
   conn: { status: string; lastSyncAt: string | null; lastErrorCategory: string | null } | undefined;
@@ -969,12 +973,15 @@ function CorosSleepRow({
   });
   const connected = conn?.status === "connected";
   const needsReauth = conn?.status === "error";
+  const refused = needsReauth && conn?.lastErrorCategory === "credentials_rejected";
   return (
     <div className="switch-row">
       <div>
         <strong>Sleep from COROS</strong>
         <p className="faint">
-          {needsReauth
+          {refused
+            ? "COROS stopped accepting this connection. Reconnect."
+            : needsReauth
             ? "Sleep sync stopped — COROS expired the connection. Reconnect to resume."
             : connected
               ? `Connected · nightly duration and depth${conn?.lastSyncAt ? ` · synced ${relativeTime(conn.lastSyncAt)}` : ""}`

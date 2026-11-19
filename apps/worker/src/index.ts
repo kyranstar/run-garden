@@ -390,14 +390,21 @@ async function corosHalfHour(db: Db, env: Env, userId: string): Promise<void> {
       : null;
     const sleep = await corosMcpSleepSweep(db, env, async () => prefs.timezone, undefined, userId).catch((e: unknown) => {
       console.error(`coros mcp sleep sweep failed: ${e instanceof Error ? e.message : "unknown"}`);
-      return 0;
+      return { pulled: 0, outcomes: [] };
     });
     const backfill = await runBackfillChunkCloud(db, env, userId, prefs, undefined, {
       resimMaxDays: SWEEP_REPLAY_MAX_DAYS,
     }).catch(() => ({ ran: false }));
     if (runId === null) return;
     if (await restoreInProgress(db, userId)) await dropSyncRun(db, runId);
-    else await finishSyncRun(db, runId, "ok", { ...(read ?? { read: null }), sleep: sleep > 0, backfill: backfill.ran });
+    // `sleep`: a pull began (the throttle had passed); `sleepStatus`: what it came to — a pull is not a sync.
+    else
+      await finishSyncRun(db, runId, "ok", {
+        ...(read ?? { read: null }),
+        sleep: sleep.pulled > 0,
+        sleepStatus: sleep.outcomes[0] ?? null,
+        backfill: backfill.ran,
+      });
   } catch (e) {
     if (runId !== null) await finishSyncRun(db, runId, "error", { message: String(e).slice(0, 200) });
   }

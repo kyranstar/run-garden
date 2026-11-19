@@ -159,6 +159,7 @@ sync your watch"** and never claim "Updated on watch". `verifyWatchSync` is alwa
 | D8 | Official COROS MCP client (worker-side, OAuth) probes `tools/list` at connect and daily; capability report drives the UI | Official write tools are announced; when they ship, jobs route to the official path automatically per the product's priority order |
 | D9 | Worker never holds COROS credentials; bridge runs on the Mac (residential IP) | Datacenter-IP 403s [verified] + product security requirement |
 | D10 | Result-code handling: `1019` → re-login once and retry; `1030` → surface bad-credentials; `5011` → shrink range; anything else → sanitized error category | §2 envelope semantics |
+| D11 | The official MCP's refusal — HTTP 200, `isError` false, one text item "Client authentication credentials missing, expired, or identity mismatched…" — is an auth failure on every tool: one refresh grant and one retry (as a 401), then `provider_connections` `coros_mcp` reads `error` / `credentials_rejected` (Settings: reconnect). Never data, never an empty read, never `last_sync_at`; reconnecting re-reads from a week before the last good sync (≤ 42 days, `queryDailyHealthData` only) | Seen live from 2026-11-18 ~00:30Z on every MCP grant on the account at once; until then the sleep pull read it as an unreadable report, fell back to `querySleepData` (no longer listed) and returned `tool_missing` without a write [verified] |
 
 ## 4. Live write spike — status
 
