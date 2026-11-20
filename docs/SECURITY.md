@@ -130,6 +130,16 @@ acceptance — never +30 on the old expiry:
 - **Off with the switch.** 404 while the kill switch (`NATIVE_DEVICES`) is off; 423 during a restore.
 - **Never by itself.** Nothing renews in the background: no read, grant or step-down moves the expiry.
 
+## What every paired phone reads of the account (every scope)
+
+`GET /api/native/me` (`apps/worker/src/routes/native.ts`), on every scope: the account's id, the phone's own label,
+expiry and scope, and — since R1.1 — **the account's time zone**: its IANA name as Settings holds it (`America/New_York`
+until the owner sets one). Every date and time the phone sends is judged on that clock (today, a day gone, a time already
+past), so the phone needs it to say "today" and "now" as run-garden will. A time zone names a broad region, so it says
+roughly where the account's clock is set; that is all it says. Never the email, connections, restore state or any other
+preference. New pairings say so in their consent words (Settings → Devices, the pairing note); a phone paired before
+R1.1 gets it on its next read without being asked again.
+
 ## LifeOS reads through its device (`training-v4`)
 
 The paired phone's own credential (native device sign-in) reads the plan and the record behind it, replacing the plan
@@ -225,7 +235,11 @@ on the `training-v5` scope only (`apps/worker/src/auth/device-scope.ts`; routes 
   confirmed.
 - **The library, trimmed.** A move's row and page carry one verdict for the switched-on profiles together (ok, caution,
   never) — never a profile's name, its notes, the account's saved-post links or its corrections. Templates are listed
-  without their documents. Every read is `no-store` and 503 during a restore.
+  without their documents; one template's own read carries its document, what it derives to (never a condition's
+  name) and, since R1.1, *What's in it* (`moves`: each move's library id, name and dose in words, the shape and renderer
+  of a session's *What's in it*), nothing its document doesn't already hold. Every read is `no-store` and 503 during a
+  restore. A resent place (the same `clientId`) is answered the place it made before anything else is judged (R1.1), so
+  a lost answer never reads as refused.
 - **The QA account's phone has no coach.** After `requireUser` (where the QA account's switches go off), every coach route
   answers 404 `coach_off` to it — no run, no model call, no `llm_usage` row. Its library, place and take-back work on its
   fixtures only. The $20 weekly cutoff is unchanged; a call's 32,000-token ceiling is reserved at its worst case first.

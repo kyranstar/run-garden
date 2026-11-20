@@ -58,10 +58,11 @@ export const CAN: Readonly<Record<string, string>> = {
 
 /**
  * What a phone of each scope is told at pairing beside `CAN` (review A MAJOR-1): v5's AI limit, what it never sees, and that
- * it shares nothing of the day — a new pairing mints v5 directly, so these are its consent's words.
+ * it shares nothing of the day — a new pairing mints v5 directly, so these are its consent's words. And (R1.1) that it reads
+ * the account's time zone, which every scope's `/api/native/me` carries.
  */
 export const PAIRING_NOTES: Readonly<Record<string, string>> = {
-  "training-v5": "Its coach use counts toward this account's weekly AI limit. It can read your coach's questions and what your coach remembers, which the coach writes and so can mention your training and how it's going; everything else is plain facts, never your health readings or conditions. It shares nothing about your day unless you turn that on on the phone.",
+  "training-v5": "Its coach use counts toward this account's weekly AI limit. It can read your coach's questions and what your coach remembers, which the coach writes and so can mention your training and how it's going; everything else is plain facts, never your health readings or conditions. It shares nothing about your day unless you turn that on on the phone. It also reads this account's time zone, so its days and times match your plan's.",
 };
 
 /**

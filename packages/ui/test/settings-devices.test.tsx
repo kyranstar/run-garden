@@ -587,7 +587,7 @@ describe("Settings → Devices", () => {
     await click(button("Pair a phone"));
     expect(words(host)).toContain("A phone paired now can play, save, move and fit workouts, record your feedback, read your plan and history, use your library, and work with your coach.");
     // v5 is its consent: the AI limit, what it never sees, and that it shares nothing of the day (review A MAJOR-1).
-    expect(words(host)).toContain("Its coach use counts toward this account's weekly AI limit. It can read your coach's questions and what your coach remembers, which the coach writes and so can mention your training and how it's going; everything else is plain facts, never your health readings or conditions. It shares nothing about your day unless you turn that on on the phone.");
+    expect(words(host)).toContain("Its coach use counts toward this account's weekly AI limit. It can read your coach's questions and what your coach remembers, which the coach writes and so can mention your training and how it's going; everything else is plain facts, never your health readings or conditions. It shares nothing about your day unless you turn that on on the phone. It also reads this account's time zone, so its days and times match your plan's.");
     act(() => root?.unmount());
     host?.remove();
     worker({ pairScope: "training-v4" });
