@@ -194,6 +194,16 @@ describe("the opening, its chips and the weekly review (review A MAJOR-1r)", () 
     expect(leaks(await device("GET", `/api/coach/runs/${made.json.run.id}`))).toEqual([]);
   });
 
+  it("a run asked on the laptop shows the phone none of its words", async () => {
+    const laptop = await w.call("POST", "/api/coach/runs", { body: { scope: { kind: "now" }, request: "My HRV is 91.37 and my jaw hurts; keep it under zone 4." } });
+    expect(laptop.status, laptop.text).toBe(200);
+    for (const a of [await device("GET", `/api/coach/runs/${laptop.json.run.id}`), await device("GET", "/api/coach/runs/current"), await device("GET", "/api/coach/conversation")]) {
+      expect(a.status).toBe(200);
+      expect(leaks(a)).toEqual([]);
+    }
+    expect((await device("GET", `/api/coach/runs/${laptop.json.run.id}`)).json.run.request).toBeNull();
+  });
+
   it("a chip no longer offered is 409 chip_gone, nothing started; a chip's words beside it are refused at the gate", async () => {
     const gone = await device("POST", "/api/coach/runs", { scope: { kind: "now" }, chip: "session:act-none" });
     expect([gone.status, gone.json.error]).toEqual([409, "chip_gone"]);
