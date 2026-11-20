@@ -4,7 +4,9 @@
  * of its 50, D1 statements + COROS fetches) holds no route and its watch job together. A phone has no such drain for its
  * library, so its watch work waited for the hourly's one heavy step: a take-back's `coach_delete_workout` sat queued for
  * half an hour. It goes on the requests a phone already makes instead, bound to the one session the request is about:
- *  - a place makes its session's copy (`deviceWatchRecord`: the mirror's record, its push queued) — measured 22 + 13;
+ *  - a place makes its session's copy (`deviceWatchRecord`: the mirror's record, its push queued) BEFORE it answers, so
+ *    the phone's read that follows finds the push queued (the R1.2 re-check's MAJOR-B) — measured 19–21 + 14, its lock
+ *    included;
  *  - the phone's read of a receipt, which its delivery sends straight after each place and each take-back (LifeOS
  *    `receiptsToRead`), runs that session's next step (`deviceWatchStep`): its queued push or delete (one job, measured
  *    ≈31 or ≈26 beside the read's 8), else its owed record.
@@ -13,19 +15,40 @@
  * mirror's and the lane's own checks; the read itself is 503 then).
  */
 import { nowInstant, todayInZone, type UserPreferences } from "@rg/domain";
-import type { Env } from "../env.js";
+import { watchPushEnabled, type Env } from "../env.js";
 import { loadPreferences } from "./calendar-sync.js";
 import { executeCloudJobs } from "./coros-write-cloud.js";
 import type { Db } from "./db.js";
 import { queuedWatchJobs } from "./jobs.js";
+import { claimUserLock, releaseUserLock } from "./locks.js";
 import { mirrorSweep } from "./mirror.js";
 
-/** One session's copy made — the mirror's record, its push queued — and only that session's. True when it made one. */
+/** A phone's record of a session's copy is single-flight per account (the R1.2 re-check's MAJOR-B): `claimUserLock`'s kind. */
+export const DEVICE_RECORD_LOCK = "watch_record";
+
+/**
+ * What a phone's record of one session declares (an upper bound, for its request's room): the mirror's record (≤ 15,
+ * `mirrorSweep`) and its lock (claim 3, release 1).
+ */
+export const DEVICE_RECORD_COST = 15 + 4;
+
+/**
+ * One session's copy made — the mirror's record, its push queued — and only that session's. True when it made one. Held to
+ * one at a time per account (`DEVICE_RECORD_LOCK`): a record under way elsewhere — the place's, a second read's — makes
+ * this one nothing, never a second record and push (`mirrorSweep` takes no lock, and a record's id is new each time).
+ */
 export async function deviceWatchRecord(db: Db, env: Env, userId: string, workoutId: string, prefs?: UserPreferences): Promise<boolean> {
+  if (!watchPushEnabled(env)) return false;
   const p = prefs ?? (await loadPreferences(db, userId));
   if (!p.corosWritesEnabled) return false;
-  const ctx = { today: todayInZone(p.timezone), now: nowInstant(), prefs: p };
-  return (await mirrorSweep(db, env, userId, p, ctx, { cap: 1, workoutId })).attempted > 0;
+  const lock = await claimUserLock(db, userId, DEVICE_RECORD_LOCK, 2);
+  if (!lock) return false;
+  try {
+    const ctx = { today: todayInZone(p.timezone), now: nowInstant(), prefs: p };
+    return (await mirrorSweep(db, env, userId, p, ctx, { cap: 1, workoutId })).attempted > 0;
+  } finally {
+    await releaseUserLock(db, userId, DEVICE_RECORD_LOCK, lock);
+  }
 }
 
 /**

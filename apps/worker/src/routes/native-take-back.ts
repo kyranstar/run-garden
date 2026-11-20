@@ -10,7 +10,7 @@
  *        changed_since with how it stands now — `{date, time, state, archived, title, minutes}` — group_refused,
  *        not_attempted). `remaining`: named and eligible, left for the next request (the statement budget):
  *        send them again with the same requestId. 400 bad_take_back for a body outside its shape. With anything taken
- *        back, the calendar follows in the same request (one bounded step; R1.2 item 7).
+ *        back, the calendar follows in the same request, in the room the take-back left (R1.2 item 7).
  *   GET  /api/native/receipts/:id → { id, source, op, workoutId, status, createdAt, expiresAt, takenBackAt, compensation }
  *        — the receipt as it stands and the providers' work, live (`no-store`; 404 not_found; 503 during a restore). A
  *        phone's read then runs that session's next watch step, after it answers (R1.2 item 7: services/device-watch.ts).
@@ -21,7 +21,8 @@ import { nowInstant } from "@rg/domain";
 import { requireUser, type AppContext } from "../auth/middleware.js";
 import { TAKE_BACK_MAX } from "../auth/device-scope.js";
 import { restoreInProgress } from "../services/account-state.js";
-import { CALENDAR_OPS_PER_REQUEST, syncCalendar } from "../services/calendar-sync.js";
+import { syncCalendar } from "../services/calendar-sync.js";
+import { calendarOpsFitting } from "../services/design-approve.js";
 import { deviceWatchStep } from "../services/device-watch.js";
 import { madeByOf, receiptStatus, takeBack } from "../services/take-back.js";
 import { waitUntilSafe } from "../services/wait-until.js";
@@ -39,11 +40,15 @@ const takeBackSchema = z
 nativeTakeBackRoutes.post("/take-back", requireUser, async (c) => {
   const parsed = takeBackSchema.safeParse(await c.req.json().catch(() => null));
   if (!parsed.success) return c.json({ error: "bad_take_back", issues: parsed.error.issues }, 400);
-  const answer = await takeBack(c.get("db"), c.env, c.get("userId"), { ...parsed.data, madeBy: madeByOf(c.get("device")) }, nowInstant());
-  // The calendar follows in this request, one bounded step, as after the laptop's remove (R1.2 item 7). The watch's
-  // delete does not fit beside the take-back (24 + ≈26 of 45): the phone's read of the receipt, straight after, runs it.
-  if (answer.outcomes.some((o) => o.outcome === "taken_back")) {
-    waitUntilSafe(c, syncCalendar(c.get("db"), c.env, c.get("userId"), { maxOps: CALENDAR_OPS_PER_REQUEST }).catch(() => undefined));
+  const meter = { left: 0 };
+  const answer = await takeBack(c.get("db"), c.env, c.get("userId"), { ...parsed.data, madeBy: madeByOf(c.get("device")) }, nowInstant(), meter);
+  // The calendar follows in this request, as after the laptop's remove (R1.2 item 7) — in the room the take-back left
+  // (`calendarOpsFitting`, as an approve's; the re-check's MAJOR-A): one receipt leaves room for one op, a grouped
+  // take-back none, and the half-hourly run books what it leaves. The watch's delete never fits beside it (24 + ≈26 of
+  // 45): the phone's read of the receipt, straight after, runs it.
+  const ops = calendarOpsFitting(meter.left);
+  if (ops > 0 && answer.outcomes.some((o) => o.outcome === "taken_back")) {
+    waitUntilSafe(c, syncCalendar(c.get("db"), c.env, c.get("userId"), { maxOps: ops }).catch(() => undefined));
   }
   return c.json(answer);
 });

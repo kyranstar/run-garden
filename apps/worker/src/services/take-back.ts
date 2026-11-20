@@ -491,7 +491,9 @@ function ownRefusal(r: ReceiptRow, row: RowNow | undefined, today: string, now: 
 
 /**
  * Take back the named receipts (see the module comment). `madeBy` is who asks (recorded in the audit). Writes nothing for a
- * receipt it refuses, and nothing at all for a group any receipt of which it refuses.
+ * receipt it refuses, and nothing at all for a group any receipt of which it refuses. `meter.left`, when given, is set to
+ * the request's declared statements unspent (of TAKE_BACK_BUDGET): the room its calendar step may take (R1.2 re-check,
+ * MAJOR-A; as an approve's `meter`).
  */
 export async function takeBack(
   db: Db,
@@ -499,6 +501,7 @@ export async function takeBack(
   userId: string,
   input: { receiptIds: readonly string[]; requestId: string; madeBy: string },
   now: string,
+  meter?: { left: number },
 ): Promise<TakeBackAnswer> {
   const t = takeBackReceipts;
   const named = [...new Set(input.receiptIds)];
@@ -634,6 +637,7 @@ export async function takeBack(
         : { receiptId: r.id, outcome: "already_taken_back", op, workoutId: r.workoutId, at, compensation },
     );
   }
+  if (meter) meter.left = left;
   return { requestId: input.requestId, outcomes: named.flatMap((id) => (outcomes.has(id) ? [outcomes.get(id)!] : [])), remaining };
 }
 

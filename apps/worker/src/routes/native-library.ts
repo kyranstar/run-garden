@@ -22,7 +22,8 @@
  *        watch copy owed and its calendar booked as a Studio save's — with the template's use counted and the take-back
  *        receipt IN THE SAME BATCH (services/take-back.ts). 422 invalid_doc with its issues (nothing written, no receipt),
  *        422 past_date, past_time, no_time_today, 404 not_found, 400 bad_place. From a phone, its session's watch copy is
- *        made in the same request (R1.2 item 7), and sent by the phone's read of the receipt straight after.
+ *        made before it answers (R1.2 item 7), and sent by the phone's read of the receipt straight after; its calendar step
+ *        takes the room left, none beside the copy (the half-hourly run books it).
  *
  * TRIMMED (DESIGN-3 §3.5): a move's row and its page carry one verdict for the switched-on profiles together — `ok`,
  * `caution` or `never` — and never a profile's name, its notes, the account's saved-post links or its corrections. Every read
@@ -38,9 +39,10 @@ import { deriveDoc } from "@rg/workout";
 import { requireUser, type AppContext } from "../auth/middleware.js";
 import { libraryForDocs, loadAccountLibrary } from "../services/account-library.js";
 import { restoreInProgress } from "../services/account-state.js";
-import { CALENDAR_OPS_PER_REQUEST, loadPreferences, syncCalendar } from "../services/calendar-sync.js";
+import { loadPreferences, syncCalendar } from "../services/calendar-sync.js";
 import { createDocWorkout, keyedRowId } from "../services/doc-workouts.js";
-import { deviceWatchRecord } from "../services/device-watch.js";
+import { calendarOpsFitting, REQUEST_BUDGET } from "../services/design-approve.js";
+import { DEVICE_RECORD_COST, deviceWatchRecord } from "../services/device-watch.js";
 import { approveTimeOf } from "../services/design-time.js";
 import { LibraryItemNotFoundError, libraryItem, listLibrary, MAX_LIBRARY_LIMIT, type LibraryItem, type LibraryRow, type Safety } from "../services/library-view.js";
 import { docMoves, type AheadMove } from "../services/session-build.js";
@@ -238,6 +240,12 @@ const placeSchema = z
   })
   .strict();
 
+/**
+ * What a first place declares of its request (an upper bound, its sign-in included; measured 19 at a time and 21 untimed,
+ * the collision pass of a light day included): the room its record and its calendar step share (R1.2 re-check, MAJOR-A).
+ */
+export const PLACE_COST = 24;
+
 /** The template's use, counted in the place's own batch: a resent clientId writes no batch, so it counts once. */
 const useCounted = (c: C, id: string) => (w: { now: string }) => [
   c
@@ -330,12 +338,16 @@ nativeLibraryRoutes.post("/templates/:id/place", requireUser, async (c) => {
     );
     const answer = { workoutId: made.workout.id, receiptId, date: made.workout.date, time: made.workout.time };
     if (made.repeated) return c.json({ ...answer, repeated: true }, 200);
-    // The calendar follows, as after a Studio save: one bounded step now, the reconcile books what it leaves.
-    waitUntilSafe(c, syncCalendar(db, c.env, userId, { maxOps: CALENDAR_OPS_PER_REQUEST }).catch(() => undefined));
-    // THE WATCH FOLLOWS (R1.2 item 7): a phone has no drain of its own, so its place makes its session's copy here (the
-    // mirror's record, its push queued: 22 + 13 of 45), and the phone's read of the receipt, straight after, sends it
-    // (services/device-watch.ts). The laptop's own drain does both for a place it makes.
-    if (c.get("device")) waitUntilSafe(c, deviceWatchRecord(db, c.env, userId, made.workout.id, prefs));
+    // THE WATCH FOLLOWS (R1.2 item 7): a phone has no drain of its own, so its place makes its session's copy (the mirror's
+    // record, its push queued) BEFORE it answers — the phone's read of the receipt, straight after, finds the push queued
+    // and sends it, never racing a record still under way (the re-check's MAJOR-B). The laptop's own drain does both for
+    // a place it makes. A failed record is left to the read's own step, or the hourly's.
+    const device = c.get("device");
+    if (device) await deviceWatchRecord(db, c.env, userId, made.workout.id, prefs).catch(() => false);
+    // The calendar follows, as after a Studio save — in the room the request has left (the re-check's MAJOR-A): beside a
+    // phone's record none is left, so its event waits for the half-hourly run; the reconcile books what any step leaves.
+    const ops = calendarOpsFitting(REQUEST_BUDGET - PLACE_COST - (device ? DEVICE_RECORD_COST : 0));
+    if (ops > 0) waitUntilSafe(c, syncCalendar(db, c.env, userId, { maxOps: ops }).catch(() => undefined));
     return c.json(answer, 201);
   } catch (e) {
     return refusal(c, e);
