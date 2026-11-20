@@ -2,7 +2,8 @@
  * THE PHONE'S TWO READS, TRIMMED ON THE SERVER (SLICE-CONTRACT revision 2 §10.4). A device never gets `/api/auth/me`
  * or `/api/plan/today` (403, native-gate.test.ts); it gets these:
  *
- *  - `GET /api/native/me`: `{userId, device: {label, expiresAt}}` — no email, no connections, no restore state;
+ *  - `GET /api/native/me`: `{userId, timezone, device: {label, expiresAt, scope}}` — the account's IANA zone (R1.1) and
+ *    nothing else of its preferences; no email, no connections, no restore state;
  *  - `GET /api/native/today`: the day's training rows, each `{id, title, sport, category, date, time, state}` and, since
  *    kit v0.10, `written` and `docRev` (native-read-contract.test.ts) — no sleep, readiness, coach text, garden, email or
  *    connections. Rest rows, removed rows and other days are not in it.
@@ -14,10 +15,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { eq } from "drizzle-orm";
 import { schema } from "@rg/database";
-import { addDays, nowInstant } from "@rg/domain";
+import { addDays, nowInstant, todayInZone } from "@rg/domain";
 import { authRoutes } from "../src/routes/auth.js";
 import { nativeRoutes } from "../src/routes/native.js";
 import { planRoutes } from "../src/routes/plan.js";
+import { loadPreferences, savePreferences } from "../src/services/calendar-sync.js";
 import { connectTestCoros, pinMiddayToday } from "./helpers.js";
 import { nativeWorld, seedDevice, seedSlot, type NativeWorld } from "./native-fixture.js";
 
@@ -80,17 +82,31 @@ describe("the web's own reads carry what the phone's leave out (the seeds are re
 });
 
 describe("GET /api/native/me", () => {
-  it("answers the device {userId, device: {label, expiresAt, scope}} and nothing else", async () => {
+  it("answers the device {userId, timezone, device: {label, expiresAt, scope}} and nothing else", async () => {
     const { token } = await seedDevice(w.db, w.userId, { label: "Kitchen iPhone" });
     const [row] = await w.db.select().from(schema.nativeDevices);
     const a = await w.call("GET", "/api/native/me", { bearer: token });
     expect(a.status).toBe(200);
-    // `scope` (stage 2 DESIGN §5.1, additive): what this pairing allows, so the phone offers only that.
-    expect(a.json).toEqual({ userId: w.userId, device: { label: "Kitchen iPhone", expiresAt: row!.expiresAt, scope: "training-slice-v1" } });
+    // `scope` (stage 2 DESIGN §5.1, additive): what this pairing allows, so the phone offers only that. `timezone` (R1.1,
+    // additive): the account's IANA zone, so the phone judges today and now on the account's clock.
+    expect(a.json).toEqual({ userId: w.userId, timezone: "America/Los_Angeles", device: { label: "Kitchen iPhone", expiresAt: row!.expiresAt, scope: "training-slice-v1" } });
     expect(a.text).not.toContain(w.email);
     expect(keysOf(a.json).filter((k) => FORBIDDEN_KEYS.includes(k))).toEqual([]);
-    // The device's own read (its account joined) and its last use: no connection, restore or account read besides.
-    expect(tablesOf(a.statements)).toEqual(["native_devices", "users"]);
+    // The device's own read (its account joined), its last use, and the account's preferences (for the zone alone): no
+    // connection, restore or other account read besides.
+    expect(tablesOf(a.statements)).toEqual(["native_devices", "user_preferences", "users"]);
+  });
+
+  it("timezone is the account's own zone, as set; America/New_York (the preferences' default) until one is set", async () => {
+    const { token } = await seedDevice(w.db, w.userId, { scope: "training-v5" });
+    await savePreferences(w.db, w.userId, { ...(await loadPreferences(w.db, w.userId)), timezone: "Europe/Lisbon" });
+    expect((await w.call("GET", "/api/native/me", { bearer: token })).json.timezone).toBe("Europe/Lisbon");
+    // The zone the phone is told is the zone the server judges its day by: /today's `today` is that zone's date.
+    expect((await w.call("GET", "/api/native/today", { bearer: token })).json.today).toBe(todayInZone("Europe/Lisbon"));
+    await w.db.delete(schema.userPreferences).where(eq(schema.userPreferences.userId, w.userId));
+    expect((await w.call("GET", "/api/native/me", { bearer: token })).json.timezone).toBe("America/New_York");
+    // Nothing else of the preferences: only `timezone` is new beside userId and device.
+    expect(Object.keys((await w.call("GET", "/api/native/me", { bearer: token })).json).sort()).toEqual(["device", "timezone", "userId"]);
   });
 
   it("names each device's own scope: a v2 pairing says training-v2, a v1 one keeps training-slice-v1", async () => {
@@ -100,8 +116,8 @@ describe("GET /api/native/me", () => {
     expect((await w.call("GET", "/api/native/me", { bearer: v2.token })).json.device.scope).toBe("training-v2");
   });
 
-  it("answers a cookie with no device", async () => {
-    expect((await w.call("GET", "/api/native/me")).json).toEqual({ userId: w.userId, device: null });
+  it("answers a cookie with no device, and the account's zone", async () => {
+    expect((await w.call("GET", "/api/native/me")).json).toEqual({ userId: w.userId, timezone: "America/Los_Angeles", device: null });
   });
 
   it("expiresAt is all the phone needs for its 7-day warning: the exact instant its token stops working", async () => {

@@ -30,7 +30,8 @@
  *                                   answers the same, but its phone is active at once (the owner's QA mint was its
  *                                   consent): its first `/me` says paired
  *   POST /sign-out                  its device token: its own row revoked
- *   GET  /me                        {userId, device: {label, expiresAt, scope}} (§10.4, trimmed on the server)
+ *   GET  /me                        {userId, timezone, device: {label, expiresAt, scope}} (§10.4, trimmed on the server;
+ *                                   `timezone`, the account's IANA zone, R1.1)
  *   GET  /today                     {today, sessions}: the day's training rows only (§10.4), each saying whether the phone
  *                                   can open it (`written`) and its document's revision (`docRev`; kit v0.10)
  *   GET  /days?from&to              a `training-v4` phone's days (DESIGN-2c §2.1): at most 14, within today − 90 … + 14
@@ -199,10 +200,16 @@ function scopeNamed(body: unknown): string | null {
  * review's feedback; a `training-v4` one also reads its plan and history. It informs the phone's UI; every request is
  * judged by the server again. No email, connections or
  * restore state. A cookie gets `device: null`.
+ *
+ * `timezone` (R1.1): the account's IANA time zone (`loadPreferences(...).timezone`; America/New_York until the owner sets
+ * one), for the cookie and every device scope alike, as `userId` is — the clock every date and time the phone sends is
+ * judged on (today, a day gone, a time already past), so the phone works out "today" and "now" on the account's clock, not
+ * its own. One statement more (the preferences); nothing else of them.
  */
 nativeRoutes.get("/me", requireUser, async (c) => {
   const device = c.get("device");
-  return c.json({ userId: c.get("userId"), device: device ? { label: device.label, expiresAt: device.expiresAt, scope: device.scope } : null });
+  const { timezone } = await loadPreferences(c.get("db"), c.get("userId"));
+  return c.json({ userId: c.get("userId"), timezone, device: device ? { label: device.label, expiresAt: device.expiresAt, scope: device.scope } : null });
 });
 
 /** A planned time, `HH:MM`. */

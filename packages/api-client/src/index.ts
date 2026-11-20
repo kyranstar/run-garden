@@ -356,6 +356,14 @@ export interface NativeDevicesResponse {
   devices: NativeDeviceDto[];
 }
 
+/** `GET /api/native/me`: the phone's account read (the cookie's too, with `device: null`). */
+export interface NativeMeResponse {
+  userId: string;
+  /** R1.1: the account's IANA time zone ("America/New_York"), the clock every date and time the phone sends is judged on. */
+  timezone: string;
+  device: { label: string; expiresAt: string; scope: string } | null;
+}
+
 // ── A `training-v5` phone's library, take-back, switch A and coach answers (R1, DESIGN-3 §3.5): the wire's shapes ──────────
 
 /** `GET /api/native/templates`: the account's saved workouts, without documents. */

@@ -88,7 +88,8 @@ const pending = listed.json.devices.find((d) => d.state === "pending" && d.check
 check("the laptop lists the pending phone with the phone's check number", !!pending, true);
 check("Confirm: 200", (await call("POST", `/api/native/devices/${pending.id}/confirm`, { cookie: true, body: { check: won.check } })).status, 200);
 const me = await call("GET", "/api/native/me", { bearer: token });
-check("active: /api/native/me is {userId, device}", Object.keys(me.json).sort(), ["device", "userId"]);
+// `timezone` (R1.1): the account's IANA zone, the clock the phone judges today and now on.
+check("active: /api/native/me is {userId, timezone, device}", [Object.keys(me.json).sort(), typeof me.json.timezone], [["device", "timezone", "userId"], "string"]);
 // A new pairing is minted at the newest scope (stage 2b RG-NOTES §3.5, §8; DESIGN-2c §3; DESIGN-3 §3.5: training-v5), and
 // /me says so.
 check("…and its device is training-v5: {label, expiresAt, scope}", [Object.keys(me.json.device ?? {}).sort(), me.json.device?.scope], [["expiresAt", "label", "scope"], "training-v5"]);
