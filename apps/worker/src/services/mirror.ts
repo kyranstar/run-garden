@@ -1181,6 +1181,8 @@ export async function mirrorNeedsRun(db: Db, userId: string, today: string): Pro
  * it pushed. A restore running (read with the candidates): nothing written. Preparing a copy that throws is remembered on
  * the row's mark (`error`, on the backoff ladder), so one session cannot stall the account every hour. Writes off or
  * the switch off: nothing read, nothing queued, the marks kept. ≤ 15 statements for one record, a replacement included.
+ * `opts.workoutId` (R1.2 item 7: a phone's place, and its read of a receipt) holds the sweep to that one session: only its
+ * row is a candidate, so a phone's request makes its own session's copy and never another's.
  */
 export async function mirrorSweep(
   db: Db,
@@ -1188,7 +1190,7 @@ export async function mirrorSweep(
   userId: string,
   prefs: BuildCtx["prefs"],
   ctx: BuildCtx,
-  opts: { cap: number },
+  opts: { cap: number; workoutId?: string },
 ): Promise<MirrorSweepResult> {
   if (!watchPushEnabled(env)) return { queued: 0, attempted: 0, skipped: { switch_off: 1 } };
   if (!prefs.corosWritesEnabled) return { queued: 0, attempted: 0, skipped: { writes_off: 1 } };
@@ -1212,7 +1214,7 @@ export async function mirrorSweep(
     })
     .from(pw)
     .leftJoin(syncIntents, owedMark)
-    .where(and(eq(pw.userId, userId), or(open, inWindow, stranded)))
+    .where(and(eq(pw.userId, userId), ...(opts.workoutId !== undefined ? [eq(pw.id, opts.workoutId)] : []), or(open, inWindow, stranded)))
     .orderBy(sql`case when ${open} then 0 when ${stranded} then 1 else 2 end`, asc(pw.effectiveDate), asc(pw.effectiveTime), asc(pw.id))
     .limit(SWEEP_ROWS);
   if (candidates.length === 0) return { queued: 0, attempted: 0, skipped: {} };

@@ -21,7 +21,8 @@
  *        `basedOn: {kind: "template", id}`, through the Studio's own `createDocWorkout` — validated for that day, its
  *        watch copy owed and its calendar booked as a Studio save's — with the template's use counted and the take-back
  *        receipt IN THE SAME BATCH (services/take-back.ts). 422 invalid_doc with its issues (nothing written, no receipt),
- *        422 past_date, past_time, no_time_today, 404 not_found, 400 bad_place.
+ *        422 past_date, past_time, no_time_today, 404 not_found, 400 bad_place. From a phone, its session's watch copy is
+ *        made in the same request (R1.2 item 7), and sent by the phone's read of the receipt straight after.
  *
  * TRIMMED (DESIGN-3 §3.5): a move's row and its page carry one verdict for the switched-on profiles together — `ok`,
  * `caution` or `never` — and never a profile's name, its notes, the account's saved-post links or its corrections. Every read
@@ -39,6 +40,7 @@ import { libraryForDocs, loadAccountLibrary } from "../services/account-library.
 import { restoreInProgress } from "../services/account-state.js";
 import { CALENDAR_OPS_PER_REQUEST, loadPreferences, syncCalendar } from "../services/calendar-sync.js";
 import { createDocWorkout, keyedRowId } from "../services/doc-workouts.js";
+import { deviceWatchRecord } from "../services/device-watch.js";
 import { approveTimeOf } from "../services/design-time.js";
 import { LibraryItemNotFoundError, libraryItem, listLibrary, MAX_LIBRARY_LIMIT, type LibraryItem, type LibraryRow, type Safety } from "../services/library-view.js";
 import { docMoves, type AheadMove } from "../services/session-build.js";
@@ -330,6 +332,10 @@ nativeLibraryRoutes.post("/templates/:id/place", requireUser, async (c) => {
     if (made.repeated) return c.json({ ...answer, repeated: true }, 200);
     // The calendar follows, as after a Studio save: one bounded step now, the reconcile books what it leaves.
     waitUntilSafe(c, syncCalendar(db, c.env, userId, { maxOps: CALENDAR_OPS_PER_REQUEST }).catch(() => undefined));
+    // THE WATCH FOLLOWS (R1.2 item 7): a phone has no drain of its own, so its place makes its session's copy here (the
+    // mirror's record, its push queued: 22 + 13 of 45), and the phone's read of the receipt, straight after, sends it
+    // (services/device-watch.ts). The laptop's own drain does both for a place it makes.
+    if (c.get("device")) waitUntilSafe(c, deviceWatchRecord(db, c.env, userId, made.workout.id, prefs));
     return c.json(answer, 201);
   } catch (e) {
     return refusal(c, e);

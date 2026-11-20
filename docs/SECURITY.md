@@ -231,6 +231,14 @@ on the `training-v5` scope only (`apps/worker/src/auth/device-scope.ts`; routes 
   idempotent by `requestId`. What the watch and the calendar still have to undo is read live (`GET
   /api/native/receipts/:id`): the watch's delete pending while owed or running, done only once verified, failed else; the
   calendar's event pending until the sync has written it. The account's own receipts only.
+  *The watch follows a phone (R1.2):*
+  - a place makes its session's watch copy in its own request;
+  - a take-back syncs the calendar in its own request;
+  - a phone's read of a receipt then runs that one session's next watch step: its queued push or delete, else its owed
+    copy. Never another session's work, and never two steps.
+
+  This is one step a request, because the free plan's budget holds no route and its watch job together. Nothing runs with
+  COROS writes off or while a restore runs.
   *Rolling back:* code from before R1 leaves `take_back_receipts` and `native_device_sharing` rows in place on delete-all
   (its registry doesn't know them); a rollback is followed by deleting both tables' rows of the account by `user_id`,
   or by a forward fix — migration 0040 is additive and safe under the old code.
