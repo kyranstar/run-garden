@@ -237,7 +237,7 @@ on the `training-v5` scope only (`apps/worker/src/auth/device-scope.ts`; routes 
   never) — never a profile's name, its notes, the account's saved-post links or its corrections. Templates are listed
   without their documents; one template's own read carries its document, what it derives to (never a condition's
   name) and, since R1.1, *What's in it* (`moves`: each move's library id, name and dose in words, the shape and renderer
-  of a session's *What's in it*), nothing its document doesn't already hold. Every read is `no-store` and 503 during a
+  of a session's *What's in it*), nothing a v5 phone doesn't already read. Every read is `no-store` and 503 during a
   restore. A resent place (the same `clientId`) is answered the place it made before anything else is judged (R1.1), so
   a lost answer never reads as refused.
 - **The QA account's phone has no coach.** After `requireUser` (where the QA account's switches go off), every coach route

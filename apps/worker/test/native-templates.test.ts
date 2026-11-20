@@ -7,6 +7,7 @@
  * the very values, `/sessions/:id/ahead` gives the same document's moves, each with exactly the allowlist's keys and none of
  * the document's other words. Synthetic data only.
  */
+import { readFileSync } from "node:fs";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { eq } from "drizzle-orm";
 import { schema } from "@rg/database";
@@ -202,5 +203,22 @@ describe("GET /api/native/templates/:id — What's in it (R1.1; 3a's review ARCH
     await template(w.userId, "t-all", { doc: JSON.stringify(everythingDoc()) });
     const a = await w.call("GET", "/api/native/templates/t-all", { bearer: v5 });
     expect(a.statements.filter((s) => /personal_moves/.test(s))).toHaveLength(1);
+  });
+
+  it("its words claim no more than is so (R1.2, the R1.1 review's minor 2): an own move's name isn't in the document, but a v5 phone already reads it", async () => {
+    await template(w.userId, "t-all", { doc: JSON.stringify(everythingDoc()) });
+    const a = await w.call("GET", "/api/native/templates/t-all", { bearer: v5 });
+    // The account's own move is named from `personal_moves`: the document beside it holds only its id.
+    expect(a.json.moves).toContainEqual({ exerciseId: OWN, name: "Zorbex hip lift", dose: "2 × 8" });
+    expect(JSON.stringify(a.json.doc)).toContain(OWN);
+    expect(JSON.stringify(a.json.doc)).not.toContain("Zorbex hip lift");
+    // A v5 phone reads that name already: the move's own page (and the same document's `/ahead`, the parity test above).
+    expect((await w.call("GET", `/api/native/library/${OWN}`, { bearer: v5 })).json.name).toBe("Zorbex hip lift");
+    // So SECURITY.md and the route's own words say that, and never that it is all in the document.
+    const flat = (path: string) => readFileSync(new URL(path, import.meta.url), "utf8").replace(/\s*\n\s*(?:\*\s)?/g, " ");
+    for (const path of ["../../../docs/SECURITY.md", "../src/routes/native-library.ts"]) {
+      const said = flat(path);
+      expect([said.includes("nothing a v5 phone doesn't already read"), said.match(/doesn't already hold|all already in the template's `doc`/)?.[0] ?? null], path).toEqual([true, null]);
+    }
   });
 });

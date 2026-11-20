@@ -131,9 +131,10 @@ export const deviceLibraryItem = (m: LibraryItem): DeviceLibraryItem => ({
 /**
  * One move of a saved workout's *What's in it* as the phone reads it (R1.1; 3a's review ARCHITECTURE 3): EXACTLY these keys
  * (native-templates.test.ts pins them) — the shape `/sessions/:id/ahead` gives a document session's moves, from the same
- * renderer (`docMoves`), so the phone's one decoder and view read both. Its words are the library's name for a move, a free
- * move's own name and a dose in words: all already in the template's `doc` beside it, as in a session's document — never a
- * move's why, cue or progression, an alternate's why or the document's notes.
+ * renderer (`docMoves`), so the phone's one decoder and view read both. Its words are the library's name for a move (an own
+ * move's from `personal_moves`), a free move's own name and a dose in words: nothing a v5 phone doesn't already read, as a
+ * move's own page and a session's `/ahead` give them (R1.2, the R1.1 review's minor 2). Never a move's why, cue or
+ * progression, an alternate's why or the document's notes.
  */
 export interface DeviceMove {
   exerciseId: string | null;
