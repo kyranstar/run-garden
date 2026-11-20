@@ -13,6 +13,7 @@ import {
   type UserPreferences,
 } from "@rg/domain";
 import { isProfileId, profileById } from "@rg/exercise-library";
+import { sha256Hex } from "../auth/crypto.js";
 import type { Env } from "../env.js";
 import { runAtomicallyClaim, type Db } from "./db.js";
 import { noRestoreSql } from "./account-state.js";
@@ -1231,10 +1232,47 @@ export interface CreateRunInput {
    * A key the run starts under at most once (plan-drafts.ts: a plan's draft per ending): an `audit_events` row whose id is
    * the key, with `detail` and the run's id, written in the run's own insert batch while no row has that id — so creates
    * that race start one run between them, and the key never stands without its run, nor the run without its key. A key
-   * already written starts nothing: `RunKeyTakenError`. A keyed run is a conversation of its own, and never starts while a
-   * restore is replacing the account, nor while `gate` (an SQL condition, checked in the same statement) is false.
+   * already written starts nothing: `RunKeyTakenError`. A keyed run is a conversation of its own — or, with
+   * `conversation: "asked"` (a phone's ask under its `clientId`, R1.2: `deviceAskKey`), a turn of the conversation
+   * `conversationId` asks for, found as an unkeyed create finds it — and never starts while a restore is replacing the
+   * account, nor while `gate` (an SQL condition, checked in the same statement) is false.
    */
-  once?: { key: string; kind: string; detail: Record<string, unknown>; gate?: SQL };
+  once?: { key: string; kind: string; detail: Record<string, unknown>; gate?: SQL; conversation?: "asked" };
+}
+
+/** A phone's ask under its `clientId` (R1.2): the claim's audit kind (`CreateRunInput.once`). */
+export const DEVICE_ASK_KIND = "coach.device_ask";
+
+/**
+ * THE KEY A PHONE'S ASK STARTS UNDER AT MOST ONCE (R1.2; the lead's kit v0.21: "restarting or reconnecting should resume the
+ * same designer run, never silently create another paid request"): the account, the device that signed the request in and
+ * the phone's `clientId` (made once per ask on the phone), hashed — so another account's or another phone's `clientId`
+ * never meets this one's, and the key holds no words of the ask.
+ */
+export async function deviceAskKey(userId: string, deviceId: string, clientId: string): Promise<string> {
+  return `coach_ask:${await sha256Hex(`${userId}|${deviceId}|${clientId}`)}`;
+}
+
+/**
+ * The run a keyed create made under `key` (`CreateRunInput.once`: its claim's audit row, `detail.runId`), as a create
+ * answers it, `repeated` — or null when the key isn't the account's or its run is gone. Two statements, writing nothing.
+ */
+export async function keyedRun(
+  db: Db,
+  userId: string,
+  key: string,
+): Promise<{ run: CoachRunDto; existing: false; conversationId: string; repeated: true } | null> {
+  const [claim] = await db
+    .select({ detail: auditEvents.detail })
+    .from(auditEvents)
+    .where(and(eq(auditEvents.id, key), eq(auditEvents.userId, userId)))
+    .limit(1);
+  const runId = claim?.detail?.runId;
+  if (typeof runId !== "string") return null;
+  const { root, nodes } = await loadTree(db, userId, runId);
+  if (!root || root.parentId !== null) return null;
+  const run = runDto(root, nodes);
+  return { run, existing: false, conversationId: run.conversationId, repeated: true };
 }
 
 export const REQUEST_MAX_CHARS = 2_000;
@@ -1427,24 +1465,29 @@ export async function createRun(db: Db, userId: string, input: CreateRunInput, n
   const noLiveMainRun = sql`NOT EXISTS (
     SELECT 1 FROM coach_runs WHERE user_id = ${userId} AND parent_id IS NULL AND status IN ('active', 'stepping', 'waiting_athlete', 'waiting_review', 'waiting_set')
       AND coalesce(CASE WHEN json_valid(state) THEN json_extract(state, '$.settings.rehearsal') END, 0) = ${rehearsal ? 1 : 0})`;
-  const insert = async (): Promise<CreateRunResult | null> => {
-    const id = newId();
-    if (once) return insertKeyed(id);
-    // The conversation (the new shape §5), found in the insert itself — no statement of its own: a turn's is its
-    // settings' (a run made before conversations: its own id), in this run's lane (a rehearsal's apart).
+  /**
+   * The conversation a new run with `id` is a turn of (the new shape §5), as an SQL value found in the insert itself — no
+   * statement of its own: a turn's is its settings' (a run made before conversations: its own id), in this run's lane (a
+   * rehearsal's apart).
+   */
+  const conversationOf = (id: string): SQL => {
     const lane = (alias: string) =>
       sql.raw(`coalesce(CASE WHEN json_valid(${alias}.state) THEN json_extract(${alias}.state, '$.settings.rehearsal') END, 0) = ${rehearsal ? 1 : 0}`);
     const turnOf = (alias: string) =>
       sql.raw(`coalesce(CASE WHEN json_valid(${alias}.state) THEN json_extract(${alias}.state, '$.settings.conversationId') END, ${alias}.id)`);
     const quietSince = new Date(now.getTime() - CONVERSATION_QUIET_HOURS * 3_600_000).toISOString();
-    const conversation =
-      input.conversationId === null
-        ? sql`${id}`
-        : typeof input.conversationId === "string"
-          ? sql`coalesce((SELECT ${turnOf("g")} FROM coach_runs g WHERE g.id = ${input.conversationId} AND g.user_id = ${userId}
-              AND g.parent_id IS NULL AND ${lane("g")}), ${id})`
-          : sql`coalesce((SELECT ${turnOf("n")} FROM coach_runs n WHERE n.user_id = ${userId} AND n.parent_id IS NULL
-              AND n.created_at >= ${quietSince} AND ${lane("n")} ORDER BY n.created_at DESC, n.id DESC LIMIT 1), ${id})`;
+    return input.conversationId === null
+      ? sql`${id}`
+      : typeof input.conversationId === "string"
+        ? sql`coalesce((SELECT ${turnOf("g")} FROM coach_runs g WHERE g.id = ${input.conversationId} AND g.user_id = ${userId}
+            AND g.parent_id IS NULL AND ${lane("g")}), ${id})`
+        : sql`coalesce((SELECT ${turnOf("n")} FROM coach_runs n WHERE n.user_id = ${userId} AND n.parent_id IS NULL
+            AND n.created_at >= ${quietSince} AND ${lane("n")} ORDER BY n.created_at DESC, n.id DESC LIMIT 1), ${id})`;
+  };
+  const insert = async (): Promise<CreateRunResult | null> => {
+    const id = newId();
+    if (once) return insertKeyed(id);
+    const conversation = conversationOf(id);
     const inserted = (await db.all(sql`
       INSERT INTO coach_runs (id, user_id, parent_id, role, scope, request, status, state, steps, cost_usd, created_at, updated_at)
       SELECT ${id}, ${userId}, NULL, 'main', ${JSON.stringify(scope)}, ${request}, 'active',
@@ -1481,12 +1524,14 @@ export async function createRun(db: Db, userId: string, input: CreateRunInput, n
    * A keyed create (`once`): the key first, while no row has its id, the lane has no live main run, no restore is replacing
    * the account and the caller's gate holds — holding the run's id; then the run, only beside its own key: one batch, so
    * both land or neither does, and of creates that race one wins the key and the others start nothing. A conversation of
-   * its own. Two statements, Drizzle's own (insert … select), so they batch on D1 as every batch item must; each value is
-   * named by its column, and a column the tables gain that these don't name fails the build of the statement, loudly, in
-   * every test that starts a draft.
+   * its own — or, `conversation: "asked"` (a phone's ask, R1.2), the one an unkeyed create would find, in the insert itself,
+   * read back once it landed (one statement more, then). Two statements, Drizzle's own (insert … select), so they batch on
+   * D1 as every batch item must; each value is named by its column, and a column the tables gain that these don't name fails
+   * the build of the statement, loudly, in every test that starts a draft.
    */
   const insertKeyed = async (id: string): Promise<CreateRunResult | null> => {
     const key = once!;
+    const asked = key.conversation === "asked";
     state.settings.conversationId = id;
     const value = (v: unknown, column: string) => sql`${v}`.as(column);
     const claimed = await runAtomicallyClaim(db, [
@@ -1514,7 +1559,9 @@ export async function createRun(db: Db, userId: string, input: CreateRunInput, n
               scope: value(JSON.stringify(scope), "scope"),
               request: value(request, "request"),
               status: value("active", "status"),
-              state: value(JSON.stringify(state), "state"),
+              state: asked
+                ? sql`json_set(${JSON.stringify(state)}, '$.settings.conversationId', ${conversationOf(id)})`.as("state")
+                : value(JSON.stringify(state), "state"),
               steps: value(0, "steps"),
               costUsd: value(0, "cost_usd"),
               proposalId: sql`NULL`.as("proposal_id"),
@@ -1528,7 +1575,14 @@ export async function createRun(db: Db, userId: string, input: CreateRunInput, n
         )
         .returning({ id: coachRuns.id }),
     ]);
-    return claimed > 0 ? startedAs(id) : null;
+    if (claimed === 0) return null;
+    if (asked) {
+      const [row] = (await db.all(sql`
+        SELECT json_extract(state, '$.settings.conversationId') AS conversationId FROM coach_runs WHERE id = ${id} AND user_id = ${userId}
+      `)) as Array<{ conversationId: string | null }>;
+      state.settings.conversationId = row?.conversationId ?? id;
+    }
+    return startedAs(id);
   };
   const live = async () => {
     const rows = await db

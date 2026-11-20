@@ -83,6 +83,7 @@ const {
   emptyBody,
   emptyObjectBody,
 } = await import("../src/auth/device-scope.js");
+const { RUN_CREATE_KEYS } = await import("../src/routes/coach-runs.js");
 
 vi.setConfig({ testTimeout: 600_000 });
 
@@ -380,13 +381,23 @@ describe("v5's body rules (DESIGN-3 §3.5): the shapes only, the routes check th
     }
     expect(deviceApproveBody("not json")).toBe(false);
   });
-  it("a run from the phone: keys among scope, request, focus, conversationId, nudge and frame — never rehearsal or savesBatchId", () => {
-    for (const ok of [{}, { scope: { kind: "later_today" }, request: "x" }, { focus: { kind: "day", id: "2026-11-20" } }, { frame: {} }, { conversationId: null, nudge: "missed" }]) {
+  it("a run from the phone: keys among scope, request, focus, conversationId, nudge, frame, chip and clientId — never rehearsal or savesBatchId", () => {
+    const U = "7d1c9f0e-2b3a-4c5d-8e9f-0a1b2c3d4e5f";
+    for (const ok of [{}, { scope: { kind: "later_today" }, request: "x" }, { focus: { kind: "day", id: "2026-11-20" } }, { frame: {} }, { conversationId: null, nudge: "missed" }, { request: "x", clientId: U }, { chip: "c1", clientId: U }]) {
       expect([j(ok), deviceRunCreateBody(j(ok))]).toEqual([j(ok), true]);
     }
-    for (const bad of [{ rehearsal: true }, { rehearsal: false }, { savesBatchId: "b1" }, { request: "x", extra: 1 }, { frame: "free 17:30" }, { frame: [] }, { frame: null }, [], "x"]) {
+    for (const bad of [{ rehearsal: true }, { rehearsal: false }, { savesBatchId: "b1" }, { request: "x", extra: 1 }, { frame: "free 17:30" }, { frame: [] }, { frame: null }, { clientId: U, via: "lifeos" }, [], "x"]) {
       expect([j(bad), deviceRunCreateBody(j(bad))]).toEqual([j(bad), false]);
     }
+  });
+  it("the phone's run keys are the route's own but the laptop's two (R1.2: clientId among them): the gate and the route agree", () => {
+    // One value of each key the route reads (routes/coach-runs.ts RUN_CREATE_KEYS); the gate lets each through alone, or not.
+    const sample: Record<(typeof RUN_CREATE_KEYS)[number], unknown> = {
+      scope: { kind: "now" }, request: "x", rehearsal: true, focus: { kind: "day", id: "2026-11-20" }, conversationId: null, savesBatchId: "b1",
+      nudge: "missed", frame: {}, chip: "c1", clientId: "7d1c9f0e-2b3a-4c5d-8e9f-0a1b2c3d4e5f",
+    };
+    expect(RUN_CREATE_KEYS.filter((k) => deviceRunCreateBody(j({ [k]: sample[k] })))).toEqual(RUN_CREATE_KEYS.filter((k) => k !== "rehearsal" && k !== "savesBatchId"));
+    expect(RUN_CREATE_KEYS).toContain("clientId");
   });
   it("the rest: answers, undo, decline, memory edits, the step's and drain's empty bodies", () => {
     expect([deviceRunAnswerBody(j({ answers: ["a"] })), deviceRunAnswerBody(j({ dismissed: true })), deviceRunAnswerBody(j({ answers: [], x: 1 }))]).toEqual([true, true, false]);

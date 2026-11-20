@@ -7,7 +7,17 @@
  * signed in or not; then the session is checked. Mounted ahead of `/api/coach` in index.ts so the coach's own sign-in
  * never answers for these paths first.
  *
- *   POST /                  { scope?, request?, rehearsal?, focus?, conversationId?, savesBatchId?, nudge? } → { run, existing, conversationId }
+ *   POST /                  { scope?, request?, rehearsal?, focus?, conversationId?, savesBatchId?, nudge?, frame?, chip?,
+ *                           clientId? } → { run, existing, conversationId }
+ *                           `clientId` (R1.2; the lead's kit v0.21: restarting or reconnecting resumes the same designer run,
+ *                           never another paid request): a phone's key for this ask, made once per ask — a UUID; 400
+ *                           `bad_client_id` for anything else, or from the laptop's cookie. Looked up FIRST, before anything
+ *                           is judged: the run its first create made answers again, 200 `{ run, existing: false,
+ *                           conversationId, repeated: true }`, never a second run. Keyed by the account, the device and
+ *                           the clientId (`deviceAskKey`, an audit row `coach.device_ask` with `{clientId, runId}`, never
+ *                           the ask's words), written in the run's own batch: a create that started nothing (the week, a
+ *                           refused frame, a live run in the way) wrote no key, so the same clientId may go again.
+ *                           Creating spends nothing: the model runs only in a step.
  *                           (409 `week_budget` past the athlete's week; a rehearsal past the rehearsal lane's own,
  *                           409 `rehearsal_budget` { spentUsd, capUsd }: llm.ts DEV_BUDGET)
  *                           (the new shape §5: no conversationId, the current conversation — its newest ask under 18 hours
@@ -80,11 +90,15 @@ import {
   createRun,
   currentRun,
   defaultRunDeps,
+  deviceAskKey,
+  DEVICE_ASK_KIND,
   getRun,
+  keyedRun,
   LIVE_STATUSES,
   noteOnTrail,
   parseScopeRequest,
   RehearsalBudgetError,
+  RunKeyTakenError,
   runStep,
   SavesBatchError,
   type CoachRunDto,
@@ -98,6 +112,16 @@ import { undoRemembered } from "../services/design-tools/remember.js";
 const CHECK_ID_MAX_CHARS = 100;
 /** A saves batch's id as a fit-in create names it (the app's own: `newId`). */
 const SAVES_BATCH_ID = /^[A-Za-z0-9-]{1,100}$/;
+
+/** A phone's key for one ask (R1.2): a UUID, as the phone makes one per ask — 36 characters, within the 100 the key takes. */
+const CLIENT_ID = /^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$/;
+const CLIENT_ID_MAX_CHARS = 100;
+
+/**
+ * Every key a create's body may hold. A phone's are these but `rehearsal` and `savesBatchId` (device-scope.ts
+ * `deviceRunCreateBody`, pinned against this list in native-allowlist.test.ts).
+ */
+export const RUN_CREATE_KEYS = ["scope", "request", "rehearsal", "focus", "conversationId", "savesBatchId", "nudge", "frame", "chip", "clientId"] as const;
 
 /** A run a step goes on from: live, and not waiting on the athlete. */
 const AT_WORK: readonly string[] = ["active", "stepping", "waiting_review", "waiting_set"];
@@ -178,17 +202,7 @@ export function makeCoachRunRoutes(deps: () => RunDeps = defaultRunDeps): Hono<A
   routes.use("*", deviceCoachView);
 
   routes.post("/", coachModelGate, async (c) => {
-    const body = (await c.req.json().catch(() => null)) as {
-      scope?: unknown;
-      request?: unknown;
-      rehearsal?: unknown;
-      focus?: unknown;
-      conversationId?: unknown;
-      savesBatchId?: unknown;
-      nudge?: unknown;
-      frame?: unknown;
-      chip?: unknown;
-    } | null;
+    const body = (await c.req.json().catch(() => null)) as Partial<Record<(typeof RUN_CREATE_KEYS)[number], unknown>> | null;
     // No scope: the athlete's default; "next workouts" with no count: theirs (Settings → Coach, Task 10).
     const asked = body && typeof body === "object" && !Array.isArray(body) ? parseScopeRequest(body.scope) : null;
     if (!body || !asked) return c.json({ error: "bad_scope" }, 400);
@@ -215,9 +229,22 @@ export function makeCoachRunRoutes(deps: () => RunDeps = defaultRunDeps): Hono<A
     // A drift chip's id (where you stand, §7.2): absent, or one.
     const nudge = body.nudge;
     if (nudge !== undefined && (typeof nudge !== "string" || !DRIFT_ID.test(nudge))) return c.json({ error: "bad_nudge" }, 400);
+    const device = c.get("device");
+    // A PHONE'S ASK, ONCE (R1.2; the lead's kit v0.21: "restarting or reconnecting should resume the same designer run,
+    // never silently create another paid request"): the phone's key for this ask, from a phone only. Its run, if its first
+    // create made one, answers again — looked up before the frame, the chip, the focus or the week is judged, so a resend
+    // whose answer was lost is answered whatever changed since.
+    const clientId = body.clientId;
+    if (clientId !== undefined && (!device || typeof clientId !== "string" || clientId.length > CLIENT_ID_MAX_CHARS || !CLIENT_ID.test(clientId))) {
+      return c.json({ error: "bad_client_id" }, 400);
+    }
+    const askKey = device && typeof clientId === "string" ? await deviceAskKey(c.get("userId"), device.id, clientId) : null;
+    if (askKey) {
+      const made = await keyedRun(c.get("db"), c.get("userId"), askKey);
+      if (made) return c.json(made);
+    }
     // THE DAY FRAME (R1, DESIGN-3 §3.3.2): its exact typed keys or 400, and only from a phone whose switch A is on under the
     // words the frame names, or 409 `sharing_off` — refused, never ignored, and nothing starts (CALLS C1).
-    const device = c.get("device");
     let frame: DayFrame | undefined;
     if (body.frame !== undefined) {
       const f = dayFrameSchema.safeParse(body.frame);
@@ -252,11 +279,24 @@ export function makeCoachRunRoutes(deps: () => RunDeps = defaultRunDeps): Hono<A
           ...(typeof nudge === "string" ? { diagnose: nudge } : chip && DRIFT_ID.test(chip.id) ? { diagnose: chip.id } : {}),
           // Who asked from where: the device that signed the request in — never a field of the body.
           ...(device ? { lifeos: { deviceId: device.id, ...(frame ? { frame } : {}), ...(chip ? { chip: chip.id } : {}) } } : {}),
+          // Its key, written with the run in one batch (never without it); the ask a turn of its conversation as any other.
+          ...(askKey ? { once: { key: askKey, kind: DEVICE_ASK_KIND, detail: { clientId }, conversation: "asked" as const } } : {}),
         },
         new Date(),
       );
+      // A live run in the way: the same ask, sent twice at once, may have made it — then it is this ask's run, repeated.
+      if (askKey && created.existing) {
+        const made = await keyedRun(c.get("db"), c.get("userId"), askKey);
+        if (made && made.run.id === created.run.id) return c.json(made);
+      }
       return c.json(created);
     } catch (e) {
+      // The key is written and no live run is in the way: another create had it first — its run, repeated. Its run gone
+      // (an account deleted or restored meanwhile): 409, and the phone asks again under a new key.
+      if (e instanceof RunKeyTakenError && askKey) {
+        const made = await keyedRun(c.get("db"), c.get("userId"), askKey);
+        return made ? c.json(made) : c.json({ error: "client_id_taken" }, 409);
+      }
       // The week can't pay for it (Task 13's fix wave, §2.11): nothing started.
       if (e instanceof WeekBudgetError) return c.json({ error: "week_budget", spentUsd: e.spentUsd, cutoffUsd: e.cutoffUsd }, 409);
       // A rehearsal past the rehearsal lane's week (audit C1: rehearsals and replays together): nothing started.

@@ -341,12 +341,13 @@ export const deviceSharingBody: BodyRule = (raw) => {
 
 /**
  * Ask your training coach, from the phone (3b; `frame` 3c): keys among `scope`, `request`, `focus`, `conversationId`,
- * `nudge` and `frame` — never `rehearsal` (the developer's lane) or `savesBatchId` (the laptop's saves flow). The route
- * checks every value, the frame's exact keys and switch A among them (400, 409 `sharing_off`).
+ * `nudge`, `frame`, `chip` and (R1.2) `clientId`, the ask's key — never `rehearsal` (the developer's lane) or
+ * `savesBatchId` (the laptop's saves flow). The route checks every value, the frame's exact keys and switch A among them
+ * (400, 409 `sharing_off`), and the clientId's shape (400 `bad_client_id`).
  */
 export const deviceRunCreateBody: BodyRule = (raw) => {
   const p = parsed(raw);
-  if (!p.ok || !isPlainObject(p.value) || !keysAre(p.value, [], ["scope", "request", "focus", "conversationId", "nudge", "frame", "chip"])) return false;
+  if (!p.ok || !isPlainObject(p.value) || !keysAre(p.value, [], ["scope", "request", "focus", "conversationId", "nudge", "frame", "chip", "clientId"])) return false;
   // A chip's id, never its words (review A MAJOR-1r): the route looks its words up; never beside words of the phone's.
   if (p.value.chip !== undefined && (!isIdText(p.value.chip, 160) || p.value.request !== undefined || p.value.nudge !== undefined)) return false;
   return p.value.frame === undefined || isPlainObject(p.value.frame);

@@ -430,7 +430,8 @@ const S = "[^/]+";
 type View = (b: O) => O;
 /** Each v5 coach route's projection, by method and path. Any other coach answer a device gets is its error's fields alone. */
 const ROUTES: ReadonlyArray<[string, RegExp, View]> = [
-  ["POST", /^\/api\/coach\/runs$/, (b) => pick({ run: runView(b.run), existing: bool(b.existing) ?? undefined, conversationId: token(b.conversationId) ?? undefined, offer: token(b.offer) ?? undefined })],
+  // `repeated` (R1.2): the run this ask's clientId already made, answered again.
+  ["POST", /^\/api\/coach\/runs$/, (b) => pick({ run: runView(b.run), existing: bool(b.existing) ?? undefined, conversationId: token(b.conversationId) ?? undefined, offer: token(b.offer) ?? undefined, repeated: b.repeated === true ? true : undefined })],
   [
     "GET",
     /^\/api\/coach\/runs\/current$/,
