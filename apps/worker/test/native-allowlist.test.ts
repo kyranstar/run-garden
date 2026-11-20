@@ -381,6 +381,16 @@ describe("v5's body rules (DESIGN-3 §3.5): the shapes only, the routes check th
     }
     expect(deviceApproveBody("not json")).toBe(false);
   });
+  it("approve at a time the owner chose (R1.2): {opIds, version, at} with at a plain object — the route checks one new op and the time", () => {
+    const at = { date: "2026-11-20", time: "07:00" };
+    // The gate holds the keys and that `at` is an object; the route holds one op, a new workout, and the day and time (400, 422).
+    for (const ok of [{ opIds: ["w1"], version: V, at }, { opIds: ["w1"], version: V, at: { date: "2026-11-20", time: null } }, { opIds: ["w1", "w2"], version: V, at }]) {
+      expect([j(ok), deviceApproveBody(j(ok))]).toEqual([j(ok), true]);
+    }
+    for (const bad of [{ opIds: ["w1"], at }, { version: V, at }, { opIds: ["w1"], version: V, at: "07:00" }, { opIds: ["w1"], version: V, at: null }, { opIds: ["w1"], version: V, at: [] }, { edit: { opId: "w1", doc: {} }, version: V, at }, { opIds: ["w1"], version: V, at, extra: 1 }]) {
+      expect([j(bad), deviceApproveBody(j(bad))]).toEqual([j(bad), false]);
+    }
+  });
   it("a run from the phone: keys among scope, request, focus, conversationId, nudge, frame, chip and clientId — never rehearsal or savesBatchId", () => {
     const U = "7d1c9f0e-2b3a-4c5d-8e9f-0a1b2c3d4e5f";
     for (const ok of [{}, { scope: { kind: "later_today" }, request: "x" }, { focus: { kind: "day", id: "2026-11-20" } }, { frame: {} }, { conversationId: null, nudge: "missed" }, { request: "x", clientId: U }, { chip: "c1", clientId: U }]) {

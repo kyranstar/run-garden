@@ -371,15 +371,19 @@ const VERSION = /^[0-9a-f]{64}$/;
 /**
  * APPROVE FROM THE PHONE NAMES WHAT IT APPROVES (DESIGN-3 §3.4.4; v0.20): exactly `{opIds, version}` — at least one op id,
  * and the version of the proposal the owner was shown — or exactly `{edit, version}`, one op's draft as the owner edited
- * it. Never a bare `{}` (the web's "everything open"), never opIds without the version. The route checks the version
- * against the proposal as it stands (409 `proposal_changed`) and refuses an incomplete one (409 `incomplete`).
+ * it — or (R1.2; DESIGN-3 W3, §4.2) `{opIds, version, at}`, the day and time the owner chose for one new workout. Never a
+ * bare `{}` (the web's "everything open"), never opIds without the version. The route checks the version against the
+ * proposal as it stands (409 `proposal_changed`), refuses an incomplete one (409 `incomplete`), and holds `at` to one new
+ * workout (400) and its day and time to a place's rule (422).
  */
 export const deviceApproveBody: BodyRule = (raw) => {
   const p = parsed(raw);
   if (!p.ok || !isPlainObject(p.value)) return false;
   const body = p.value;
   if (typeof body.version !== "string" || !VERSION.test(body.version)) return false;
-  if (keysAre(body, ["opIds", "version"])) return Array.isArray(body.opIds) && body.opIds.length >= 1 && body.opIds.every((id) => isIdText(id));
+  if (keysAre(body, ["opIds", "version"], ["at"])) {
+    return Array.isArray(body.opIds) && body.opIds.length >= 1 && body.opIds.every((id) => isIdText(id)) && (body.at === undefined || isPlainObject(body.at));
+  }
   return keysAre(body, ["edit", "version"]) && isPlainObject(body.edit) && keysAre(body.edit, ["opId", "doc"], ["date", "time"]) && isPlainObject(body.edit.doc);
 };
 

@@ -744,7 +744,7 @@ export const RECEIPT_SETTLE_COST = 1;
 export function opCostOf(
   op: (Pick<DocWorkoutOp, "target" | "planId"> & { doc?: WorkoutDoc }) | (Pick<PlanAdjustOp, "op"> & { retime?: PlanAdjustOp["retime"] }),
   dayRows: number,
-  edit?: ApproveInput["edit"],
+  edit?: { time?: string | null },
 ): number {
   if ("op" in op) return planOpCostOf(op, dayRows);
   if (op.target.kind === "revise") return REVISE_BASE + dayRows + RECEIPT_COST + RECEIPT_SETTLE_COST;
@@ -972,7 +972,18 @@ export interface ApproveInput {
   forDevice?: boolean;
   /** Edit before approve: the athlete's version of one op's draft (a new workout's day and time may be theirs). */
   edit?: { opId: string; doc: Record<string, unknown>; date?: string; time?: string | null };
+  /**
+   * R1.2 (DESIGN-3 W3, §4.2): the day and time a phone's owner chose for the one new workout `opIds` names (the route
+   * checks it is one, and a new workout's) — `time` null, any time. Judged as a place's (`approveTimeOf`), and refused as
+   * `edit` is: thrown, nothing recorded.
+   */
+  at?: { date: string; time: string | null };
 }
+
+/** The owner's own choice for one op: `edit` (their version of its draft, and perhaps its day and time), or a phone's `at`. */
+type Choice = { opId: string; doc?: Record<string, unknown>; date?: string; time?: string | null; at?: true };
+const choiceOf = (input: ApproveInput): Choice | undefined =>
+  input.edit ?? (input.at && input.opIds?.length === 1 ? { opId: input.opIds[0]!, date: input.at.date, time: input.at.time, at: true } : undefined);
 
 export interface Applied {
   opId: string;
@@ -1139,8 +1150,8 @@ function lostRefusal(row: { archivedAt: string | null; completionState: string; 
   return { error: "changed_since_suggested", why: CHANGED_SINCE_CARD };
 }
 
-/** The day an op's new workout goes on (the athlete's, with an edit); a revision's is its row's. */
-const dayOf = (op: DesignedOp, edit: ApproveInput["edit"]): string | null =>
+/** The day an op's new workout goes on (the athlete's, with an edit or `at`); a revision's is its row's. */
+const dayOf = (op: DesignedOp, edit: Choice | undefined): string | null =>
   op.target.kind === "new" ? (edit?.opId === opIdOf(op) && edit.date ? edit.date : op.target.date) : null;
 
 /** A session as it stands, for a change's outcome (`before`). */
@@ -1293,7 +1304,8 @@ export async function approveDesignOps(
   meter?: { left: number },
 ): Promise<ApproveAnswer> {
   if (meter) meter.left = budget;
-  const { ops, settled, declined, todo: open } = decidable(p, input.edit ? [input.edit.opId] : input.opIds, { repair: true, workoutsOnly: !!input.edit });
+  const choice = choiceOf(input);
+  const { ops, settled, declined, todo: open } = decidable(p, input.edit ? [input.edit.opId] : input.opIds, { repair: true, workoutsOnly: !!choice });
   // One plan read covers at most PLAN_MAX ops; the rest wait for the next request.
   const inPlan = open.slice(0, PLAN_MAX);
   const overflow = open.slice(PLAN_MAX).map(opIdOf);
@@ -1317,7 +1329,7 @@ export async function approveDesignOps(
     userId,
     p.id,
     workoutsInHand,
-    [...workoutsInHand.flatMap((o) => dayOf(o, input.edit) ?? []), ...changesInHand.flatMap((c) => (c.op.kind === "move" ? [c.op.toDate] : []))],
+    [...workoutsInHand.flatMap((o) => dayOf(o, choice) ?? []), ...changesInHand.flatMap((c) => (c.op.kind === "move" ? [c.op.toDate] : []))],
     changesInHand,
     // The receipt names every workout of the proposal: its library read here too, while the statement runs anyway.
     allDesignedOps(p.ops).some(isDocWorkoutOp),
@@ -1787,8 +1799,8 @@ export async function approveDesignOps(
 
   for (const [i, op] of (full ? [] : workouts).entries()) {
     const opId = opIdOf(op);
-    const day = dayOf(op, input.edit) ?? (op.target.kind === "revise" ? plan.rows.get(op.target.workoutId)?.dto.date : undefined);
-    const cost = opCostOf(op, rowsOn(day), input.edit);
+    const day = dayOf(op, choice) ?? (op.target.kind === "revise" ? plan.rows.get(op.target.workoutId)?.dto.date : undefined);
+    const cost = opCostOf(op, rowsOn(day), choice);
     // The first always goes: every request moves on.
     if (!first && cost > left) {
       remaining.push(...workouts.slice(i).map(opIdOf));
@@ -1796,10 +1808,11 @@ export async function approveDesignOps(
     }
     first = false;
     left -= cost;
-    const result = await applyOp(db, userId, p.id, op, input.edit, ctx, plan, receipts);
+    const result = await applyOp(db, userId, p.id, op, choice, ctx, plan, receipts);
     if ("refusal" in result) {
-      // Edit before approve answers as a Studio save does: the athlete's version is refused, nothing recorded.
-      if (input.edit) throw result.error;
+      // Edit before approve answers as a Studio save does: the athlete's version is refused, nothing recorded — and so
+      // is a phone's chosen time (R1.2), as a place's: the owner chooses again.
+      if (choice) throw result.error;
       refused.push({ opId, ...result.refusal });
       outcomes.set(opId, { status: "refused", at: ctx.now, ...result.refusal });
     } else {
@@ -2058,14 +2071,14 @@ async function applyOp(
   userId: string,
   proposalId: string,
   op: DesignedOp,
-  edit: ApproveInput["edit"],
+  edit: Choice | undefined,
   ctx: DocWorkoutCtx,
   plan: Plan,
   receipts: ReceiptLog,
 ): Promise<OpResult> {
   const opId = opIdOf(op);
   const mine = edit?.opId === opId ? edit : undefined;
-  const edited = mine ? !sameDocument(mine.doc, op.doc) : false;
+  const edited = mine?.doc ? !sameDocument(mine.doc, op.doc) : false;
   const doc = { ...(mine?.doc ?? op.doc), basedOn: { kind: "proposal", id: proposalId, opId } };
   const source: DocWriteSource = { sourceKind: edited ? "athlete_edit" : "coach", sourceRef: approvalRef(proposalId, opId) };
   const target: DocWorkoutTarget = op.target;
@@ -2079,11 +2092,13 @@ async function applyOp(
       const moved = movedFrom(target, date, asked);
       // The coach's own day and time are never a time already past (fix wave 3B, B-I1; design-time.ts): untimed today,
       // placed now (a "now" design) or at the next quarter hour once the usual time has gone; a time gone by refused.
-      // The athlete's own version (Edit before approve) is placed as the Studio's save places it.
+      // The athlete's own version (Edit before approve) is placed as the Studio's save places it. The day and time a phone's
+      // owner chose (`at`, R1.2) are judged as a place judges them (native-library.ts): the same rule, refusals and words.
       let time = asked;
-      if (!mine) {
+      if (!mine || mine.at) {
         // Placed by its category in the account's library (`readPlan` read it: no statement here).
-        const placed = approveTimeOf(target, deriveDoc(op.doc, (await loadAccountLibrary(db, userId)).all).category, { now: new Date(ctx.now), prefs: ctx.prefs });
+        const judged = mine ? { date, ...(asked ? { time: asked } : {}) } : target;
+        const placed = approveTimeOf(judged, deriveDoc(op.doc, (await loadAccountLibrary(db, userId)).all).category, { now: new Date(ctx.now), prefs: ctx.prefs });
         if ("refused" in placed) return { refusal: { error: placed.code, why: placed.refused }, error: new PastTimeError(placed.code, placed.refused) };
         time = placed.pinned ? placed.time : null;
       } else if (asked) {

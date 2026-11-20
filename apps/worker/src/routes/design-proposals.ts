@@ -17,6 +17,11 @@
  *        the athlete's version of its draft (Edit before approve); refused as a Studio save is (422 `invalid_doc` with
  *        every issue, `past_date`, `run_unsupported`; 409 `stale_revision` with `rev`, `not_editable`; 404), nothing
  *        recorded
+ *                                          { opIds: [one], version, at: { date, time | null } } → the same, for that op
+ *        alone, at the day and time the owner chose on a phone (R1.2; DESIGN-3 W3, §4.2) — a new workout's only (400
+ *        `at_not_allowed` for any other op, and from the laptop's cookie, which chooses through Edit before approve; 400
+ *        `bad_request` beside more than one op). Judged as a place's (`approveTimeOf`: 422 `past_time`, `no_time_today`,
+ *        `past_date`, in the place's own words), nothing recorded; its receipt written as for any approve
  *   POST /api/coach/proposals/:id/decline  { opIds?, reason? } → { ok, status, declined, settled, inFlight? }: a change
  *        an approve is applying is never declined — it is named in `inFlight`, the others declined as usual, the status
  *        as their ops say; only when every op named is in flight (nothing declined, nothing changed) is it 409
@@ -59,6 +64,7 @@ import {
 } from "../services/design-approve.js";
 import { docWorkoutLines, manifestReads, correctionLines, objectiveLines, pinsLines, planChangeLines, planChangeOpLines, planStructureLines, programmeChangeLines, setContextSql } from "../services/design-manifest.js";
 import { designProposalId } from "../services/design-tools/propose.js";
+import { opIdOf } from "../services/proposal-kinds.js";
 import { dayRowsSql, placedTimes } from "../services/design-placement.js";
 import { clockIn, PastTimeError } from "../services/design-time.js";
 import type { Db } from "../services/db.js";
@@ -101,9 +107,18 @@ const approveSchema = z
     // R1 (DESIGN-3 §3.4.4): the version the approver was shown — required of a device (its gate), checked for anyone.
     version: z.string().regex(/^[0-9a-f]{64}$/).optional(),
     edit: z.object({ opId: OP_ID, doc: z.record(z.string(), z.unknown()), date: DATE.optional(), time: TIME.nullable().optional() }).strict().optional(),
+    // R1.2 (DESIGN-3 W3, §4.2: the owner can pick the time when approving): the day and time a phone's owner chose for the
+    // one new workout `opIds` names — null, any time. The phone's draft read never holds the document `edit` needs (C24).
+    at: z.object({ date: DATE, time: TIME.nullable() }).strict().optional(),
   })
   .strict()
-  .refine((b) => !(b.opIds && b.edit), "opIds or edit, not both");
+  .refine((b) => !(b.opIds && b.edit), "opIds or edit, not both")
+  .refine((b) => !b.at || (b.opIds?.length === 1 && !b.edit), "at names exactly one op");
+
+/** Why `at` was refused (R1.2): only one new workout's day and time are the owner's to choose when approving it. */
+export const AT_NOT_ALLOWED = "Only a new workout's day and time can be chosen when approving it.";
+/** …and from the laptop, which chooses them through Edit before approve. */
+export const AT_PHONE_ONLY = "On the laptop, choose the day and time by editing the draft before approving it.";
 
 const declineSchema = z
   .object({ opIds: OP_IDS.optional(), reason: z.string().max(2000).optional() })
@@ -146,6 +161,12 @@ export async function approveDesigned(c: C, p: DesignProposalRow & { expiresAt: 
   const version = await proposalVersion(p);
   if (parsed.data.version !== undefined && parsed.data.version !== version) return c.json({ error: "proposal_changed", version }, 409);
   if (device && parsed.data.version === undefined) return c.json({ error: "version_required", version }, 409);
+  // THE OWNER'S OWN TIME (R1.2): from a phone, for one new workout of this proposal — never a revise, a change or a plan's.
+  if (parsed.data.at) {
+    if (!device) return c.json({ error: "at_not_allowed", why: AT_PHONE_ONLY }, 400);
+    const named = designedOps(p.ops).find((o) => opIdOf(o) === parsed.data.opIds![0]);
+    if (!named || named.target.kind !== "new") return c.json({ error: "at_not_allowed", why: AT_NOT_ALLOWED }, 400);
+  }
   // A proposal a run didn't finish (it stopped at a limit, failed, was cancelled or expired) is never a phone's to approve:
   // it is shown unfinished, with Ask again and Open on the laptop (DESIGN-3 §3.8). The laptop's approve is unchanged.
   if (device) {

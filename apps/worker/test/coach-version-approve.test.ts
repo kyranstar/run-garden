@@ -7,7 +7,9 @@
  * stale version 409 `proposal_changed` with the fresh one, nothing written; with its ops and the version it applies, answers
  * the version it leaves and a receipt per op — written in the op's own batch (a receipt that can't be written leaves no
  * workout) — and the op is then taken back through the receipt; the laptop's approve is as it was (no version needed); a
- * phone never approves or declines the thread coach's proposals. Synthetic data only.
+ * phone never approves or declines the thread coach's proposals. R1.2: a phone may choose a new workout's day and time with
+ * `at` — judged as a place's (`approveTimeOf`: the same refusals and words, nothing recorded), its receipt holding the time
+ * chosen; one new workout only (two ops, a revise, a move, the laptop's cookie: 400). Synthetic data only.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -21,8 +23,10 @@ import { eq } from "drizzle-orm";
 import { schema } from "@rg/database";
 import { addDays, newId, nowInstant } from "@rg/domain";
 import { coachRoutes } from "../src/routes/coach.js";
+import { AT_NOT_ALLOWED } from "../src/routes/design-proposals.js";
 import { nativeTakeBackRoutes } from "../src/routes/native-take-back.js";
 import type { DesignedOp } from "../src/services/design-approve.js";
+import { clockIn, NO_TIME_LEFT, pastTime } from "../src/services/design-time.js";
 import { designProposalId, proposeWorkout, type DocWorkoutTarget } from "../src/services/design-tools/propose.js";
 import { isToolErr, type OpReview, type ToolContext } from "../src/services/design-tools/types.js";
 import { proposalVersion } from "../src/services/proposal-version.js";
@@ -168,5 +172,95 @@ describe("a phone's approve names its ops and the version it was shown", () => {
     const d = await w.call("POST", "/api/coach/proposals/thread-1/decline", { bearer: v5.token, body: {} });
     expect([d.status, d.json]).toEqual([409, { error: "not_designed" }]);
     expect((await w.db.select().from(coachProposals).where(eq(coachProposals.id, "thread-1")))[0]!.status).toBe("pending");
+  });
+});
+
+describe("choosing the time on a phone's approve (R1.2; DESIGN-3 W3, §4.2: the owner picks the time when approving)", () => {
+  const receipts = () => w.db.select().from(takeBackReceipts);
+  /** One new workout of the coach's at `time` on `day`: the proposal, its op and the version the phone was shown. */
+  async function one(day = addDays(T, 2), time = "18:00") {
+    const { id, opIds } = await designed([{ doc: calmDoc(), target: { kind: "new", date: day, time } }]);
+    return { id, opIds, version: (await read(id)).json.version as string };
+  }
+
+  it("a new workout at the day and time the owner chose: placed there, moved from the coach's, its receipt holding that time", async () => {
+    const { id, opIds, version } = await one();
+    const a = await approve(id, { opIds, version, at: { date: addDays(T, 3), time: "07:15" } });
+    expect(a.status, a.text).toBe(200);
+    expect(a.json.applied).toEqual([{ opId: opIds[0], workout: expect.objectContaining({ date: addDays(T, 3), time: "07:15" }), moved: true }]);
+    const [row] = await rows();
+    expect([row!.effectiveDate, row!.effectiveTime]).toEqual([addDays(T, 3), "07:15"]);
+    // The receipt is written as for any approve, and holds the row as the chosen time left it.
+    const [r] = await receipts();
+    expect(r).toMatchObject({ source: "coach_approve", sourceKey: `${id}:${opIds[0]}`, op: "create", madeBy: `device:${v5.id}`, workoutId: row!.id });
+    expect(JSON.parse(r!.postState)).toMatchObject({ effective_date: addDays(T, 3), effective_time: "07:15" });
+    expect(a.json.receipts).toEqual([{ opId: opIds[0], receiptId: r!.id }]);
+  });
+
+  it("time null is any time: the day's own rule places it, as a place's untimed one — today's never before now", async () => {
+    const later = await one(addDays(T, 4), "05:10");
+    const a = await approve(later.id, { opIds: later.opIds, version: later.version, at: { date: addDays(T, 4), time: null } });
+    expect([a.status, a.json.applied?.[0]?.moved], a.text).toEqual([200, true]);
+    const placed = (await rows())[0]!;
+    expect([placed.effectiveDate, placed.effectiveTime === "05:10"]).toEqual([addDays(T, 4), false]);
+    // Today with no time named: the window, or the next quarter hour once it has gone — never before now (09:00 here).
+    const today = await one(addDays(T, 2), "18:00");
+    const b = await approve(today.id, { opIds: today.opIds, version: today.version, at: { date: T, time: null } });
+    expect(b.status, b.text).toBe(200);
+    const row = (await rows()).find((x) => x.effectiveDate === T)!;
+    expect(row.effectiveTime >= "09:00", row.effectiveTime).toBe(true);
+  });
+
+  it("a time gone, no time left or a day gone: refused in the place's own words, nothing written, the op still open", async () => {
+    const { id, opIds, version } = await one();
+    // 09:00 now: 08:00 today has gone — the words approveTimeOf gives a place.
+    const gone = await approve(id, { opIds, version, at: { date: T, time: "08:00" } });
+    expect([gone.status, gone.json]).toEqual([422, { error: "past_time", why: pastTime(T, "08:00", clockIn(LA, new Date()))! }]);
+    // A day gone: the Studio's own refusal, as a place's.
+    const past = await approve(id, { opIds, version, at: { date: addDays(T, -1), time: "07:00" } });
+    expect([past.status, past.json.error]).toEqual([422, "past_date"]);
+    // Late in the day, untimed today: no quarter hour left.
+    vi.setSystemTime(new Date(at(T, "23:55")));
+    const late = await approve(id, { opIds, version, at: { date: T, time: null } });
+    expect([late.status, late.json]).toEqual([422, { error: "no_time_today", why: NO_TIME_LEFT }]);
+    expect([await rows(), await receipts()]).toEqual([[], []]);
+    // Nothing was recorded: the same op, at a time still to come, is approved.
+    expect((await approve(id, { opIds, version, at: { date: addDays(T, 1), time: "07:00" } })).status).toBe(200);
+    expect((await rows()).map((x) => [x.effectiveDate, x.effectiveTime])).toEqual([[addDays(T, 1), "07:00"]]);
+  });
+
+  it("at names one new workout, from a phone: two ops, a revise, a move or the laptop's cookie are 400; a stale version 409", async () => {
+    const two = await designed([
+      { doc: calmDoc({ title: "One" }), target: { kind: "new", date: addDays(T, 2), time: "07:00" } },
+      { doc: calmDoc({ title: "Two" }), target: { kind: "new", date: addDays(T, 3), time: "07:00" } },
+    ]);
+    const v2 = (await read(two.id)).json.version as string;
+    const both = await approve(two.id, { opIds: two.opIds, version: v2, at: { date: addDays(T, 2), time: "08:00" } });
+    expect([both.status, both.json.error]).toEqual([400, "bad_request"]);
+    // The laptop picks a time through Edit before approve: `at` from its cookie is 400.
+    const laptop = await approve(two.id, { opIds: [two.opIds[0]], at: { date: addDays(T, 2), time: "08:00" } }, null);
+    expect([laptop.status, laptop.json.error]).toEqual([400, "at_not_allowed"]);
+    // A revise of a session already there, or a move: never a time of the phone's choosing.
+    const { id, opIds } = await designed([{ doc: calmDoc(), target: { kind: "new", date: addDays(T, 2), time: "07:00" } }]);
+    const [p] = await w.db.select().from(coachProposals).where(eq(coachProposals.id, id));
+    const revise = (p!.ops as DesignedOp[]).map((o) => ({ ...o, target: { kind: "revise", workoutId: "w-there", baseRev: 1 } }));
+    const move = {
+      kind: "plan_adjust", id: "adj-1", op: { kind: "move", workoutId: "w-there", toDate: addDays(T, 3) }, why: "Later.", issues: [], date: addDays(T, 2),
+      row: { date: addDays(T, 2), time: "07:00", title: "Easy run", minutes: 40, category: "easy", origin: null, onWatch: false }, toolUseId: "t-adj", at: nowInstant(),
+    };
+    await w.db.update(coachProposals).set({ ops: [...revise, move] as never }).where(eq(coachProposals.id, id));
+    const v = (await read(id)).json.version as string;
+    for (const opId of [opIds[0]!, "adj-1"]) {
+      const a = await approve(id, { opIds: [opId], version: v, at: { date: addDays(T, 3), time: "08:00" } });
+      expect([opId, a.status, a.json]).toEqual([opId, 400, { error: "at_not_allowed", why: AT_NOT_ALLOWED }]);
+    }
+    // The version still decides first: a stale one is 409 with the fresh one.
+    const stale = await approve(two.id, { opIds: [two.opIds[0]], version: "f".repeat(64), at: { date: addDays(T, 2), time: "08:00" } });
+    expect([stale.status, stale.json]).toEqual([409, { error: "proposal_changed", version: v2 }]);
+    // Its shape at the gate: a plain object beside the op list and the version — anything else 403.
+    for (const body of [{ opIds: [two.opIds[0]], version: v2, at: "tomorrow" }, { opIds: [two.opIds[0]], version: v2, at: {}, extra: 1 }, { opIds: [two.opIds[0]], at: { date: addDays(T, 2), time: null } }]) {
+      expect([JSON.stringify(body), (await approve(two.id, body)).json]).toEqual([JSON.stringify(body), { error: "out_of_scope" }]);
+    }
+    expect([await rows(), await receipts()]).toEqual([[], []]);
   });
 });

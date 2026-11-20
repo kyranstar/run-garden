@@ -204,7 +204,10 @@ on the `training-v5` scope only (`apps/worker/src/auth/device-scope.ts`; routes 
   for its day, its watch copy owed and its calendar booked as a Studio save's); a coach proposal's ops are applied only by
   an approve naming its op ids and the proposal's `version` (a phone's approve without them is 403 at the gate, a stale
   version 409 `proposal_changed`, nothing written), and never one whose run didn't finish (409 `incomplete`). A phone
-  approves the designer's proposals only, never the thread coach's. No automatic training writes, no notifications.
+  approves the designer's proposals only, never the thread coach's. No automatic training writes, no notifications. A
+  phone may choose the day and time of one new workout as it approves it (`at`, R1.2; the phone never holds the draft's
+  document that Edit before approve sends). They are judged as a place's are: the same rule, refusals and words. It is
+  400 for a revise, a change, more than one op, or from the laptop.
 - **An ask of the coach goes once (R1.2).** A phone's ask may carry its own key, `clientId` (a UUID it makes per ask; 400
   from the laptop). A resend is answered the run its first create made, `repeated`, live or over: never a second run, and
   never a second paid request. Creating a run spends nothing; the model runs only in a step. The key is the account, the
