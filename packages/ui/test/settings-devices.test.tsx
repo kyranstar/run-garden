@@ -37,6 +37,8 @@ const V5_CAN = "Can play, save, move and fit workouts, record your feedback, rea
 const V5_GRANT =
   "It will also be able to browse your saved workouts and moves and put one on your plan; ask your coach to design or change workouts, answer its questions, and approve or decline what it suggests; take back a workout it put on your plan or a coach change it approved, until that day ends (8 days at most); and see, edit, add to and delete what your coach remembers. It can read your coach's questions to you, which the coach writes itself and so can mention your training and how it's going, and what your coach remembers. Everything else it sees of your coach is plain facts like days, times and minutes, never your health readings or conditions. Its coach use counts toward this account's weekly AI limit. This doesn't share anything about your day with your coach; that's a separate choice on the phone. You can stop it here any time.";
 const V5_STOP = "It will no longer use your library or coach. What it already added stays on your plan. It stays paired.";
+/** What every phone reads whatever its scope (`/api/native/me`'s time zone, R1.1): one sentence, on every row (R1.2). */
+const ZONE = "It also reads this account's time zone, so its days and times match your plan's.";
 /** Renew's one line (LifeOS Q-172), and the hint beside a phone inside the warning while Renew is offered. */
 const RENEW_LINE = "It will keep working for 30 more days from now. Nothing else changes.";
 const RENEW_HINT = "Renew it to keep it working.";
@@ -413,6 +415,31 @@ describe("Settings → Devices", () => {
     expect(words(rowOf("Kitchen iPhone"))).toContain("Once confirmed, it can play, save and move workouts.");
   });
 
+  it("every phone says it reads the account's time zone, in one sentence whatever its scope: pending, active and the code (R1.2)", async () => {
+    // Every scope's `/api/native/me` names the account's time zone (R1.1), so a v4 phone paired before it reads the zone
+    // too: one shared sentence on every row and with the code, never a copy per scope (the R1.1 review's minor 1).
+    worker({
+      devices: [
+        active({ id: "c".repeat(64), label: "Old phone", scope: "training-slice-v1" }),
+        active({ label: "Running phone" }),
+        active({ id: "d".repeat(64), label: "New phone", scope: "training-v3" }),
+        active({ id: "f".repeat(64), label: "Newest phone", scope: "training-v4" }),
+        active({ id: "9".repeat(64), label: "Coach phone", scope: "training-v5" }),
+        active({ id: "e".repeat(64), label: "Odd phone", scope: "training-v9" }),
+        pending(),
+        pending({ id: "8".repeat(64), label: "Spare iPhone", scope: "training-v5" }),
+      ],
+      pairScope: "training-v5",
+    });
+    await mount();
+    const times = (text: string) => text.split(ZONE).length - 1;
+    for (const label of ["Old phone", "Running phone", "New phone", "Newest phone", "Coach phone", "Odd phone", "Kitchen iPhone", "Spare iPhone"]) {
+      expect(times(words(rowOf(label))), label).toBe(1);
+    }
+    await click(button("Pair a phone"));
+    expect(times(words(host!.querySelector(".pair-code")!.parentElement))).toBe(1);
+  });
+
   it("an active v2 phone has one button for the next version; it says what that adds, once, then grants it", async () => {
     worker({ devices: [active()] });
     await mount();
@@ -587,7 +614,9 @@ describe("Settings → Devices", () => {
     await click(button("Pair a phone"));
     expect(words(host)).toContain("A phone paired now can play, save, move and fit workouts, record your feedback, read your plan and history, use your library, and work with your coach.");
     // v5 is its consent: the AI limit, what it never sees, and that it shares nothing of the day (review A MAJOR-1).
-    expect(words(host)).toContain("Its coach use counts toward this account's weekly AI limit. It can read your coach's questions and what your coach remembers, which the coach writes and so can mention your training and how it's going; everything else is plain facts, never your health readings or conditions. It shares nothing about your day unless you turn that on on the phone. It also reads this account's time zone, so its days and times match your plan's.");
+    expect(words(host)).toContain("Its coach use counts toward this account's weekly AI limit. It can read your coach's questions and what your coach remembers, which the coach writes and so can mention your training and how it's going; everything else is plain facts, never your health readings or conditions. It shares nothing about your day unless you turn that on on the phone.");
+    // And, as with every scope, that it reads the account's time zone (R1.2: the one shared sentence).
+    expect(words(host)).toContain(ZONE);
     act(() => root?.unmount());
     host?.remove();
     worker({ pairScope: "training-v4" });

@@ -14,7 +14,8 @@
  *    404 while it is off). Offered only near expiry, not always: that is where the phone's own warning sends the owner, a
  *    renew earlier gains little (it is 30 days from now, never +30), and a button that goes once it has done its job is its
  *    own confirmation.
- *  - Each phone says what it can do, in plain words (its scope; kit v0.15). An active phone with a next scope has one
+ *  - Each phone says what it can do, in plain words (its scope; kit v0.15), and — one sentence, whatever its scope (R1.2) —
+ *    that it reads the account's time zone. An active phone with a next scope has one
  *    button for it, which first says in one line what that adds; Allow grants it in place — the same phone, token and
  *    expiry — and Not now puts the question away. Only while device sign-in is on.
  *  - The step-down (review r-m4): an active v5, v4 or v3 phone has one button to stop what its last grant allowed (one rung:
@@ -58,12 +59,18 @@ export const CAN: Readonly<Record<string, string>> = {
 
 /**
  * What a phone of each scope is told at pairing beside `CAN` (review A MAJOR-1): v5's AI limit, what it never sees, and that
- * it shares nothing of the day — a new pairing mints v5 directly, so these are its consent's words. And (R1.1) that it reads
- * the account's time zone, which every scope's `/api/native/me` carries.
+ * it shares nothing of the day — a new pairing mints v5 directly, so these are its consent's words, with `TIME_ZONE_NOTE`.
  */
 export const PAIRING_NOTES: Readonly<Record<string, string>> = {
-  "training-v5": "Its coach use counts toward this account's weekly AI limit. It can read your coach's questions and what your coach remembers, which the coach writes and so can mention your training and how it's going; everything else is plain facts, never your health readings or conditions. It shares nothing about your day unless you turn that on on the phone. It also reads this account's time zone, so its days and times match your plan's.",
+  "training-v5": "Its coach use counts toward this account's weekly AI limit. It can read your coach's questions and what your coach remembers, which the coach writes and so can mention your training and how it's going; everything else is plain facts, never your health readings or conditions. It shares nothing about your day unless you turn that on on the phone.",
 };
+
+/**
+ * What every phone reads whatever its scope (R1.1: every scope's `/api/native/me` carries the account's time zone), said
+ * once on every row and with the code — pending, active and a phone paired now — never a copy per scope (R1.2, the R1.1
+ * review's minor 1: a phone paired before R1.1 reads it too).
+ */
+export const TIME_ZONE_NOTE = "It also reads this account's time zone, so its days and times match your plan's.";
 
 /**
  * The grant to each next scope: its button, and the one line that says what it adds — and that it can be stopped here —
@@ -225,6 +232,7 @@ export function DevicesSection({ timezone }: { timezone?: string | null } = {}) 
                 <small>Confirm only if your phone shows the same number.</small>
                 {can ? <small>Once confirmed, it can {can}.</small> : null}
                 {PAIRING_NOTES[d.scope] ? <small>{PAIRING_NOTES[d.scope]}</small> : null}
+                <small>{TIME_ZONE_NOTE}</small>
               </span>
               <span className="setting-row-end">
                 <button type="button" className="btn btn-small" disabled={busy} onClick={() => confirm.mutate(d)}>
@@ -259,6 +267,7 @@ export function DevicesSection({ timezone }: { timezone?: string | null } = {}) 
             <span className="place-row-main">
               <b>{d.label}</b>
               {can ? <small>Can {can}.</small> : null}
+              <small>{TIME_ZONE_NOTE}</small>
               <small>
                 {d.lastUsedAt ? `Last used ${relativeTime(d.lastUsedAt)}` : "Never used"} · {expiresIn(daysLeft(d.expiresAt, timezone))}
               </small>
@@ -324,6 +333,7 @@ export function DevicesSection({ timezone }: { timezone?: string | null } = {}) 
               <small className="muted">Expires at {clockOf(minted.expiresAt)}</small>
               {pairedCan ? <small className="muted">A phone paired now can {pairedCan}.</small> : null}
               {minted?.scope && PAIRING_NOTES[minted.scope] ? <small className="muted">{PAIRING_NOTES[minted.scope]}</small> : null}
+              <small className="muted">{TIME_ZONE_NOTE}</small>
             </>
           )}
           <div>
