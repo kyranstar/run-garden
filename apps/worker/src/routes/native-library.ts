@@ -11,11 +11,13 @@
  *                                              `cursor` the next page's offset; 400 bad_query
  *   GET  /api/native/library/:id            → DeviceLibraryItem (404 not_found)
  *   POST /api/native/templates/:id/place    { date, time?, clientId } → { workoutId, receiptId, date, time, repeated? }
- *        (201; 200 for a resent clientId: the same row and the same receipt). The template's document, stamped
+ *        (201; 200 for a resent clientId: the same row and the same receipt — looked up FIRST, R1.1: before the template,
+ *        the day, the time or the document is judged, so a resend whose answer was lost is answered whatever changed
+ *        since). The template's document, stamped
  *        `basedOn: {kind: "template", id}`, through the Studio's own `createDocWorkout` — validated for that day, its
  *        watch copy owed and its calendar booked as a Studio save's — with the template's use counted and the take-back
  *        receipt IN THE SAME BATCH (services/take-back.ts). 422 invalid_doc with its issues (nothing written, no receipt),
- *        422 past_date, 404 not_found, 400 bad_place.
+ *        422 past_date, past_time, no_time_today, 404 not_found, 400 bad_place.
  *
  * TRIMMED (DESIGN-3 §3.5): a move's row and its page carry one verdict for the switched-on profiles together — `ok`,
  * `caution` or `never` — and never a profile's name, its notes, the account's saved-post links or its corrections. Every read
@@ -218,27 +220,46 @@ const useCounted = (c: C, id: string) => (w: { now: string }) => [
     .where(and(eq(workoutTemplates.id, id), eq(workoutTemplates.userId, c.get("userId")))),
 ];
 
+/**
+ * IDEMPOTENT FIRST (R1.1; 3a's review RELIABILITY 3): the place this clientId already made, answered as R1 answers a
+ * resend — the same row and the same receipt, the row's day and time as it now stands, `repeated` — or null. Read before
+ * anything about the template, the day, the time or the document is judged, so a resend whose first answer was lost is
+ * answered whatever changed since: the template deleted or no longer readable, the day or the time gone. The key is the
+ * account and the phone's clientId (`place:<clientId>`, C12) — the row's own id, so the body beside it is never judged
+ * again: a resend naming another day, time or template under the same clientId is answered the original (R1's rule).
+ * Writes nothing. One statement.
+ */
+async function placedBefore(c: C, clientId: string): Promise<{ workoutId: string; receiptId: string; date: string; time: string; repeated: true } | null> {
+  const userId = c.get("userId");
+  const [row] = await c
+    .get("db")
+    .select({ id: plannedWorkouts.id, date: plannedWorkouts.effectiveDate, time: plannedWorkouts.effectiveTime })
+    .from(plannedWorkouts)
+    .where(and(eq(plannedWorkouts.id, await keyedRowId(userId, `place:${clientId}`)), eq(plannedWorkouts.userId, userId)))
+    .limit(1);
+  return row ? { workoutId: row.id, receiptId: await receiptIdOf(userId, "place", clientId), date: row.date, time: row.time, repeated: true } : null;
+}
+
 nativeLibraryRoutes.post("/templates/:id/place", requireUser, async (c) => {
   const parsed = placeSchema.safeParse(await c.req.json().catch(() => null));
   if (!parsed.success) return c.json({ error: "bad_place", issues: parsed.error.issues }, 400);
   const db = c.get("db");
   const userId = c.get("userId");
+  const { date, clientId } = parsed.data;
+  const before = await placedBefore(c, clientId);
+  if (before) return c.json(before, 200);
   const t = await templateOf(c, c.req.param("id")!);
   if (!t) return c.json({ error: "not_found" }, 404);
   if (!t.doc) return c.json({ error: "invalid_doc", issues: [{ path: "", code: "unreadable", message: "This saved workout can't be read.", severity: "error" }] }, 422);
   const prefs = await loadPreferences(db, userId);
   const now = nowInstant();
   const ctx = { today: todayInZone(prefs.timezone), now, prefs };
-  const { date, clientId } = parsed.data;
   // NEVER IN THE PAST (review B-8), as an approve places a new workout (design-time.ts `approveTimeOf`): today, a time
   // already gone is 422 `past_time`; untimed after its window, the next quarter hour, pinned — or 422 `no_time_today`. A
-  // resend of a place made before its time went is answered as it was (its row is there: `repeated`).
+  // resend of a place made before its time went never reaches here (`placedBefore`).
   const placed = approveTimeOf({ date, ...(parsed.data.time ? { time: parsed.data.time } : {}) }, deriveDoc(t.doc, (await loadAccountLibrary(db, userId)).all).category, { now: new Date(now), prefs });
-  if ("refused" in placed) {
-    const [made] = await db.select({ id: plannedWorkouts.id }).from(plannedWorkouts).where(and(eq(plannedWorkouts.id, await keyedRowId(userId, `place:${clientId}`)), eq(plannedWorkouts.userId, userId))).limit(1);
-    if (!made) return c.json({ error: placed.code, why: placed.refused }, 422);
-  }
-  const time = "refused" in placed ? (parsed.data.time ?? null) : placed.pinned ? placed.time : null;
+  if ("refused" in placed) return c.json({ error: placed.code, why: placed.refused }, 422);
+  const time = placed.pinned ? placed.time : null;
   const receiptId = await receiptIdOf(userId, "place", clientId);
   const insert = receiptInsert(db, {
     id: receiptId,

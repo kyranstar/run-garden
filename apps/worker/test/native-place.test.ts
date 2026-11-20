@@ -6,7 +6,9 @@
  * mirror owed and its calendar to book, as a Studio save's); the same clientId is one row, one receipt and one use counted;
  * a document the day's condition refuses is 422 with nothing written and no receipt; a day gone is refused; the receipt is in
  * the create's own batch, holds the row as written (placed, for an untimed one) and lapses at the session's day end or in 8
- * days; another account's template is not found; 423 during a restore. Synthetic data only.
+ * days; another account's template is not found; 423 during a restore. R1.1: a resend is looked up FIRST — after the
+ * template is deleted or unreadable, after the day has passed, or with another body under the same clientId, it is the
+ * place it made, nothing written and nothing of the template or the day read. Synthetic data only.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -109,6 +111,75 @@ describe("POST /api/native/templates/:id/place", () => {
     expect(again.writes.filter((s) => !/native_devices/.test(s))).toEqual([]);
     expect(await receipts()).toHaveLength(1);
     expect(await uses()).toBe(3);
+  });
+
+  describe("idempotent first (R1.1; 3a's review RELIABILITY 3): a resend is looked up before anything is judged", () => {
+    /** A resend: answered the first place, `repeated`, with nothing written and nothing of the template or the day read. */
+    async function resent(first: { json: Record<string, unknown> }, body: Record<string, unknown>, id = "t-hips") {
+      const again = await place(body, id);
+      expect([again.status, again.json], again.text).toEqual([200, { ...first.json, repeated: true }]);
+      expect(again.writes.filter((s) => !/native_devices/.test(s))).toEqual([]);
+      // Looked up first: no read of the template, the preferences (the day and the time), the library or the conditions.
+      expect(again.statements.filter((s) => /workout_templates|user_preferences|personal_moves|exercise|condition/.test(s))).toEqual([]);
+      return again;
+    }
+
+    it("a resend after the template was deleted, or no longer reads, is the place it made: never 404 or invalid_doc", async () => {
+      const first = await place({ date: addDays(T, 1), time: "07:00", clientId: "c-gone-template" });
+      expect(first.status, first.text).toBe(201);
+      await w.db.update(workoutTemplates).set({ doc: "{not a document" }).where(eq(workoutTemplates.id, "t-hips"));
+      await resent(first, { date: addDays(T, 1), time: "07:00", clientId: "c-gone-template" });
+      await w.db.delete(workoutTemplates).where(eq(workoutTemplates.id, "t-hips"));
+      await resent(first, { date: addDays(T, 1), time: "07:00", clientId: "c-gone-template" });
+      // A new clientId for the deleted template is still 404, and writes nothing.
+      expect((await place({ date: addDays(T, 1), time: "07:00", clientId: "c-new" })).json).toEqual({ error: "not_found" });
+      expect(await receipts()).toHaveLength(1);
+    });
+
+    it("a resend after the day has passed is the place it made: never past_date or past_time, the template gone too", async () => {
+      const first = await place({ date: addDays(T, 1), time: "07:00", clientId: "c-day-gone" });
+      expect(first.status, first.text).toBe(201);
+      vi.setSystemTime(new Date(at(addDays(T, 3), "09:00")));
+      await resent(first, { date: addDays(T, 1), time: "07:00", clientId: "c-day-gone" });
+      await w.db.delete(workoutTemplates).where(eq(workoutTemplates.id, "t-hips"));
+      await resent(first, { date: addDays(T, 1), time: "07:00", clientId: "c-day-gone" });
+      // A new clientId for that day is refused, as it always was.
+      await w.db.insert(workoutTemplates).values({ id: "t-new", userId: w.userId, name: "New", doc: JSON.stringify(calmDoc()), pinned: false, uses: 0, lastUsedAt: null, createdAt: nowInstant(), updatedAt: nowInstant() });
+      const late = await place({ date: addDays(T, 1), time: "07:00", clientId: "c-late" }, "t-new");
+      expect([late.status, late.json.error]).toEqual([422, "past_date"]);
+      expect(await receipts()).toHaveLength(1);
+    });
+
+    it("a different body under the same clientId is answered the original place, unchanged (R1's rule, pinned): nothing written", async () => {
+      await w.db.insert(workoutTemplates).values({ id: "t-other", userId: w.userId, name: "Other", doc: JSON.stringify(landingsDoc()), pinned: false, uses: 0, lastUsedAt: null, createdAt: nowInstant(), updatedAt: nowInstant() });
+      const first = await place({ date: addDays(T, 1), time: "07:00", clientId: "c-same" });
+      expect(first.status, first.text).toBe(201);
+      const row = await rowOf(first.json.workoutId as string);
+      // Another day and time; untimed; another of the account's templates; a template that doesn't exist; a day gone.
+      await resent(first, { date: addDays(T, 4), time: "19:30", clientId: "c-same" });
+      await resent(first, { date: addDays(T, 1), clientId: "c-same" });
+      await resent(first, { date: addDays(T, 2), time: "08:00", clientId: "c-same" }, "t-other");
+      await resent(first, { date: addDays(T, 2), clientId: "c-same" }, "t-none");
+      await resent(first, { date: addDays(T, -1), time: "07:00", clientId: "c-same" });
+      // The row is the first body's and the first template's; one receipt, one use; the other template untouched.
+      expect(await rowOf(row.id)).toEqual(row);
+      expect(JSON.parse(row.workoutDoc!).basedOn).toEqual({ kind: "template", id: "t-hips" });
+      expect(await receipts()).toHaveLength(1);
+      expect(await uses()).toBe(3);
+      expect((await w.db.select({ uses: workoutTemplates.uses }).from(workoutTemplates).where(eq(workoutTemplates.id, "t-other")))[0]!.uses).toBe(0);
+    });
+
+    it("the key is the account and the clientId (C12): the laptop resending it is answered the same; the row as it now stands", async () => {
+      const first = await place({ date: addDays(T, 1), time: "07:00", clientId: "c-shared" });
+      expect(first.status, first.text).toBe(201);
+      const laptop = await w.call("POST", "/api/native/templates/t-hips/place", { body: { date: addDays(T, 1), time: "07:00", clientId: "c-shared" } });
+      expect([laptop.status, laptop.json]).toEqual([200, { ...first.json, repeated: true }]);
+      // Moved on the laptop since: a resend says where it is now (the same row and receipt), as R1's resend did.
+      await w.db.update(plannedWorkouts).set({ effectiveDate: addDays(T, 2), effectiveTime: "18:00" }).where(eq(plannedWorkouts.id, first.json.workoutId as string));
+      const moved = await place({ date: addDays(T, 1), time: "07:00", clientId: "c-shared" });
+      expect([moved.status, moved.json]).toEqual([200, { ...first.json, date: addDays(T, 2), time: "18:00", repeated: true }]);
+      expect(await receipts()).toHaveLength(1);
+    });
   });
 
   it("a document the day's condition refuses is 422 invalid_doc with its issues: no row, no receipt, no use", async () => {
