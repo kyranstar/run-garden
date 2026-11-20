@@ -141,7 +141,7 @@ describe("the watch follows a phone's place and take-back (R1.2 item 7)", () => 
     const workoutId = placed.json.workoutId as string;
     await w.db.insert(corosWriteJobs).values({
       id: `unpush:${workoutId}`, userId: w.userId, workoutId, kind: "coach_delete_workout", expectedContentFingerprint: "x", originalDate: addDays(T, 1),
-      destinationDate: addDays(T, 1), requestedAt: nowInstant(), status: "queued", createdAt: nowInstant(), updatedAt: nowInstant(),
+      destinationDate: addDays(T, 1), requestedAt: nowInstant(), status: "queued", updatedAt: nowInstant(),
     });
     await readReceipt(placed.json.receiptId as string);
     expect([(await jobOfKind(workoutId, "coach_delete_workout"))?.status, fetches]).toEqual(["queued", 0]);
