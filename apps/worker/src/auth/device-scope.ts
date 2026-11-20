@@ -346,7 +346,9 @@ export const deviceSharingBody: BodyRule = (raw) => {
  */
 export const deviceRunCreateBody: BodyRule = (raw) => {
   const p = parsed(raw);
-  if (!p.ok || !isPlainObject(p.value) || !keysAre(p.value, [], ["scope", "request", "focus", "conversationId", "nudge", "frame"])) return false;
+  if (!p.ok || !isPlainObject(p.value) || !keysAre(p.value, [], ["scope", "request", "focus", "conversationId", "nudge", "frame", "chip"])) return false;
+  // A chip's id, never its words (review A MAJOR-1r): the route looks its words up; never beside words of the phone's.
+  if (p.value.chip !== undefined && (!isIdText(p.value.chip, 160) || p.value.request !== undefined || p.value.nudge !== undefined)) return false;
   return p.value.frame === undefined || isPlainObject(p.value.frame);
 };
 

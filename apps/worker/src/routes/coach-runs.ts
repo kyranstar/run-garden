@@ -65,6 +65,9 @@ import { DRIFT_ID } from "../services/where-you-stand.js";
 import { FocusError, focusSchema } from "../services/design-focus.js";
 import { dayFrameSchema, frameInReach, type DayFrame } from "../services/design-frame.js";
 import { frameRefusal } from "../services/device-sharing.js";
+import { readCoachOpening } from "../services/coach-nudges.js";
+import type { Db } from "../services/db.js";
+import { planDraftsOn } from "../services/plan-drafts.js";
 import { loadPreferences } from "../services/calendar-sync.js";
 import { addDays, todayInZone } from "@rg/domain";
 import { coachModelGate, deviceCoachGate } from "./coach-device-gate.js";
@@ -141,6 +144,25 @@ const FRAME_ISSUE_WORDS: Readonly<Record<string, string>> = {
   custom: "outside the frame's bounds",
 };
 
+/**
+ * A chip the opening would offer now, by its id, with its words (a phone's run from a chip: review A MAJOR-1r — the phone
+ * sends the id, never the words). Null when it is no longer offered. The read the opening screen makes, once.
+ */
+async function chipOffered(db: Db, userId: string, id: string, now: Date, drafts: boolean): Promise<{ id: string; request: string } | null> {
+  const prefs = await loadPreferences(db, userId);
+  // The opening offers one line at a time (the review, then the newest session): a chip of a later one is looked for past
+  // the ones the screen has shown, as the screen's own `seen` asks for them.
+  const seen = new Set<string>();
+  for (let i = 0; i < 3; i++) {
+    const read = await readCoachOpening(db, userId, prefs, todayInZone(prefs.timezone, now), now, seen, { drafts });
+    const found = [...read.nudges, ...(read.opening?.chips ?? [])].find((c) => c.id === id);
+    if (found) return { id: found.id, request: found.request };
+    if (!read.opening) return null;
+    seen.add(read.opening.id);
+  }
+  return null;
+}
+
 export function makeCoachRunRoutes(deps: () => RunDeps = defaultRunDeps): Hono<AppContext> {
   const routes = new Hono<AppContext>();
 
@@ -165,6 +187,7 @@ export function makeCoachRunRoutes(deps: () => RunDeps = defaultRunDeps): Hono<A
       savesBatchId?: unknown;
       nudge?: unknown;
       frame?: unknown;
+      chip?: unknown;
     } | null;
     // No scope: the athlete's default; "next workouts" with no count: theirs (Settings → Coach, Task 10).
     const asked = body && typeof body === "object" && !Array.isArray(body) ? parseScopeRequest(body.scope) : null;
@@ -206,20 +229,29 @@ export function makeCoachRunRoutes(deps: () => RunDeps = defaultRunDeps): Hono<A
       if (refused) return c.json(refused, 409);
       frame = f.data;
     }
+    // A CHIP FROM THE PHONE (review A MAJOR-1r): the phone sends the chip's id, never its words — its words (which may say a
+    // pace or a reading) are the server's own, looked up again now among the chips it would offer; one no longer offered is
+    // 409 `chip_gone`, and nothing starts. A drift chip diagnoses its drift, as the laptop's does.
+    let chip: { id: string; request: string } | null = null;
+    if (body.chip !== undefined) {
+      if (!device || typeof body.chip !== "string") return c.json({ error: "bad_chip" }, 400);
+      chip = await chipOffered(c.get("db"), c.get("userId"), body.chip, new Date(), planDraftsOn(c.env));
+      if (!chip) return c.json({ error: "chip_gone", why: "That suggestion has changed: look at your coach again." }, 409);
+    }
     try {
       const created = await createRun(
         c.get("db"),
         c.get("userId"),
         {
           ...asked,
-          request: (body.request as string | null | undefined) ?? null,
+          request: chip ? chip.request : ((body.request as string | null | undefined) ?? null),
           rehearsal: body.rehearsal === true,
           ...(focus?.success ? { focus: focus.data } : {}),
           ...(conversationId !== undefined ? { conversationId: conversationId as string | null } : {}),
           ...(savesBatchId !== undefined ? { savesBatchId: savesBatchId as string } : {}),
-          ...(typeof nudge === "string" ? { diagnose: nudge } : {}),
+          ...(typeof nudge === "string" ? { diagnose: nudge } : chip && DRIFT_ID.test(chip.id) ? { diagnose: chip.id } : {}),
           // Who asked from where: the device that signed the request in — never a field of the body.
-          ...(device ? { lifeos: { deviceId: device.id, ...(frame ? { frame } : {}) } } : {}),
+          ...(device ? { lifeos: { deviceId: device.id, ...(frame ? { frame } : {}), ...(chip ? { chip: chip.id } : {}) } } : {}),
         },
         new Date(),
       );

@@ -101,6 +101,8 @@ export interface ConversationTurn {
    * came with it (switch A on), rendered by code from its typed fields. */
   via?: "lifeos";
   frameLines?: string[];
+  /** A phone turn asked from a chip: the chip's id. */
+  chip?: string;
   status: string;
   /** The coach's line: its finish's words or its answer, a stop's own line; null while it works. */
   line: string | null;
@@ -478,11 +480,11 @@ export type EndedLine = (
 const askedByApp = (settingsText: string | null): boolean => (parsed(settingsText) as { origin?: unknown } | null)?.origin === "plan_draft";
 
 /** A turn asked from the owner's phone (R1): its settings' `via`, and its frame's lines when it has one. */
-function phoneOf(settingsText: string | null): { via?: "lifeos"; frameLines?: string[] } {
-  const s = parsed(settingsText) as { via?: unknown; frame?: unknown } | null;
+function phoneOf(settingsText: string | null): { via?: "lifeos"; frameLines?: string[]; chip?: string } {
+  const s = parsed(settingsText) as { via?: unknown; frame?: unknown; chip?: unknown } | null;
   if (s?.via !== "lifeos") return {};
   const frame = s.frame ? dayFrameSchema.safeParse(s.frame) : null;
-  return { via: "lifeos", ...(frame?.success ? { frameLines: frameLines(frame.data) } : {}) };
+  return { via: "lifeos", ...(frame?.success ? { frameLines: frameLines(frame.data) } : {}), ...(typeof s.chip === "string" ? { chip: s.chip } : {}) };
 }
 
 /** One run as a turn. */

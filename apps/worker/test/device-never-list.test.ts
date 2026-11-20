@@ -17,7 +17,7 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vite
 import { DateTime } from "luxon";
 import { eq } from "drizzle-orm";
 import { schema } from "@rg/database";
-import { addDays, newId, nowInstant } from "@rg/domain";
+import { addDays, newId, nowInstant, startOfIsoWeek } from "@rg/domain";
 import { coachRoutes } from "../src/routes/coach.js";
 import { coachConversationRoutes } from "../src/routes/coach-conversation.js";
 import { coachNudgesRoutes } from "../src/routes/coach-nudges.js";
@@ -38,8 +38,11 @@ const LA = "America/Los_Angeles";
 const T = "2026-11-19";
 const NOW = DateTime.fromISO(`${T}T07:40`, { zone: LA }).toUTC().toISO()!;
 
-/** What must never reach the phone: the planted values, the readings' own keys, the condition, the memory lines. */
-const PLANTED = ["91.37", "37.73", "13.31", "23457", "61.9", "77.71", "271.3", "Sasquatch", "Bigfoot"];
+/** What must never reach the phone: the planted values, the readings' own keys, the condition, the memory lines — and what
+ * the opening, a chip and the weekly review word (review A MAJOR-1r): a drift, a pace, a zone, cadence, power, load, climb. */
+const PLANTED = ["91.37", "37.73", "13.31", "23457", "61.9", "77.71", "271.3", "Sasquatch", "Bigfoot", "6% late", "5:40 /km", "zone 4", "187 spm", "251 W", "load 417", "903 m", "fueling"];
+/** Effort words a coach's line may use (never in the library's own catalog, whose moves may be named for power). */
+const EFFORT_WORDS = [/\bhr\b/i, /zones?\s*\d/i, /cadence/i, /\bpower\b/i, /training load/i, /elevation/i, /\d+:\d{2}\s*\/\s*km/i, /\/km/i];
 const NEVER_WORDS = [/\btmj\b/i, /\bjaw\b/i, /\bhrv\b/i, /resting\s*h(eart|r)/i, /\bsleep/i, /\bstress/i, /readiness verdict/i];
 const NEVER_KEYS = ["hrv", "restingHr", "restingHeartRate", "sleep", "stress", "stressAvg", "recoveryScore", "readings", "profiles", "conditions", "conditionMax", "thresholdPaceSecPerKm", "userId", "input", "data"];
 
@@ -57,6 +60,7 @@ function leaks(a: Answer, o: { memoryLines?: boolean; catalog?: boolean } = {}):
   const found = [
     ...PLANTED.filter((p) => text.includes(p) && !(o.memoryLines && (p === "Sasquatch" || p === "Bigfoot"))),
     ...NEVER_WORDS.filter((r) => !(o.catalog && r.source === "\\bjaw\\b") && r.test(text)).map(String),
+    ...(o.catalog ? [] : EFFORT_WORDS.filter((r) => r.test(text)).map(String)),
     ...[...keysOf(a.json)].filter((k) => NEVER_KEYS.includes(k)).map((k) => `key:${k}`),
   ];
   return found;
@@ -139,6 +143,66 @@ async function stepUntil(runId: string, deps: RunDeps, done: (status: string) =>
   return events;
 }
 
+describe("the opening, its chips and the weekly review (review A MAJOR-1r)", () => {
+  const lastWeekStart = addDays(startOfIsoWeek(T), -7);
+  async function seedOpening() {
+    await w.db.insert(schema.weeklyReviews).values({
+      id: newId(), userId: w.userId, weekStart: lastWeekStart, facts: {},
+      narrative: "Last week your HR sat in zone 4 too long, cadence 187 spm, power 251 W, training load 417 and 903 m of elevation. Steady work.",
+      createdAt: NOW,
+    });
+    await w.db.insert(schema.activities).values({
+      id: "act-1", userId: w.userId, startTime: `${T}T14:00:00Z`, startTimeLocal: `${T}T06:00:00`, sport: "run", durationSeconds: 5440, distanceMeters: 16_000, avgPaceSecPerKm: 340,
+      telemetry: { hrZones: [{ lo: 100, hi: 120, seconds: 600 }, { lo: 120, hi: 140, seconds: 4840 }] }, completionMatchId: null, sourceMergeConfidence: 1, createdAt: NOW, updatedAt: NOW,
+    } as typeof schema.activities.$inferInsert);
+    await w.db.insert(schema.coachReads).values({ id: newId(), userId: w.userId, activityId: "act-1", status: "done", attempt: 1, nextAttemptAt: NOW, glance: "HR drifted 6% late — fueling, not fitness.", body: "Body.", flags: [], createdAt: NOW });
+  }
+
+  it("the phone reads kinds, ids, days and the app's labels — never the line, a chip's words or the review; the laptop still does", async () => {
+    await seedOpening();
+    // Monday's review first.
+    const laptopReview = await w.call("GET", "/api/coach/nudges");
+    expect(laptopReview.text).toContain("zone 4");
+    const review = await device("GET", "/api/coach/nudges");
+    expect(review.status, review.text).toBe(200);
+    expect(leaks(review)).toEqual([]);
+    expect(review.json.opening).toMatchObject({ id: `review:${lastWeekStart}`, source: "review", weekStart: lastWeekStart, chips: [{ id: `review:${lastWeekStart}`, kind: "review", label: "Plan this week" }] });
+    // Then the session the coach read.
+    const seen = `?seen=review:${lastWeekStart}`;
+    const laptopSession = await w.call("GET", `/api/coach/nudges${seen}`);
+    expect(laptopSession.text).toContain("HR drifted 6% late");
+    expect(laptopSession.text).toContain("16 km");
+    const session = await device("GET", `/api/coach/nudges${seen}`);
+    expect(leaks(session)).toEqual([]);
+    expect(session.text).not.toContain("16 km");
+    expect(session.json.opening).toMatchObject({ id: "session:act-1", source: "read", chips: [{ id: "session:act-1", kind: "session", subject: "act-1", label: "Plan around my last session" }] });
+    // Exactly the allowlisted keys, at every level.
+    expect(Object.keys(session.json).sort()).toEqual(["nudges", "opening"]);
+    expect(Object.keys(session.json.opening).sort()).toEqual(["chips", "id", "line", "source"]);
+    expect(Object.keys(session.json.opening.chips[0]).sort()).toEqual(["id", "kind", "label", "subject"]);
+  });
+
+  it("Rework from the phone sends the chip's id: the server looks up its words, and the phone reads the chip's label", async () => {
+    await seedOpening();
+    const made = await device("POST", "/api/coach/runs", { scope: { kind: "now" }, chip: "session:act-1" });
+    expect(made.status, made.text).toBe(200);
+    expect(leaks(made)).toEqual([]);
+    expect([made.json.run.request, made.json.run.chip]).toEqual(["Plan around my last session", "session:act-1"]);
+    const [row] = await w.db.select({ request: schema.coachRuns.request }).from(schema.coachRuns).where(eq(schema.coachRuns.id, made.json.run.id));
+    expect(row!.request).toContain("16 km");
+    expect(leaks(await device("GET", "/api/coach/conversation"))).toEqual([]);
+    expect(leaks(await device("GET", `/api/coach/runs/${made.json.run.id}`))).toEqual([]);
+  });
+
+  it("a chip no longer offered is 409 chip_gone, nothing started; a chip's words beside it are refused at the gate", async () => {
+    const gone = await device("POST", "/api/coach/runs", { scope: { kind: "now" }, chip: "session:act-none" });
+    expect([gone.status, gone.json.error]).toEqual([409, "chip_gone"]);
+    const both = await device("POST", "/api/coach/runs", { scope: { kind: "now" }, chip: "session:act-1", request: "16 km at 5:40 /km" });
+    expect([both.status, both.json.error]).toEqual([403, "out_of_scope"]);
+    expect(await w.db.select().from(schema.coachRuns)).toEqual([]);
+  });
+});
+
 describe("the never-list", () => {
   it("no v5 answer holds a reading, the condition or the memory core — and the laptop's read still does", async () => {
     const created = await device("POST", "/api/coach/runs", { scope: { kind: "now" }, request: "Something calm today." });
@@ -164,7 +228,7 @@ describe("the never-list", () => {
     const rest = scripted([
       turn([use("propose_workout", { doc: calmDoc({ title: "Calm hips" }), target: { kind: "new", date: T } })], "Easy on the jaw today, given the 37.73 resting rate."),
       turn([use("submit_review", verdict)], "Reviewed."),
-      turn([use("finish", { summary: "A calm hips session for today. Your stress was 77.71 and your TMJ is quiet." })], "Done."),
+      turn([use("finish", { summary: "A calm hips session for today. Your stress was 77.71 and your TMJ is quiet. Keep it in zone 4 at 187 spm, 251 W." })], "Done."),
     ]);
     await stepUntil(runId, rest, (s) => s === "finished");
 
@@ -185,7 +249,8 @@ describe("the never-list", () => {
     expect(proposal.json.complete).toBe(true);
     // Typed fields and titles only: never the cards' manifest, even stripped (the walker is the second line).
     expect(Object.keys(proposal.json).sort()).toEqual(["complete", "id", "opsSummary", "receipts", "resolvedAt", "status", "takeBackable", "titles", "version"]);
-    expect(Object.values(proposal.json.titles)).toEqual(["Calm hips"]);
+    // Each workout's line from its minutes and category, never its title (the coach's words).
+    expect(Object.values(proposal.json.titles)).toEqual([expect.stringMatching(/^\d+ min strength$/)]);
     const opId = proposal.json.opsSummary[0].opId as string;
     await read("draft", device("GET", `/api/coach/proposals/${proposalId}/ops/${opId}/draft`));
     const approved = await read("approve", device("POST", `/api/coach/proposals/${proposalId}/approve`, { opIds: [opId], version: proposal.json.version }));

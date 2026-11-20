@@ -23,7 +23,6 @@ import { endedLine, readRunState } from "./coach-runs.js";
 
 import { designProposalId } from "./design-tools/propose.js";
 import { allDesignedOps, type AnyDesignedOp } from "./design-approve.js";
-import { stripReadings } from "./device-view.js";
 import { isDocWorkoutOp, isPlanAdjustOp, opIdOf } from "./proposal-kinds.js";
 
 /** What a phone says of a proposal whose run ended without its finish (review B-1). */
@@ -97,18 +96,6 @@ export function opsSummaryOf(ops: unknown): OpSummary[] {
     }
     return compact({ opId: opIdOf(o as never), op: "other", day: str((o as { date?: unknown }).date) ?? "", outcome });
   });
-}
-
-/** Each designed workout's title, by op, as a phone reads it: every sentence naming a reading or a condition taken out. */
-export function titlesOf(ops: unknown): Record<string, string> {
-  const out: Record<string, string> = {};
-  for (const o of allDesignedOps(ops)) {
-    if (!isDocWorkoutOp(o)) continue;
-    const d = o as Extract<AnyDesignedOp, { kind: "doc_workout" }>;
-    const title = typeof d.doc?.title === "string" ? stripReadings(d.doc.title) : null;
-    if (title) out[opIdOf(d)] = title;
-  }
-  return out;
 }
 
 /** Whether a designed proposal came from a run that finished, and if not, why (its run's end). */

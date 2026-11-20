@@ -459,6 +459,8 @@ export interface RunSettings {
    * request in (`deviceId`), never from the body. The laptop's run view says "From LifeOS". The athlete still asked. */
   via?: "lifeos";
   deviceId?: string;
+  /** A phone run asked from a chip (review A MAJOR-1r): the chip's id; its words, the request, were the server's own. */
+  chip?: string;
   /** A phone run's only, with switch A on (design-frame.ts): the day frame it was sent with, and the disclosure version the
    * owner accepted (`consent`). Read into the opening context as data; its lines shown on the laptop. */
   frame?: DayFrame;
@@ -577,7 +579,7 @@ export function newRunState(
     diagnose?: string;
     /** Who asked, the plan the run is for and its last day (plans with a purpose §4.2): a main run's alone. */
     origin?: "plan_draft";
-    lifeos?: { deviceId: string; frame?: DayFrame };
+    lifeos?: { deviceId: string; frame?: DayFrame; chip?: string };
     planId?: string;
     planLastDay?: string;
   } = {},
@@ -602,7 +604,12 @@ export function newRunState(
       ...(opts.diagnose && role === "main" ? { diagnose: opts.diagnose } : {}),
       ...(opts.origin && role === "main" ? { origin: opts.origin } : {}),
       ...(opts.lifeos && role === "main"
-        ? { via: "lifeos" as const, deviceId: opts.lifeos.deviceId, ...(opts.lifeos.frame ? { frame: opts.lifeos.frame, consent: opts.lifeos.frame.consent } : {}) }
+        ? {
+            via: "lifeos" as const,
+            deviceId: opts.lifeos.deviceId,
+            ...(opts.lifeos.chip ? { chip: opts.lifeos.chip } : {}),
+            ...(opts.lifeos.frame ? { frame: opts.lifeos.frame, consent: opts.lifeos.frame.consent } : {}),
+          }
         : {}),
       ...(opts.planId && role === "main" ? { planId: opts.planId } : {}),
       ...(opts.planLastDay && role === "main" ? { planLastDay: opts.planLastDay } : {}),
@@ -1006,6 +1013,8 @@ export interface CoachRunDto {
   /** R1: asked from the owner's phone (the laptop's run view says "From LifeOS"), and the day frame's lines when one came. */
   via?: "lifeos";
   frameLines?: string[];
+  /** A phone run asked from a chip: the chip's id. */
+  chip?: string;
 }
 
 export interface CoachRunEventDto {
@@ -1053,6 +1062,7 @@ function runDto(root: RunNode, nodes: RunNode[]): CoachRunDto {
     ...(root.settings?.origin === "plan_draft" ? { origin: "plan_draft" as const } : {}),
     ...(root.settings?.via === "lifeos" ? { via: "lifeos" as const } : {}),
     ...(root.settings?.via === "lifeos" && root.settings.frame ? { frameLines: frameLines(root.settings.frame) } : {}),
+    ...(root.settings?.via === "lifeos" && root.settings.chip ? { chip: root.settings.chip } : {}),
   };
 }
 
@@ -1213,7 +1223,7 @@ export interface CreateRunInput {
   planLastDay?: string;
   /** R1: asked from the owner's phone — the device that signed the request in, and the day frame when switch A is on and
    * the route checked it (routes/coach-runs.ts). Kept in the run's settings, no statement of its own. */
-  lifeos?: { deviceId: string; frame?: DayFrame };
+  lifeos?: { deviceId: string; frame?: DayFrame; chip?: string };
   /** A limit for this one run below its scope's, in dollars (a plan's draft: plan-drafts.ts `DRAFT_CEILING_USD`): the
    * athlete's own lower limit still wins. Kept as the run's ceiling, no statement of its own. */
   ceilingUsd?: number;
