@@ -68,9 +68,10 @@ export const PAIRING_NOTES: Readonly<Record<string, string>> = {
 /**
  * What every phone reads whatever its scope (R1.1: every scope's `/api/native/me` carries the account's time zone), said
  * once on every row and with the code — pending, active and a phone paired now — never a copy per scope (R1.2, the R1.1
- * review's minor 1: a phone paired before R1.1 reads it too).
+ * review's minor 1: a phone paired before R1.1 reads it too). Worded to stand alone, as it does on a row with no "Can …"
+ * words (the R1.2 review's NIT-4).
  */
-export const TIME_ZONE_NOTE = "It also reads this account's time zone, so its days and times match your plan's.";
+export const TIME_ZONE_NOTE = "It reads this account's time zone, so its days and times match your plan's.";
 
 /**
  * The grant to each next scope: its button, and the one line that says what it adds — and that it can be stopped here —

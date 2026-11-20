@@ -13,8 +13,9 @@
  *                           never another paid request): a phone's key for this ask, made once per ask — a UUID; 400
  *                           `bad_client_id` for anything else, or from the laptop's cookie. Looked up FIRST, before anything
  *                           is judged: the run its first create made answers again, 200 `{ run, existing: false,
- *                           conversationId, repeated: true }`, never a second run. Keyed by the account, the device and
- *                           the clientId (`deviceAskKey`, an audit row `coach.device_ask` with `{clientId, runId}`, never
+ *                           conversationId, repeated: true }`, never a second run. Keyed by the account and the clientId,
+ *                           never the device, so a resend after a re-pair is the same ask (`deviceAskKey`, an audit row
+ *                           `coach.device_ask` with `{clientId, runId}`, never
  *                           the ask's words), written in the run's own batch: a create that started nothing (the week, a
  *                           refused frame, a live run in the way) wrote no key, so the same clientId may go again.
  *                           Creating spends nothing: the model runs only in a step.
@@ -233,12 +234,13 @@ export function makeCoachRunRoutes(deps: () => RunDeps = defaultRunDeps): Hono<A
     // A PHONE'S ASK, ONCE (R1.2; the lead's kit v0.21: "restarting or reconnecting should resume the same designer run,
     // never silently create another paid request"): the phone's key for this ask, from a phone only. Its run, if its first
     // create made one, answers again — looked up before the frame, the chip, the focus or the week is judged, so a resend
-    // whose answer was lost is answered whatever changed since.
+    // whose answer was lost is answered whatever changed since. Keyed by the account and the clientId, never the device: a
+    // resend after a re-pair (a new device id) is the same ask.
     const clientId = body.clientId;
     if (clientId !== undefined && (!device || typeof clientId !== "string" || clientId.length > CLIENT_ID_MAX_CHARS || !CLIENT_ID.test(clientId))) {
       return c.json({ error: "bad_client_id" }, 400);
     }
-    const askKey = device && typeof clientId === "string" ? await deviceAskKey(c.get("userId"), device.id, clientId) : null;
+    const askKey = device && typeof clientId === "string" ? await deviceAskKey(c.get("userId"), clientId) : null;
     if (askKey) {
       const made = await keyedRun(c.get("db"), c.get("userId"), askKey);
       if (made) return c.json(made);

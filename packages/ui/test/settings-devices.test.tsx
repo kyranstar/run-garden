@@ -37,8 +37,9 @@ const V5_CAN = "Can play, save, move and fit workouts, record your feedback, rea
 const V5_GRANT =
   "It will also be able to browse your saved workouts and moves and put one on your plan; ask your coach to design or change workouts, answer its questions, and approve or decline what it suggests; take back a workout it put on your plan or a coach change it approved, until that day ends (8 days at most); and see, edit, add to and delete what your coach remembers. It can read your coach's questions to you, which the coach writes itself and so can mention your training and how it's going, and what your coach remembers. Everything else it sees of your coach is plain facts like days, times and minutes, never your health readings or conditions. Its coach use counts toward this account's weekly AI limit. This doesn't share anything about your day with your coach; that's a separate choice on the phone. You can stop it here any time.";
 const V5_STOP = "It will no longer use your library or coach. What it already added stays on your plan. It stays paired.";
-/** What every phone reads whatever its scope (`/api/native/me`'s time zone, R1.1): one sentence, on every row (R1.2). */
-const ZONE = "It also reads this account's time zone, so its days and times match your plan's.";
+/** What every phone reads whatever its scope (`/api/native/me`'s time zone, R1.1): one sentence, on every row (R1.2) —
+ * standing alone, as it does on a row with no "Can …" words (the R1.2 review's NIT-4: never "It also" after nothing). */
+const ZONE = "It reads this account's time zone, so its days and times match your plan's.";
 /** Renew's one line (LifeOS Q-172), and the hint beside a phone inside the warning while Renew is offered. */
 const RENEW_LINE = "It will keep working for 30 more days from now. Nothing else changes.";
 const RENEW_HINT = "Renew it to keep it working.";

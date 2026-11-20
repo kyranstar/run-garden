@@ -213,9 +213,10 @@ on the `training-v5` scope only (`apps/worker/src/auth/device-scope.ts`; routes 
   400 for a revise, a change, more than one op, or from the laptop.
 - **An ask of the coach goes once (R1.2).** A phone's ask may carry its own key, `clientId` (a UUID it makes per ask; 400
   from the laptop). A resend is answered the run its first create made, `repeated`, live or over: never a second run, and
-  never a second paid request. Creating a run spends nothing; the model runs only in a step. The key is the account, the
-  device and the clientId, hashed (an audit row `coach.device_ask` holding `{clientId, runId}`, never the ask's words),
-  written in the run's own batch: an ask that started nothing wrote no key and may go again.
+  never a second paid request, a re-pair between them included. Creating a run spends nothing; the model runs only in a
+  step. The key is the account and the clientId, hashed (never the device, whose id a re-pair changes), and its lookup is
+  held to the account. It is an audit row `coach.device_ask` holding `{clientId, runId}`, never the ask's words, written in
+  the run's own batch: an ask that started nothing wrote no key and may go again.
 - **Receipt-bound take-back, of what this phone made.** Each place and each approved new or revised workout, move and skip
   writes a take-back receipt (`take_back_receipts`, migration 0040) in the same batch as the write, holding the row's
   compare columns as the write left them and who made it (`made_by`); an approve's revise that adopts a coach or imported

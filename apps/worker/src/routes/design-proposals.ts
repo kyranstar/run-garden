@@ -161,7 +161,8 @@ export async function approveDesigned(c: C, p: DesignProposalRow & { expiresAt: 
   const version = await proposalVersion(p);
   if (parsed.data.version !== undefined && parsed.data.version !== version) return c.json({ error: "proposal_changed", version }, 409);
   if (device && parsed.data.version === undefined) return c.json({ error: "version_required", version }, 409);
-  // THE OWNER'S OWN TIME (R1.2): from a phone, for one new workout of this proposal — never a revise, a change or a plan's.
+  // THE OWNER'S OWN TIME (R1.2): from a phone, for one new workout of this proposal (a plan's new workout too, as the
+  // laptop's Edit before approve and a place allow) — never a revise or a change to the plan.
   if (parsed.data.at) {
     if (!device) return c.json({ error: "at_not_allowed", why: AT_PHONE_ONLY }, 400);
     const named = designedOps(p.ops).find((o) => opIdOf(o) === parsed.data.opIds![0]);

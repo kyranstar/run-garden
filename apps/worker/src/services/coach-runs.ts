@@ -1245,12 +1245,14 @@ export const DEVICE_ASK_KIND = "coach.device_ask";
 
 /**
  * THE KEY A PHONE'S ASK STARTS UNDER AT MOST ONCE (R1.2; the lead's kit v0.21: "restarting or reconnecting should resume the
- * same designer run, never silently create another paid request"): the account, the device that signed the request in and
- * the phone's `clientId` (made once per ask on the phone), hashed — so another account's or another phone's `clientId`
- * never meets this one's, and the key holds no words of the ask.
+ * same designer run, never silently create another paid request"): the account and the phone's `clientId` (a UUID made
+ * once per ask on the phone), hashed. Never the device: a re-pair mints a new device id, and the resend after it is the
+ * same ask (the R1.2 review's MINOR-1), as a place's key (`place:<clientId>`) and a told memory's (`userId|clientId`) are.
+ * The account is the boundary — another account's `clientId` never meets this one's, and the lookup (`keyedRun`) is held
+ * to the account; the owner's phones never share a UUID. The key holds no words of the ask.
  */
-export async function deviceAskKey(userId: string, deviceId: string, clientId: string): Promise<string> {
-  return `coach_ask:${await sha256Hex(`${userId}|${deviceId}|${clientId}`)}`;
+export async function deviceAskKey(userId: string, clientId: string): Promise<string> {
+  return `coach_ask:${await sha256Hex(`${userId}|${clientId}`)}`;
 }
 
 /**

@@ -9,7 +9,8 @@
  *    phone stored; it is kept in `settings.frame` with `consent`, said in lines on the run's read and in the opening context
  *    as data; the laptop's cookie never sends one;
  *  - R1.2: an ask under the phone's `clientId` starts at most one run — a resend is that run, `repeated`, live or over;
- *    another phone's same clientId is its own ask; the laptop's cookie and any other shape are 400 `bad_client_id`; an ask
+ *    the key is the account and the clientId, so a resend after a re-pair is the same ask; the laptop's cookie and any
+ *    other shape are 400 `bad_client_id` (coach-device-ask.test.ts: the race, a key whose run is gone, the week); an ask
  *    that started nothing (a refused frame, a live run in the way) wrote no key and goes again; it is a turn of its
  *    conversation as any ask; and creating spends nothing (the model runs only in a step);
  *  - R1.2: record_answer's and remember's results carry `undo: {handle}` to the phone — the token alone, no other tool's
@@ -213,8 +214,8 @@ describe("an ask from the phone, once (R1.2; the lead's kit v0.21: never silentl
     // Another body under the same key is the same ask (as a place's clientId): the run it made, nothing new.
     repeatOf(a, await create({ scope: { kind: "now" }, request: "Something else", clientId: U }));
     expect(await runs()).toHaveLength(1);
-    // Its key: the account, the device and the clientId hashed; its detail the clientId and the run, never the ask's words.
-    expect((await keys()).map((k) => [k.id, k.detail])).toEqual([[await deviceAskKey(w.userId, v5.id, U), { clientId: U, runId: a.json.run.id }]]);
+    // Its key: the account and the clientId hashed; its detail the clientId and the run, never the ask's words.
+    expect((await keys()).map((k) => [k.id, k.detail])).toEqual([[await deviceAskKey(w.userId, U), { clientId: U, runId: a.json.run.id }]]);
     // Creating spends nothing: no model call (fetch throws), no usage row — the model runs only in a step.
     expect(await w.db.select().from(llmUsage)).toEqual([]);
     // Over (cancelled), the resend is still that run: never a second.
@@ -223,21 +224,21 @@ describe("an ask from the phone, once (R1.2; the lead's kit v0.21: never silentl
     expect(await runs()).toHaveLength(1);
   });
 
-  it("another phone's same clientId is its own ask: a run of its own when nothing live is in the way; each resend its own", async () => {
-    const other = await seedDevice(w.db, w.userId, { scope: "training-v5", lastUsedAt: nowInstant(), expiresAt: "2099-01-01T00:00:00.000Z" });
+  it("the key is the account and the clientId (review MINOR-1): resent after a re-pair, the same ask is the first run, repeated", async () => {
+    // A re-pair mints a new token, so a new device id: the phone's resend under it is still its ask, live or over.
+    const repaired = await seedDevice(w.db, w.userId, { scope: "training-v5", lastUsedAt: nowInstant(), expiresAt: "2099-01-01T00:00:00.000Z" });
     const a = await create(ask({ clientId: U }));
+    repeatOf(a, await create(ask({ clientId: U }), repaired.token));
     await cancel(a.json.run.id);
-    const b = await create(ask({ clientId: U }), other.token);
+    repeatOf(a, await create(ask({ clientId: U }), repaired.token));
+    expect([(await runs()).length, (await keys()).length]).toEqual([1, 1]);
+    // Another clientId is another ask.
+    const b = await create(ask({ clientId: U2 }), repaired.token);
     expect([b.status, b.json.existing, "repeated" in b.json, b.json.run.id === a.json.run.id], b.text).toEqual([200, false, false, false]);
-    await cancel(b.json.run.id, other.token);
-    repeatOf(a, await create(ask({ clientId: U })));
-    repeatOf(b, await create(ask({ clientId: U }), other.token));
-    expect(await runs()).toHaveLength(2);
-    // The key holds the account, the device and the clientId exactly: another of any of them is another key.
-    const key = await deviceAskKey(w.userId, v5.id, U);
+    // The key holds the account and the clientId exactly: another account's or another clientId's is another key.
+    const key = await deviceAskKey(w.userId, U);
     expect(key).toMatch(/^coach_ask:[0-9a-f]{64}$/);
-    const others = [await deviceAskKey(w.userId, other.id, U), await deviceAskKey(`u-${newId()}`, v5.id, U), await deviceAskKey(w.userId, v5.id, U2)];
-    expect(new Set([key, ...others]).size).toBe(4);
+    expect(new Set([key, await deviceAskKey(`u-${newId()}`, U), await deviceAskKey(w.userId, U2)]).size).toBe(3);
   });
 
   it("from the laptop's cookie, or in any other shape: 400 bad_client_id, and nothing starts", async () => {
