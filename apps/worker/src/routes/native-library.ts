@@ -5,7 +5,10 @@
  *
  *   GET  /api/native/templates              → { templates: [{ id, name, minutes, discipline, pinned, uses, lastUsedAt,
  *                                              updatedAt }] } — pinned first, then by last use; no documents
- *   GET  /api/native/templates/:id          → { id, name, doc, derived, minutes, discipline } (404 not_found)
+ *   GET  /api/native/templates/:id          → { id, name, doc, derived, minutes, discipline, moves } (404 not_found) —
+ *                                              `moves` (R1.1): *What's in it*, [{ exerciseId, name, dose }] exactly as
+ *                                              `/sessions/:id/ahead` reads a document's (session-build.ts `docMoves`);
+ *                                              null, as `derived`, when the document no longer reads
  *   GET  /api/native/library?q&family&region&equipment&limit&cursor
  *                                           → { items: [DeviceLibraryRow], matched, next } — `limit` 1–100 (default 50),
  *                                              `cursor` the next page's offset; 400 bad_query
@@ -37,6 +40,7 @@ import { CALENDAR_OPS_PER_REQUEST, loadPreferences, syncCalendar } from "../serv
 import { createDocWorkout, keyedRowId } from "../services/doc-workouts.js";
 import { approveTimeOf } from "../services/design-time.js";
 import { LibraryItemNotFoundError, libraryItem, listLibrary, MAX_LIBRARY_LIMIT, type LibraryItem, type LibraryRow, type Safety } from "../services/library-view.js";
+import { docMoves, type AheadMove } from "../services/session-build.js";
 import { madeByOf, receiptExpiry, receiptIdOf, receiptInsert } from "../services/take-back.js";
 import { listTemplates } from "../services/workout-templates.js";
 import { waitUntilSafe } from "../services/wait-until.js";
@@ -124,6 +128,22 @@ export const deviceLibraryItem = (m: LibraryItem): DeviceLibraryItem => ({
   verdict: verdictOf(m.safety),
 });
 
+/**
+ * One move of a saved workout's *What's in it* as the phone reads it (R1.1; 3a's review ARCHITECTURE 3): EXACTLY these keys
+ * (native-templates.test.ts pins them) — the shape `/sessions/:id/ahead` gives a document session's moves, from the same
+ * renderer (`docMoves`), so the phone's one decoder and view read both. Its words are the library's name for a move, a free
+ * move's own name and a dose in words: all already in the template's `doc` beside it, as in a session's document — never a
+ * move's why, cue or progression, an alternate's why or the document's notes.
+ */
+export interface DeviceMove {
+  exerciseId: string | null;
+  name: string;
+  dose: string;
+}
+export const DEVICE_MOVE_KEYS = ["dose", "exerciseId", "name"] as const satisfies ReadonlyArray<keyof DeviceMove>;
+
+export const deviceMove = (m: AheadMove): DeviceMove => ({ exerciseId: m.exerciseId, name: m.name, dose: m.dose });
+
 /** A page of the phone's move list: 1–100 rows, 50 unless asked. */
 export const DEVICE_LIBRARY_DEFAULT = 50;
 export const DEVICE_LIBRARY_MAX = 100;
@@ -157,10 +177,13 @@ nativeLibraryRoutes.get("/templates/:id", requireUser, async (c) => {
   if (await restoreInProgress(db, userId)) return restoring(c);
   const t = await templateOf(c, c.req.param("id")!);
   if (!t) return c.json({ error: "not_found" }, 404);
-  const derived = t.doc ? deriveDoc(t.doc, (await libraryForDocs(db, userId, [t.doc])).all) : null;
+  // The library the document's moves are named and derived in: the account's own moves with the catalog, as `previewAhead`.
+  const library = t.doc ? (await libraryForDocs(db, userId, [t.doc])).all : null;
+  const derived = t.doc && library ? deriveDoc(t.doc, library) : null;
   // Never a condition's name (review A NIT 2): `conditionMax` is keyed by profile; the library's verdicts say what is safe.
   const { conditionMax: _byProfile, ...shown } = (derived ?? {}) as NonNullable<typeof derived>;
-  return c.json({ id: t.id, name: t.name, doc: t.doc, derived: derived ? shown : null, minutes: derived?.estimatedMinutes ?? null, discipline: derived?.discipline ?? null });
+  const moves = t.doc && library ? docMoves(t.doc, library).map(deviceMove) : null;
+  return c.json({ id: t.id, name: t.name, doc: t.doc, derived: derived ? shown : null, minutes: derived?.estimatedMinutes ?? null, discipline: derived?.discipline ?? null, moves });
 });
 
 const word = z.string().regex(/^[a-z0-9_-]{1,40}$/);

@@ -2615,8 +2615,12 @@ export class NotAheadError extends Error {
   }
 }
 
-/** A document's moves, in its order: a library move by its name, a free move, a run segment; rests left out. */
-function docMoves(doc: WorkoutDoc, library: readonly ExerciseRecord[]): AheadMove[] {
+/**
+ * A document's moves, in its order: a library move by its name, a free move, a run segment; rests left out. *What's in it*
+ * for a document session ahead (`previewAhead`) and for a saved workout on the phone (`GET /api/native/templates/:id`,
+ * R1.1), so the phone reads one shape from one renderer.
+ */
+export function docMoves(doc: WorkoutDoc, library: readonly ExerciseRecord[]): AheadMove[] {
   const index = makeLibraryIndex(library);
   return doc.parts.flatMap((part) => {
     const rounds = part.rounds && part.rounds > 1 ? `${part.rounds} rounds · ` : "";

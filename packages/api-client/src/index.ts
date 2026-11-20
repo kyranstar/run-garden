@@ -371,6 +371,28 @@ export interface NativeTemplatesResponse {
   templates: Array<{ id: string; name: string; minutes: number | null; discipline: string | null; pinned: boolean; uses: number; lastUsedAt: string | null; updatedAt: string }>;
 }
 
+/** One move of *What's in it*, exactly these keys: a document session's ahead (`NativeAheadResponse`) and a saved workout's. */
+export interface NativeMove {
+  /** The library's id for a move of the library's (the account's own included); null for a free move or a run segment. */
+  exerciseId: string | null;
+  name: string;
+  /** In words, as the session sheet says a dose ("2 rounds · 2 × 12", "30 s each side", "10 min"). */
+  dose: string;
+}
+
+/** `GET /api/native/templates/:id`: one saved workout, its document and what it derives to. */
+export interface NativeTemplateResponse {
+  id: string;
+  name: string;
+  /** Null when the stored document no longer reads; then `derived`, `minutes`, `discipline` and `moves` are null too. */
+  doc: WorkoutDoc | null;
+  derived: ({ estimatedMinutes: number; discipline: string; category: string; mode: string; watchStepCount: number } & Record<string, unknown>) | null;
+  minutes: number | null;
+  discipline: string | null;
+  /** R1.1: *What's in it*, from the renderer `/sessions/:id/ahead` uses, so the phone reads both with one decoder. */
+  moves: NativeMove[] | null;
+}
+
 /** One verdict for the switched-on profiles together; never a profile's name. */
 export type NativeVerdict = "ok" | "caution" | "never";
 
@@ -630,7 +652,7 @@ export interface NativeAheadResponse {
   label?: string;
   minutes: number | null;
   place: { id: string; name: string } | null;
-  moves: Array<{ exerciseId: string | null; name: string; dose: string }>;
+  moves: NativeMove[];
   summary: string | null;
   docRev: number | null;
   distanceMeters: number | null;
