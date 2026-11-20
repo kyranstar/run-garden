@@ -193,8 +193,9 @@ on the `training-v5` scope only (`apps/worker/src/auth/device-scope.ts`; routes 
   sentences naming common readings, but the coach's own words may still mention them; a condition check as
   `check: "condition"` alone), and memory items, `{id, kind, body, confidence, pinned, expiresAt, learnedAt, source}`. The
   owner's own typed words come back only on a phone's own runs (a laptop's run shows none of its words). What
-  `record_answer` or `remember` kept carries its undo handle (R1.2): an opaque token naming the run and the call (`ra:` or
-  `rm:`), never a word of what was kept, so the phone's Undo can take it back. Beyond those two,
+  `record_answer` or `remember` kept, and an answer to the coach's question kept as a check-in answer, carries its undo
+  handle (R1.2): an opaque token naming the run and the call (`ra:`, `rm:` or `aa:`), never a word of what was kept, so
+  the phone's Undo can take it back. Beyond those two,
   the structured fields are the guarantee: never a reading, a pace, a zone, cadence, power, training load, elevation, a
   condition's name or check, the memory core, a document's steps or notes, or the account's id. *Planned follow-up:* a
   structured question format — the ask tool takes a typed question kind whose text and chips the app renders, free-text

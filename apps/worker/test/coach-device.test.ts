@@ -34,7 +34,7 @@ import { eventView } from "../src/services/device-view.js";
 import { FRAME_KEYS, frameLines, frameSection, type DayFrame } from "../src/services/design-frame.js";
 import { nativeWorld, seedDevice, type NativeWorld } from "./native-fixture.js";
 
-const { auditEvents, coachMemory, coachRunEvents, coachRuns, llmUsage, users } = schema;
+const { athleteAnswers, auditEvents, coachMemory, coachRunEvents, coachRuns, llmUsage, users } = schema;
 const LA = "America/Los_Angeles";
 const T = "2026-11-19"; // a Thursday
 const NOW = DateTime.fromISO(`${T}T07:40`, { zone: LA }).toUTC().toISO()!;
@@ -329,6 +329,37 @@ describe("the undo of what the coach kept reaches the phone (R1.2; pair 14, POST
     const undo = await w.call("POST", `/api/coach/runs/${RUN}/undo-answer`, { bearer: v5.token, body: { handle: read.json.events[1].payload.undo.handle } });
     expect([undo.status, undo.json], undo.text).toEqual([200, { undone: 1 }]);
     expect((await w.db.select().from(coachMemory).where(eq(coachMemory.id, `mem:${RUN}:toolu_rm1`)))[0]!.active).toBe(false);
+  });
+
+  /** The owner's answer to the coach's question, as the loop writes its note — with what it kept as check-in answers. */
+  const answerNote = (receipt?: Record<string, unknown>) => ({
+    seq: 4, kind: "note", summary: "You answered: Home · 4", at: NOW, payload: { answers: ["Home", "4"], ...(receipt ? { receipt } : {}) },
+  });
+  const keptAnswer = { undo: { handle: `aa:${RUN}:toolu_aa1`, expiresAt: "2026-11-26" } };
+
+  it("an answer to the coach's question that was kept carries undo: {handle} on its note: the token alone, its kind checked (O3)", () => {
+    expect(eventView(answerNote(keptAnswer))).toEqual({ seq: 4, kind: "note", at: NOW, summary: "The coach is working on it.", payload: { undo: { handle: `aa:${RUN}:toolu_aa1` } } });
+    // An answer that kept nothing (free text only): no undo. A handle of another kind, or in words: none.
+    expect(eventView(answerNote())!.payload).toEqual({});
+    for (const handle of [`ra:${RUN}:toolu_aa1`, `rm:${RUN}:toolu_aa1`, "You answered: Home", `aa:${RUN}`, 7]) {
+      expect([handle, eventView(answerNote({ undo: { handle } }))!.payload]).toEqual([handle, {}]);
+    }
+    // The note an undo leaves ("Taken back: …") names the handle it took back: never offered again.
+    expect(eventView({ seq: 5, kind: "note", summary: "Taken back: energy 4", at: NOW, payload: { undo: { handle: `aa:${RUN}:toolu_aa1`, count: 1 } } })!.payload).toEqual({});
+  });
+
+  it("the phone takes back its kept answer to a question: the note's handle, then undo-answer — 3b's answer and undo-answer (O3)", async () => {
+    await w.db.insert(coachRuns).values({ id: RUN, userId: w.userId, parentId: null, role: "main", scope: { kind: "now" }, request: null, status: "active", state: null, steps: 1, costUsd: 0, createdAt: NOW, updatedAt: NOW });
+    const note = answerNote(keptAnswer);
+    await w.db.insert(coachRunEvents).values({ id: newId(), userId: w.userId, runId: RUN, seq: 1, kind: note.kind, summary: note.summary, payload: note.payload, at: NOW });
+    await w.db.insert(athleteAnswers).values({ id: `aa:${RUN}:toolu_aa1:0`, userId: w.userId, questionId: "energy", valueNum: 4, source: "ask_athlete", localDate: T, at: NOW, expiresAt: "2026-11-26" } as typeof athleteAnswers.$inferInsert);
+    const read = await w.call("GET", `/api/coach/runs/${RUN}?afterSeq=0`, { bearer: v5.token });
+    expect(read.status, read.text).toBe(200);
+    expect(read.json.events.map((e: { payload: unknown }) => e.payload)).toEqual([{ undo: { handle: `aa:${RUN}:toolu_aa1` } }]);
+    for (const word of ["Home", "2026-11-26"]) expect(read.text).not.toContain(word);
+    const undo = await w.call("POST", `/api/coach/runs/${RUN}/undo-answer`, { bearer: v5.token, body: { handle: read.json.events[0].payload.undo.handle } });
+    expect([undo.status, undo.json], undo.text).toEqual([200, { undone: 1 }]);
+    expect(await w.db.select().from(athleteAnswers)).toEqual([]);
   });
 });
 

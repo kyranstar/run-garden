@@ -123,13 +123,14 @@ const toolLine = (tool: string | null): string => (tool && TOOL_LINES[tool]) || 
 
 /** The tools whose result keeps something the owner may take back (pair 14), each with its handle's own kind. */
 const UNDO_KINDS: Readonly<Record<string, string>> = { record_answer: "ra", remember: "rm" };
+/** An answer to the coach's question kept as the owner's check-in answer: its note's handle's kind (`answerHandle`). */
+const ANSWER_UNDO_KIND = "aa";
 /**
- * A result's undo handle as the phone gets it (R1.2): the opaque token alone — `<kind>:<main run>:<call>`, the grammar
- * `POST /runs/:id/undo-answer` takes — of the tool's own kind; never a word of what was kept, its expiry or anything else
- * of its receipt.
+ * An undo handle as the phone gets it (R1.2): the opaque token alone — `<kind>:<main run>:<call>`, the grammar
+ * `POST /runs/:id/undo-answer` takes — of the one kind its event keeps (`kind`); never a word of what was kept, its expiry
+ * or anything else of its receipt.
  */
-function undoOf(tool: unknown, receipt: unknown): O | undefined {
-  const kind = typeof tool === "string" ? UNDO_KINDS[tool] : undefined;
+function undoOf(kind: string | undefined, receipt: unknown): O | undefined {
   const handle = obj(obj(receipt)?.undo)?.handle;
   if (!kind || typeof handle !== "string" || handle.length > 300 || handleRunId(handle) === null || !handle.startsWith(`${kind}:`)) return undefined;
   return { handle };
@@ -181,11 +182,16 @@ export function eventView(raw: unknown): O | null {
   if (kind === "tool_call" || kind === "tool_result") {
     const tool = typeof p.tool === "string" && TOOL_LINES[p.tool] ? p.tool : null;
     // What record_answer or remember kept carries its undo handle (R1.2: pair 14 reachable from the phone) — a result's only.
-    const undo = kind === "tool_result" ? undoOf(p.tool, p.receipt) : undefined;
+    const undo = kind === "tool_result" && typeof p.tool === "string" ? undoOf(UNDO_KINDS[p.tool], p.receipt) : undefined;
     return { ...base, summary: p.ok === false ? `${toolLine(tool)}: it couldn't` : toolLine(tool), payload: pick({ tool: tool ?? undefined, ok: bool(p.ok) ?? undefined, undo }) };
   }
   if (kind === "question") return { ...base, summary: KIND_LINES.question, payload: questionView(p.data) };
-  if (kind === "note") return { ...base, summary: noteLine(p), payload: pick({ proposalId: token(p.proposalId) ?? undefined, final: p.final === true ? true : undefined, answer: p.answer === true ? true : undefined }) };
+  // An answer to the coach's question kept as a check-in answer carries its handle too (R1.2, O3: 3b's answer and
+  // undo-answer) — from its receipt only, so the note an undo leaves, naming the handle it took back, never offers it again.
+  if (kind === "note") {
+    const undo = undoOf(ANSWER_UNDO_KIND, p.receipt);
+    return { ...base, summary: noteLine(p), payload: pick({ proposalId: token(p.proposalId) ?? undefined, final: p.final === true ? true : undefined, answer: p.answer === true ? true : undefined, undo }) };
+  }
   return { ...base, summary: KIND_LINES[kind] ?? "The coach is working on it.", payload: {} };
 }
 const eventsView = (v: unknown): O[] => arr(v).map(eventView).filter((e): e is O => e !== null);
