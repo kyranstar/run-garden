@@ -744,7 +744,7 @@ export const RECEIPT_SETTLE_COST = 1;
 export function opCostOf(
   op: (Pick<DocWorkoutOp, "target" | "planId"> & { doc?: WorkoutDoc }) | (Pick<PlanAdjustOp, "op"> & { retime?: PlanAdjustOp["retime"] }),
   dayRows: number,
-  edit?: { time?: string | null },
+  edit?: Choice,
 ): number {
   if ("op" in op) return planOpCostOf(op, dayRows);
   if (op.target.kind === "revise") return REVISE_BASE + dayRows + RECEIPT_COST + RECEIPT_SETTLE_COST;

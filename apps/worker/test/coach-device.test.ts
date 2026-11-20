@@ -311,7 +311,7 @@ describe("the undo of what the coach kept reaches the phone (R1.2; pair 14, POST
     await w.db.insert(coachRunEvents).values(
       [result("record_answer", answered), result("remember", remembered), result("read_day", {})].map((e, i) => ({ id: newId(), userId: w.userId, runId: RUN, seq: i + 1, kind: e.kind, summary: e.summary, payload: e.payload, at: NOW })),
     );
-    await w.db.insert(coachMemory).values({ id: `mem:${RUN}:toolu_rm1`, userId: w.userId, kind: "fact", body: "Keeps Sunday mornings free", confidence: "stated", pinned: false, active: true, learnedAt: NOW, updatedAt: NOW, provenance: { source: "coach", runId: RUN } } as typeof coachMemory.$inferInsert);
+    await w.db.insert(coachMemory).values({ id: `mem:${RUN}:toolu_rm1`, userId: w.userId, kind: "fact", body: "Keeps Sunday mornings free", confidence: "stated", pinned: false, active: true, learnedAt: NOW, updatedAt: NOW, provenance: { source: "coach", runId: RUN, at: NOW } } as unknown as typeof coachMemory.$inferInsert);
     const read = await w.call("GET", `/api/coach/runs/${RUN}?afterSeq=0`, { bearer: v5.token });
     expect(read.status, read.text).toBe(200);
     expect(read.json.events.map((e: { payload: Record<string, unknown> }) => e.payload)).toEqual([
