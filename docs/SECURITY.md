@@ -169,19 +169,22 @@ on the `training-v5` scope only (`apps/worker/src/auth/device-scope.ts`; routes 
   v4 in place (*Stop library and coach*: what it added stays). New pairings mint it, and the pairing says the same: the AI
   limit, that it never sees health readings or conditions, and that it shares nothing of the day. Revoke and the kill
   switch stop it as every device.
-- **What the phone reads of the coach: a structured projection, never the trail** (`services/device-view.ts`, review A
-  MAJOR-1). The laptop's coach answers carry the coach's working trail — what each tool read and was given. A v5 phone's
-  answers on every coach route are projected instead: a run's status and progress; each trail event's kind, time and a
-  fixed line of what the tool did (*Read your readiness*), never what it read (`data`) or was given (`input`); the
-  questions to answer, with chips; a proposal's ops as typed fields (day, time, minutes before and after, kind, a move's
-  day before) and each workout's title; the coach's lines (a finish, an answer, a card, a question's why) with every
-  sentence that names a reading, a pace or a condition taken out; a condition check asked as `check: "condition"` alone.
-  Never heart-rate variability, resting heart rate, sleep, stress, readiness, a pace, a condition's name or check, the
-  memory core, a document's steps or notes, or the account's id. Memory items are what the grant lets it see and edit:
-  `{id, kind, body, confidence, pinned, expiresAt, learnedAt, source}`, no ids of the account, its runs or devices. A
-  take-back's `changed_since` says how the session stands as `{date, time, state, archived, title, minutes}`. Pinned by
-  `device-never-list.test.ts`: readings, a condition and memory lines planted where the coach reads them reach no v5 answer.
-  The laptop's (cookie) answers are unchanged.
+- **What the phone reads of the coach: an allowlist, field by field, never the trail or the coach's words**
+  (`services/device-view.ts`, review A MAJOR-1 and MAJOR-1r). The laptop's coach answers carry the coach's working trail
+  and its words — what each tool read and was given, the opening's line, a chip's words, the weekly review, titles, finish
+  lines. Every coach answer a v5 phone gets is rebuilt route by route from named fields only: ids, kinds, statuses, days,
+  times, counts, minutes and categories, and lines the app writes from them (*Read your readiness*, *30 min strength*,
+  *Plan this week*). A proposal's ops are typed fields (day, time, minutes before and after, kind, a move's day before);
+  the opening and its chips are kinds, ids, days and the app's labels — a phone's *Rework* sends the chip's id and the
+  server looks up its words. Two things the grant names pass, as the owner must act on them: the question the coach asks
+  (its words and chips, every sentence naming a reading, a pace or a condition still taken out; a condition check as
+  `check: "condition"` alone), and memory items, `{id, kind, body, confidence, pinned, expiresAt, learnedAt, source}`. The
+  owner's own typed words come back only on a phone's own runs (a laptop's run shows none of its words). Never a reading,
+  a pace, a zone, cadence, power, training load, elevation, a condition's name or check, the memory core, a document's
+  steps or notes, or the account's id. A take-back's `changed_since` says how the session stands as `{date, time, state,
+  archived, title, minutes}`. Pinned by `device-never-list.test.ts`: readings, a pace, effort figures, a condition and
+  memory lines planted where the coach reads and words them — its trail, the opening, a chip, the weekly review — reach no
+  v5 answer. The laptop's (cookie) answers are unchanged.
 - **Every training write is run-garden's own.** A saved workout is put on the plan through the Studio's own create (judged
   for its day, its watch copy owed and its calendar booked as a Studio save's); a coach proposal's ops are applied only by
   an approve naming its op ids and the proposal's `version` (a phone's approve without them is 403 at the gate, a stale

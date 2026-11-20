@@ -471,10 +471,28 @@ export interface DesignProposalVersionFields {
     dayBefore?: string;
     startBefore?: string;
   }>;
-  /** A phone's read: each designed workout's title by op (readings stripped). */
+  /** A phone's read: each designed workout's line by op, from its minutes and category ("30 min strength"). */
   titles?: Record<string, string>;
   receipts: Array<{ opId: string; receiptId: string }>;
   takeBackable: string[];
+}
+
+/** A chip as a phone reads it (`GET /api/coach/nudges`): its id, kind and subject, a day when the subject is one, and the
+ * app's label for its kind — never its words. A tap sends `{chip: id}` with the run create; the server looks up its words. */
+export interface CoachChipDevice {
+  id: string;
+  kind: string;
+  subject?: string;
+  date?: string;
+  label: string;
+  proposalId?: string;
+}
+
+/** `GET /api/coach/nudges` as a phone reads it. */
+export interface CoachNudgesDevice {
+  nudges: CoachChipDevice[];
+  ready?: CoachChipDevice[];
+  opening?: { id: string; source: "review" | "session" | "read"; line: string; chips: CoachChipDevice[]; workoutId?: string; weekStart?: string };
 }
 
 /** `POST /api/coach/memory` from a phone: one stated line, under the words the owner accepted (switch A's version). */

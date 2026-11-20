@@ -61,7 +61,7 @@ export const CAN: Readonly<Record<string, string>> = {
  * it shares nothing of the day — a new pairing mints v5 directly, so these are its consent's words.
  */
 export const PAIRING_NOTES: Readonly<Record<string, string>> = {
-  "training-v5": "Its coach use counts toward this account's weekly AI limit. It never sees your health readings or conditions, and shares nothing about your day unless you turn that on on the phone.",
+  "training-v5": "Its coach use counts toward this account's weekly AI limit. It never sees your health readings or conditions, except in what your coach remembers, and shares nothing about your day unless you turn that on on the phone.",
 };
 
 /**
@@ -84,7 +84,7 @@ export const GRANTS: Readonly<Record<string, { button: string; line: string }>> 
   // to decide), that it counts toward the week's AI limit, and plainly that the grant shares nothing of the owner's day.
   "training-v5": {
     button: "Allow your library and coach",
-    line: "It will also be able to browse your saved workouts and moves and put one on your plan; ask your coach to design or change workouts, answer its questions, and approve or decline what it suggests; take back a workout it put on your plan or a coach change it approved, until that day ends (8 days at most); and see, edit, add to and delete what your coach remembers. It sees your coach's progress, questions and suggestions, never the health readings, conditions or notes your coach reads to decide. Its coach use counts toward this account's weekly AI limit. This doesn't share anything about your day with your coach; that's a separate choice on the phone. You can stop it here any time.",
+    line: "It will also be able to browse your saved workouts and moves and put one on your plan; ask your coach to design or change workouts, answer its questions, and approve or decline what it suggests; take back a workout it put on your plan or a coach change it approved, until that day ends (8 days at most); and see, edit, add to and delete what your coach remembers. It sees your coach's progress, questions and suggestions in the app's own words, never the health readings, conditions or notes your coach reads to decide, except in what your coach remembers, which you can see and edit. Its coach use counts toward this account's weekly AI limit. This doesn't share anything about your day with your coach; that's a separate choice on the phone. You can stop it here any time.",
   },
 };
 
