@@ -16,7 +16,8 @@
  *   POST /api/native/templates/:id/place    { date, time?, clientId } → { workoutId, receiptId, date, time, repeated? }
  *        (201; 200 for a resent clientId: the same row and the same receipt — looked up FIRST, R1.1: before the template,
  *        the day, the time or the document is judged, so a resend whose answer was lost is answered whatever changed
- *        since). The template's document, stamped
+ *        since) — or, once that place is off the plan (archived: taken back, or removed on the laptop), 422 `{error:
+ *        "taken_back", why, workoutId, receiptId}` (R1.2), never `repeated`. The template's document, stamped
  *        `basedOn: {kind: "template", id}`, through the Studio's own `createDocWorkout` — validated for that day, its
  *        watch copy owed and its calendar booked as a Studio save's — with the template's use counted and the take-back
  *        receipt IN THE SAME BATCH (services/take-back.ts). 422 invalid_doc with its issues (nothing written, no receipt),
@@ -244,6 +245,14 @@ const useCounted = (c: C, id: string) => (w: { now: string }) => [
     .where(and(eq(workoutTemplates.id, id), eq(workoutTemplates.userId, c.get("userId")))),
 ];
 
+/** Why a resend whose place has left the plan since is refused (R1.2): what happened, in words, as the other refusals. */
+export const TAKEN_BACK_WHY = "It was put on your plan, then taken off it.";
+
+/** What a resend is answered: the place as it now stands, or — off the plan since — `taken_back`. */
+type PlacedBefore =
+  | { status: 200; answer: { workoutId: string; receiptId: string; date: string; time: string; repeated: true } }
+  | { status: 422; answer: { error: "taken_back"; why: string; workoutId: string; receiptId: string } };
+
 /**
  * IDEMPOTENT FIRST (R1.1; 3a's review RELIABILITY 3): the place this clientId already made, answered as R1 answers a
  * resend — the same row and the same receipt, the row's day and time as it now stands, `repeated` — or null. Read before
@@ -251,17 +260,24 @@ const useCounted = (c: C, id: string) => (w: { now: string }) => [
  * answered whatever changed since: the template deleted or no longer readable, the day or the time gone. The key is the
  * account and the phone's clientId (`place:<clientId>`, C12) — the row's own id, so the body beside it is never judged
  * again: a resend naming another day, time or template under the same clientId is answered the original (R1's rule).
- * Writes nothing. One statement.
+ * OFF THE PLAN SINCE (R1.2, the R1.1 review's minor 3): a row archived since — taken back on the laptop or by another
+ * request, or removed there — is answered 422 `taken_back` with its ids and why, never `repeated`, which would say it is
+ * still on the plan. 422 because the installed phone (LifeOS `f83daf9f`, `placeAnswered`) reads any 422 as the place
+ * refused, its code kept as a word, and offers no take-back for it; a 409 or 410 would stop its delivery and hold the
+ * placement unsent for good. Writes nothing. One statement.
  */
-async function placedBefore(c: C, clientId: string): Promise<{ workoutId: string; receiptId: string; date: string; time: string; repeated: true } | null> {
+async function placedBefore(c: C, clientId: string): Promise<PlacedBefore | null> {
   const userId = c.get("userId");
   const [row] = await c
     .get("db")
-    .select({ id: plannedWorkouts.id, date: plannedWorkouts.effectiveDate, time: plannedWorkouts.effectiveTime })
+    .select({ id: plannedWorkouts.id, date: plannedWorkouts.effectiveDate, time: plannedWorkouts.effectiveTime, archivedAt: plannedWorkouts.archivedAt })
     .from(plannedWorkouts)
     .where(and(eq(plannedWorkouts.id, await keyedRowId(userId, `place:${clientId}`)), eq(plannedWorkouts.userId, userId)))
     .limit(1);
-  return row ? { workoutId: row.id, receiptId: await receiptIdOf(userId, "place", clientId), date: row.date, time: row.time, repeated: true } : null;
+  if (!row) return null;
+  const receiptId = await receiptIdOf(userId, "place", clientId);
+  if (row.archivedAt) return { status: 422, answer: { error: "taken_back", why: TAKEN_BACK_WHY, workoutId: row.id, receiptId } };
+  return { status: 200, answer: { workoutId: row.id, receiptId, date: row.date, time: row.time, repeated: true } };
 }
 
 nativeLibraryRoutes.post("/templates/:id/place", requireUser, async (c) => {
@@ -271,7 +287,7 @@ nativeLibraryRoutes.post("/templates/:id/place", requireUser, async (c) => {
   const userId = c.get("userId");
   const { date, clientId } = parsed.data;
   const before = await placedBefore(c, clientId);
-  if (before) return c.json(before, 200);
+  if (before) return c.json(before.answer, before.status);
   const t = await templateOf(c, c.req.param("id")!);
   if (!t) return c.json({ error: "not_found" }, 404);
   if (!t.doc) return c.json({ error: "invalid_doc", issues: [{ path: "", code: "unreadable", message: "This saved workout can't be read.", severity: "error" }] }, 422);

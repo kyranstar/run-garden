@@ -430,7 +430,8 @@ check("renew: …all three answer the one expiry", new Set(renews.map((a) => a.j
 
 // 4h. R1 on local D1 (kit v0.20, DESIGN-3 §3.4, §3.5, §5.3 "end to end"): the laptop grants the v4 phone training-v5 in place;
 // its library reads (nothing written), a saved workout put on the plan with its receipt in the same batch, /days showing it,
-// taken back (archived as taken_back, compensation said), the same take-back again answering what it did; a place the laptop
+// taken back (archived as taken_back, compensation said), the same take-back again answering what it did, the place resent
+// then answering 422 taken_back (R1.2); a place the laptop
 // moved since refused changed_since; switch A off refusing a frame; then the coach on the phone with the scripted designer —
 // a run, its proposal (version, complete, the typed ops), an approve without its version refused at the gate, a stale one
 // 409, the right one applied with its receipt, the drain, /days, a laptop edit, and the take-back refused changed_since; the
@@ -471,6 +472,9 @@ const tbAgain = await call("POST", "/api/native/take-back", { bearer: token, bod
 check("R1: the same take-back again: the same answer, nothing written", [JSON.stringify(stable(tbAgain.json)) === JSON.stringify(stable(tb.json)), tbAgain.json.remaining, d1Hash() === hashTb], [true, [], true]);
 check("R1: another request id: already_taken_back", (await call("POST", "/api/native/take-back", { bearer: token, body: { receiptIds: [placed.json.receiptId], requestId: `${tbReq}-b` } })).json.outcomes?.[0]?.outcome, "already_taken_back");
 check("R1: /receipts/:id: taken back, its compensation live", [(await call("GET", `/api/native/receipts/${placed.json.receiptId}`, { bearer: token })).json.status], ["taken_back"]);
+const hashOff = d1Hash();
+const resentOff = await call("POST", `/api/native/templates/${tplId}/place`, { bearer: token, body: { date: d4, time: "18:00", clientId: placeKey } });
+check("R1.2: the same clientId again once taken back: 422 taken_back with its workout and receipt, never repeated; nothing written", [resentOff.status, resentOff.json.error, resentOff.json.workoutId === placed.json.workoutId, resentOff.json.receiptId === placed.json.receiptId, "repeated" in resentOff.json, d1Hash() === hashOff], [422, "taken_back", true, true, false, true]);
 const placed2 = await call("POST", `/api/native/templates/${tplId}/place`, { bearer: token, body: { date: d4, time: "07:00", clientId: `${placeKey}-2` } });
 check("R1: a second place, and the laptop moves it", [placed2.status, (await call("POST", `/api/plan/workouts/${placed2.json.workoutId}/move`, { cookie: true, body: { toDate: plusDays(day, 5), toTime: "07:00" } })).status], [201, 200]);
 const hashMoved = d1Hash();

@@ -239,7 +239,8 @@ on the `training-v5` scope only (`apps/worker/src/auth/device-scope.ts`; routes 
   name) and, since R1.1, *What's in it* (`moves`: each move's library id, name and dose in words, the shape and renderer
   of a session's *What's in it*), nothing a v5 phone doesn't already read. Every read is `no-store` and 503 during a
   restore. A resent place (the same `clientId`) is answered the place it made before anything else is judged (R1.1), so
-  a lost answer never reads as refused.
+  a lost answer never reads as refused while that place stands; once it is off the plan (taken back, or removed on the
+  laptop), the resend is answered 422 `taken_back` (R1.2), never as still on the plan.
 - **The QA account's phone has no coach.** After `requireUser` (where the QA account's switches go off), every coach route
   answers 404 `coach_off` to it — no run, no model call, no `llm_usage` row. Its library, place and take-back work on its
   fixtures only. The $20 weekly cutoff is unchanged; a call's 32,000-token ceiling is reserved at its worst case first.

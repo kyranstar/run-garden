@@ -8,7 +8,8 @@
  * the create's own batch, holds the row as written (placed, for an untimed one) and lapses at the session's day end or in 8
  * days; another account's template is not found; 423 during a restore. R1.1: a resend is looked up FIRST — after the
  * template is deleted or unreadable, after the day has passed, or with another body under the same clientId, it is the
- * place it made, nothing written and nothing of the template or the day read. Synthetic data only.
+ * place it made, nothing written and nothing of the template or the day read. R1.2: once that place is off the plan (taken
+ * back on the laptop, or removed there), a resend is 422 `taken_back`, never `repeated`. Synthetic data only.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -22,6 +23,7 @@ import { eq } from "drizzle-orm";
 import { schema } from "@rg/database";
 import { addDays, nowInstant } from "@rg/domain";
 import { nativeLibraryRoutes } from "../src/routes/native-library.js";
+import { nativeTakeBackRoutes } from "../src/routes/native-take-back.js";
 import { POST_STATE_SQL, receiptExpiry, receiptIdOf } from "../src/services/take-back.js";
 import { activateTmj, calmDoc, landingsDoc } from "./doc-workout-fixture.js";
 import { makeTestUser } from "./helpers.js";
@@ -40,7 +42,10 @@ beforeEach(async () => {
   vi.useFakeTimers({ toFake: ["Date"] });
   vi.setSystemTime(new Date(at(T, "09:00")));
   vi.stubGlobal("fetch", (async () => new Response("{}", { status: 404 })) as typeof fetch);
-  w = await nativeWorld([["/api/native", nativeLibraryRoutes]]);
+  w = await nativeWorld([
+    ["/api/native", nativeLibraryRoutes],
+    ["/api/native", nativeTakeBackRoutes],
+  ]);
   v5 = await seedDevice(w.db, w.userId, { scope: "training-v5", lastUsedAt: nowInstant() });
   await w.db.insert(workoutTemplates).values({
     id: "t-hips", userId: w.userId, name: "Hip reset", doc: JSON.stringify(calmDoc()), pinned: true, uses: 2, lastUsedAt: null, createdAt: at("2026-11-01", "09:00"), updatedAt: at("2026-11-01", "09:00"),
@@ -179,6 +184,44 @@ describe("POST /api/native/templates/:id/place", () => {
       const moved = await place({ date: addDays(T, 1), time: "07:00", clientId: "c-shared" });
       expect([moved.status, moved.json]).toEqual([200, { ...first.json, date: addDays(T, 2), time: "18:00", repeated: true }]);
       expect(await receipts()).toHaveLength(1);
+    });
+
+    it("a resend once the place is off the plan — taken back on the laptop, or removed there — is 422 taken_back, never `repeated` (R1.2)", async () => {
+      // The R1.1 review's minor 3. 422 because the installed phone (LifeOS f83daf9f, `placeAnswered`) reads any 422 as the
+      // place refused, its code kept as a word, and offers no take-back for it; a 200 it would show as on the plan, and a 409
+      // or 410 would stop its delivery and hold the placement unsent for good.
+      const offPlan = (first: { json: Record<string, unknown> }) => ({
+        error: "taken_back",
+        why: "It was put on your plan, then taken off it.",
+        workoutId: first.json.workoutId,
+        receiptId: first.json.receiptId,
+      });
+      /** A resend after it left the plan: answered so, with nothing written and nothing of the template or the day read. */
+      async function resentOff(first: { json: Record<string, unknown> }, clientId: string, bearer = v5.token) {
+        const again = await place({ date: addDays(T, 1), time: "07:00", clientId }, "t-hips", bearer);
+        expect([again.status, again.json], again.text).toEqual([422, offPlan(first)]);
+        expect(again.writes.filter((s) => !/native_devices/.test(s))).toEqual([]);
+        expect(again.statements.filter((s) => /workout_templates|user_preferences|personal_moves|exercise|condition/.test(s))).toEqual([]);
+      }
+      // Taken back on the laptop, through its receipt (the session takes back any of the account's).
+      const first = await place({ date: addDays(T, 1), time: "07:00", clientId: "c-taken-back" });
+      expect(first.status, first.text).toBe(201);
+      const back = await w.call("POST", "/api/native/take-back", { body: { receiptIds: [first.json.receiptId], requestId: "laptop-1" } });
+      expect([back.status, back.json.outcomes?.[0]?.outcome], back.text).toEqual([200, "taken_back"]);
+      expect((await rowOf(first.json.workoutId as string)).archiveReason).toBe("taken_back");
+      await resentOff(first, "c-taken-back");
+      // The laptop resending it is answered the same (the key is the account and the clientId, C12).
+      const laptop = await w.call("POST", "/api/native/templates/t-hips/place", { body: { date: addDays(T, 1), time: "07:00", clientId: "c-taken-back" } });
+      expect([laptop.status, laptop.json]).toEqual([422, offPlan(first)]);
+      // Removed on the laptop by hand (archived, its receipt still open): the same answer.
+      const second = await place({ date: addDays(T, 1), time: "08:00", clientId: "c-removed" });
+      expect(second.status, second.text).toBe(201);
+      await w.db.update(plannedWorkouts).set({ archivedAt: nowInstant(), archiveReason: "user_removed" }).where(eq(plannedWorkouts.id, second.json.workoutId as string));
+      await resentOff(second, "c-removed");
+      // Two places, two receipts, two uses: no resend wrote one. A new clientId still places.
+      expect(await receipts()).toHaveLength(2);
+      expect(await uses()).toBe(4);
+      expect((await place({ date: addDays(T, 1), time: "09:00", clientId: "c-new" })).status).toBe(201);
     });
   });
 
