@@ -12,6 +12,8 @@
  *    another phone's same clientId is its own ask; the laptop's cookie and any other shape are 400 `bad_client_id`; an ask
  *    that started nothing (a refused frame, a live run in the way) wrote no key and goes again; it is a turn of its
  *    conversation as any ask; and creating spends nothing (the model runs only in a step);
+ *  - R1.2: record_answer's and remember's results carry `undo: {handle}` to the phone — the token alone, no other tool's
+ *    and no other field — so its Undo (pair 14) takes back what was kept; another run's handle is still 400;
  *  - the QA account's phone has no coach: 404 `coach_off` on every coach route, no `coach_runs` row, no `llm_usage` row;
  *  - another account's run or proposal is 404. Synthetic data only.
  */
@@ -28,10 +30,11 @@ import { coachRunRoutes } from "../src/routes/coach-runs.js";
 import { nativeRoutes } from "../src/routes/native.js";
 import { deviceAskKey } from "../src/services/coach-runs.js";
 import { designContextBuilder } from "../src/services/design-context.js";
+import { eventView } from "../src/services/device-view.js";
 import { FRAME_KEYS, frameLines, frameSection, type DayFrame } from "../src/services/design-frame.js";
 import { nativeWorld, seedDevice, type NativeWorld } from "./native-fixture.js";
 
-const { auditEvents, coachRuns, llmUsage, users } = schema;
+const { auditEvents, coachMemory, coachRunEvents, coachRuns, llmUsage, users } = schema;
 const LA = "America/Los_Angeles";
 const T = "2026-11-19"; // a Thursday
 const NOW = DateTime.fromISO(`${T}T07:40`, { zone: LA }).toUTC().toISO()!;
@@ -278,6 +281,54 @@ describe("an ask from the phone, once (R1.2; the lead's kit v0.21: never silentl
     await cancel(a.json.run.id);
     const fresh = await create(ask({ conversationId: null, clientId: U2 }));
     expect([fresh.json.conversationId, (await settingsOf(fresh.json.run.id)).conversationId]).toEqual([fresh.json.run.id, fresh.json.run.id]);
+  });
+});
+
+describe("the undo of what the coach kept reaches the phone (R1.2; pair 14, POST /runs/:id/undo-answer)", () => {
+  const RUN = `run-${"u".repeat(8)}`;
+  /** A tool's result as the loop writes it: its input, its data and its receipt beside the tool's name. */
+  const result = (tool: string, receipt: Record<string, unknown>, kind = "tool_result") => ({
+    seq: 3, kind, summary: "Noted from your request: knee 3 of 5", at: NOW,
+    payload: { tool, ok: true, input: { said: "my knee is a 3" }, data: { recorded: 1 }, provenance: ["request"], receipt },
+  });
+  const answered = { undo: { handle: `ra:${RUN}:toolu_ra1`, expiresAt: "2026-11-26" }, recorded: [{ question: "knee", value: 3 }] };
+  const remembered = { memoryId: `mem:${RUN}:toolu_rm1`, kind: "fact", confidence: "stated", undo: { handle: `rm:${RUN}:toolu_rm1` } };
+
+  it("record_answer's and remember's results carry undo: {handle}, the token alone; no other tool's, kind's or field", () => {
+    expect(eventView(result("record_answer", answered))).toEqual({ seq: 3, kind: "tool_result", at: NOW, summary: "Noted what you said", payload: { tool: "record_answer", ok: true, undo: { handle: `ra:${RUN}:toolu_ra1` } } });
+    expect(eventView(result("remember", remembered))).toEqual({ seq: 3, kind: "tool_result", at: NOW, summary: "Noted something to remember", payload: { tool: "remember", ok: true, undo: { handle: `rm:${RUN}:toolu_rm1` } } });
+    // Another tool's receipt, even one holding an undo; the call before its result; a handle of the other tool's or in words.
+    expect(eventView(result("read_day", answered))!.payload).toEqual({ tool: "read_day", ok: true });
+    expect(eventView(result("record_answer", answered, "tool_call"))!.payload).toEqual({ tool: "record_answer", ok: true });
+    for (const handle of [`rm:${RUN}:toolu_ra1`, "Noted: knee 3 of 5", `ra:${RUN}:toolu ra1`, `ra:${RUN}`, 42]) {
+      expect([handle, eventView(result("record_answer", { undo: { handle } }))!.payload]).toEqual([handle, { tool: "record_answer", ok: true }]);
+    }
+    expect(eventView(result("remember", { undo: { handle: `ra:${RUN}:toolu_rm1` } }))!.payload).toEqual({ tool: "remember", ok: true });
+  });
+
+  it("the phone reads the handle on its run and its Undo takes the item back; another run's handle is still 400", async () => {
+    await w.db.insert(coachRuns).values({ id: RUN, userId: w.userId, parentId: null, role: "main", scope: { kind: "now" }, request: null, status: "finished", state: null, steps: 2, costUsd: 0, createdAt: NOW, updatedAt: NOW });
+    await w.db.insert(coachRunEvents).values(
+      [result("record_answer", answered), result("remember", remembered), result("read_day", {})].map((e, i) => ({ id: newId(), userId: w.userId, runId: RUN, seq: i + 1, kind: e.kind, summary: e.summary, payload: e.payload, at: NOW })),
+    );
+    await w.db.insert(coachMemory).values({ id: `mem:${RUN}:toolu_rm1`, userId: w.userId, kind: "fact", body: "Keeps Sunday mornings free", confidence: "stated", pinned: false, active: true, learnedAt: NOW, updatedAt: NOW, provenance: { source: "coach", runId: RUN } } as typeof coachMemory.$inferInsert);
+    const read = await w.call("GET", `/api/coach/runs/${RUN}?afterSeq=0`, { bearer: v5.token });
+    expect(read.status, read.text).toBe(200);
+    expect(read.json.events.map((e: { payload: Record<string, unknown> }) => e.payload)).toEqual([
+      { tool: "record_answer", ok: true, undo: { handle: `ra:${RUN}:toolu_ra1` } },
+      { tool: "remember", ok: true, undo: { handle: `rm:${RUN}:toolu_rm1` } },
+      { tool: "read_day", ok: true },
+    ]);
+    // Never a word of what was kept, nor its id, its expiry or its input.
+    for (const word of ["knee", "Sunday", "mem:", "2026-11-26"]) expect(read.text).not.toContain(word);
+    // Another run's handle is 400, as it always was; this run's takes back what remember kept.
+    const other = `run-${newId()}`;
+    await w.db.insert(coachRuns).values({ id: other, userId: w.userId, parentId: null, role: "main", scope: { kind: "now" }, request: null, status: "finished", state: null, steps: 0, costUsd: 0, createdAt: NOW, updatedAt: NOW });
+    const wrong = await w.call("POST", `/api/coach/runs/${other}/undo-answer`, { bearer: v5.token, body: { handle: `rm:${RUN}:toolu_rm1` } });
+    expect([wrong.status, wrong.json]).toEqual([400, { error: "bad_handle" }]);
+    const undo = await w.call("POST", `/api/coach/runs/${RUN}/undo-answer`, { bearer: v5.token, body: { handle: read.json.events[1].payload.undo.handle } });
+    expect([undo.status, undo.json], undo.text).toEqual([200, { undone: 1 }]);
+    expect((await w.db.select().from(coachMemory).where(eq(coachMemory.id, `mem:${RUN}:toolu_rm1`)))[0]!.active).toBe(false);
   });
 });
 

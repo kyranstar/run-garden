@@ -25,6 +25,7 @@
 import type { MiddlewareHandler } from "hono";
 import { PROFILES } from "@rg/exercise-library";
 import type { AppContext } from "../auth/middleware.js";
+import { handleRunId } from "./design-tools/record-answer.js";
 
 // ── Words (the belt, for the question alone) ─────────────────────────────────────────────────────────────────────
 
@@ -113,10 +114,26 @@ const TOOL_LINES: Readonly<Record<string, string>> = {
   adjust_plan: "Suggested a change to your plan",
   plan_set: "Planned a set",
   remember: "Noted something to remember",
+  // R1.2: its line, now the phone can take back what it kept (`undo`).
+  record_answer: "Noted what you said",
   ask_athlete: "Asked you",
   finish: "Finished",
 };
 const toolLine = (tool: string | null): string => (tool && TOOL_LINES[tool]) || "Worked on it";
+
+/** The tools whose result keeps something the owner may take back (pair 14), each with its handle's own kind. */
+const UNDO_KINDS: Readonly<Record<string, string>> = { record_answer: "ra", remember: "rm" };
+/**
+ * A result's undo handle as the phone gets it (R1.2): the opaque token alone — `<kind>:<main run>:<call>`, the grammar
+ * `POST /runs/:id/undo-answer` takes — of the tool's own kind; never a word of what was kept, its expiry or anything else
+ * of its receipt.
+ */
+function undoOf(tool: unknown, receipt: unknown): O | undefined {
+  const kind = typeof tool === "string" ? UNDO_KINDS[tool] : undefined;
+  const handle = obj(obj(receipt)?.undo)?.handle;
+  if (!kind || typeof handle !== "string" || handle.length > 300 || handleRunId(handle) === null || !handle.startsWith(`${kind}:`)) return undefined;
+  return { handle };
+}
 const EVENT_KINDS = new Set(["tool_call", "tool_result", "draft", "review", "revision", "question", "note", "error"]);
 const KIND_LINES: Readonly<Record<string, string>> = {
   draft: "Drafted a workout",
@@ -163,7 +180,9 @@ export function eventView(raw: unknown): O | null {
   const base = { seq: num(e.seq), kind, at: token(e.at) };
   if (kind === "tool_call" || kind === "tool_result") {
     const tool = typeof p.tool === "string" && TOOL_LINES[p.tool] ? p.tool : null;
-    return { ...base, summary: p.ok === false ? `${toolLine(tool)}: it couldn't` : toolLine(tool), payload: pick({ tool: tool ?? undefined, ok: bool(p.ok) ?? undefined }) };
+    // What record_answer or remember kept carries its undo handle (R1.2: pair 14 reachable from the phone) — a result's only.
+    const undo = kind === "tool_result" ? undoOf(p.tool, p.receipt) : undefined;
+    return { ...base, summary: p.ok === false ? `${toolLine(tool)}: it couldn't` : toolLine(tool), payload: pick({ tool: tool ?? undefined, ok: bool(p.ok) ?? undefined, undo }) };
   }
   if (kind === "question") return { ...base, summary: KIND_LINES.question, payload: questionView(p.data) };
   if (kind === "note") return { ...base, summary: noteLine(p), payload: pick({ proposalId: token(p.proposalId) ?? undefined, final: p.final === true ? true : undefined, answer: p.answer === true ? true : undefined }) };
