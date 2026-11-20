@@ -167,21 +167,26 @@ on the `training-v5` scope only (`apps/worker/src/auth/device-scope.ts`; routes 
   (Settings → Devices, *Allow your library and coach*, whose line names everything it allows, what it reads of the coach,
   that coach use counts toward the week's AI limit, and that it shares nothing about the owner's day) and steps it back to
   v4 in place (*Stop library and coach*: what it added stays). New pairings mint it, and the pairing says the same: the AI
-  limit, that it never sees health readings or conditions, and that it shares nothing of the day. Revoke and the kill
+  limit, that it reads the coach's questions and what the coach remembers (the coach's own words), that everything else is
+  plain facts, and that it shares nothing of the day. Revoke and the kill
   switch stop it as every device.
-- **What the phone reads of the coach: an allowlist, field by field, never the trail or the coach's words**
+- **What the phone reads of the coach: an allowlist, field by field — never the trail; the coach's words only in its
+  questions and in memory**
   (`services/device-view.ts`, review A MAJOR-1 and MAJOR-1r). The laptop's coach answers carry the coach's working trail
   and its words — what each tool read and was given, the opening's line, a chip's words, the weekly review, titles, finish
   lines. Every coach answer a v5 phone gets is rebuilt route by route from named fields only: ids, kinds, statuses, days,
   times, counts, minutes and categories, and lines the app writes from them (*Read your readiness*, *30 min strength*,
   *Plan this week*). A proposal's ops are typed fields (day, time, minutes before and after, kind, a move's day before);
   the opening and its chips are kinds, ids, days and the app's labels — a phone's *Rework* sends the chip's id and the
-  server looks up its words. Two things the grant names pass, as the owner must act on them: the question the coach asks
-  (its words and chips, every sentence naming a reading, a pace or a condition still taken out; a condition check as
+  server looks up its words. Two things the grant names pass, as the owner must act on them — both model-written text,
+  sent only to the owner's own paired phone: the question the coach asks (its words and chips; a word filter removes
+  sentences naming common readings, but the coach's own words may still mention them; a condition check as
   `check: "condition"` alone), and memory items, `{id, kind, body, confidence, pinned, expiresAt, learnedAt, source}`. The
-  owner's own typed words come back only on a phone's own runs (a laptop's run shows none of its words). Never a reading,
-  a pace, a zone, cadence, power, training load, elevation, a condition's name or check, the memory core, a document's
-  steps or notes, or the account's id. A take-back's `changed_since` says how the session stands as `{date, time, state,
+  owner's own typed words come back only on a phone's own runs (a laptop's run shows none of its words). Beyond those two,
+  the structured fields are the guarantee: never a reading, a pace, a zone, cadence, power, training load, elevation, a
+  condition's name or check, the memory core, a document's steps or notes, or the account's id. *Planned follow-up:* a
+  structured question format — the ask tool takes a typed question kind whose text and chips the app renders, free-text
+  questions laptop-only — so that questions too carry no model-written text to the phone. A take-back's `changed_since` says how the session stands as `{date, time, state,
   archived, title, minutes}`. Pinned by `device-never-list.test.ts`: readings, a pace, effort figures, a condition and
   memory lines planted where the coach reads and words them — its trail, the opening, a chip, the weekly review — reach no
   v5 answer. The laptop's (cookie) answers are unchanged.
