@@ -244,6 +244,7 @@ const placeSchema = z
 /**
  * What a first place declares of its request (an upper bound, its sign-in included; measured 19 at a time and 21 untimed,
  * the collision pass of a light day included): the room its record and its calendar step share (R1.2 re-check, MAJOR-A).
+ * An untimed place adds a statement for each row its collision pass re-times (`retimed`; R1.3, the re-check's NIT-3).
  */
 export const PLACE_COST = 24;
 
@@ -348,8 +349,9 @@ nativeLibraryRoutes.post("/templates/:id/place", requireUser, async (c) => {
     if (records) await deviceWatchRecord(db, c.env, userId, made.workout.id, prefs).catch(() => false);
     // The calendar follows, as after a Studio save — in the room the request has left (the re-check's MAJOR-A): beside a
     // phone's record none is left, so its event waits for the half-hourly run; the reconcile books what any step leaves.
-    // No record, no room held for one (the re-check's NIT-2): the place books its event itself.
-    const ops = calendarOpsFitting(REQUEST_BUDGET - PLACE_COST - (records ? DEVICE_RECORD_COST : 0));
+    // No record, no room held for one (the re-check's NIT-2): the place books its event itself. Its cost counts each row
+    // its collision pass re-timed, one statement a row (NIT-3: `PLACE_COST` is a light day's): a crowded day books none.
+    const ops = calendarOpsFitting(REQUEST_BUDGET - PLACE_COST - (made.retimed ?? 0) - (records ? DEVICE_RECORD_COST : 0));
     if (ops > 0) waitUntilSafe(c, syncCalendar(db, c.env, userId, { maxOps: ops }).catch(() => undefined));
     return c.json(answer, 201);
   } catch (e) {

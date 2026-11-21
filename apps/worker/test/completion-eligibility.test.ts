@@ -116,16 +116,18 @@ describe("auto-match eligibility from occurrence time (R1.3)", () => {
     expect((await ingestActivities(db, { userId, sources: [NOV20_YOGA] })).matchesCreated).toBe(1);
     const post = await laptop(db, userId);
     expect((await post(`/api/plan/workouts/${s}/unmatch`, {})).status).toBe(200);
-    // The next sync brings a walk of the same day, which no session here takes: the yoga is a candidate again, and the
+    // The next sync brings a walk of the same day, which no session here takes: the yoga is in the window again, and the
     // session it was taken off is open. It is never paired again.
     const walk = await ingestActivities(db, { userId, sources: [coros("walk-1700", "2026-11-20T17:00:00", "2026-11-21T01:00:00Z", 30, "walk")] });
     expect(walk.matchesCreated).toBe(0);
     expect((await activityRow(db, "yoga-1403"))!.completionMatchId).toBeNull();
     expect(await liveMatches(db)).toEqual([]);
-    // Another activity of the day can still answer the session.
-    await ingestActivities(db, { userId, sources: [coros("stretch-1900", "2026-11-20T19:00:00", "2026-11-21T03:00:00Z", 25)] });
+    // Another activity of the day can still answer the session — even one that fits it less well than the yoga did (40
+    // minutes, at 22:30): the undone yoga is no candidate, so it never wins the session on score only to be refused at the
+    // write, leaving the session unanswered.
+    await ingestActivities(db, { userId, sources: [coros("stretch-2230", "2026-11-20T22:30:00", "2026-11-21T06:30:00Z", 40)] });
     const live = await liveMatches(db);
-    expect(live.map((m) => [m.workoutId, m.activityId])).toEqual([[s, (await activityRow(db, "stretch-1900"))!.id]]);
+    expect(live.map((m) => [m.workoutId, m.activityId])).toEqual([[s, (await activityRow(db, "stretch-2230"))!.id]]);
     expect((await activityRow(db, "yoga-1403"))!.completionMatchId).toBeNull();
   });
 

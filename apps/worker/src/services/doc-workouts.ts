@@ -611,7 +611,7 @@ export async function createDocWorkout(
   ctx: DocWorkoutCtx,
   source: DocWriteSource = {},
   receipt: DocWriteReceipt = {},
-): Promise<{ workout: DocWorkoutDto; warnings: DocIssue[]; repeated?: true }> {
+): Promise<{ workout: DocWorkoutDto; warnings: DocIssue[]; repeated?: true; retimed?: number }> {
   // Played offline (R11): a record of what was done, made with the device's key and at once — never planned.
   if (input.playedOffline && (!input.clientId || !input.startNow)) throw new PlayedOfflineRefusedError("key");
   const id = input.clientId ? await keyedRowId(userId, input.clientId) : newId();
@@ -733,13 +733,15 @@ export async function createDocWorkout(
 
   // A time asked for stands; the athlete's window gives way to what the day already holds, as a placed slot's does.
   let time = row.effectiveTime;
+  let retimed = 0;
   if (input.time == null) {
     const moved = await separateDayCollisions(db, userId, [date], ctx.prefs, { from: ctx.today, now: ctx.now });
     time = moved.find((m) => m.workoutId === id)?.to ?? time;
+    retimed = moved.length;
     // Its own receipt holds where it was placed; another row's, where the pass moved it (review B-9): one statement.
     await runAtomically(db, receiptsAfterPass(db, userId, receipt.settleId ?? null, moved.filter((m) => m.workoutId !== id)));
   }
-  return { workout: dtoOf({ ...row, effectiveTime: time }, doc, derived.estimatedMinutes), warnings };
+  return { workout: dtoOf({ ...row, effectiveTime: time }, doc, derived.estimatedMinutes), warnings, retimed };
 }
 
 /** A push the lane has claimed: on its way to the watch this moment (a queued one is only cancelled). */

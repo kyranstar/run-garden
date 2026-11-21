@@ -124,7 +124,8 @@ workoutRoutes.post("/", async (c) => {
   const parsed = createSchema.safeParse(await c.req.json().catch(() => null));
   if (!parsed.success) return c.json({ error: "invalid_workout", issues: parsed.error.issues }, 422);
   try {
-    const { repeated, ...created } = await createDocWorkout(c.get("db"), c.get("userId"), parsed.data, await writeCtx(c));
+    // `retimed` sizes a phone place's calendar step (native-library.ts); it is no part of the answer.
+    const { repeated, retimed: _retimed, ...created } = await createDocWorkout(c.get("db"), c.get("userId"), parsed.data, await writeCtx(c));
     // A repeated key wrote nothing: nothing new to book; nor does Start now, which books nothing.
     if (repeated) return c.json(created, 200);
     if (!parsed.data.startNow) bookCalendar(c);

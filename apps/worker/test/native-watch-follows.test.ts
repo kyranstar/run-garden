@@ -273,11 +273,12 @@ describe("the watch follows a phone's place and take-back (R1.2 item 7)", () => 
   });
 
   // PLACE_COST is a light day's figure (the R1.2 re-check's NIT-3): an untimed place's collision pass writes one statement a
-  // row it re-times. With no record to make, the calendar step takes the room left, so a crowded day must still fit.
-  it("an untimed place on a crowded day stays within 45: its collision pass, and the calendar step in the room left (NIT-3)", async () => {
+  // row it re-times. With no record to make, the calendar step takes the room left (NIT-2), so the place counts what its pass
+  // wrote: measured, eight rows re-timed and the event booked came to 44 of 45, so ten would not fit beside the event.
+  it("an untimed place on a crowded day stays within 45: it counts the rows its pass re-timed, and leaves its event (NIT-3)", async () => {
     await world({ WATCH_PUSH_ENABLED: "1" }, false);
     const day = addDays(T, 1);
-    for (let i = 0; i < 8; i++) {
+    for (let i = 0; i < 10; i++) {
       await w.db.insert(plannedWorkouts).values({
         id: `crowd-${i}`, userId: w.userId, planId: `studio-${w.userId}`, origin: "studio", sourceWorkoutId: `studio:crowd-${i}`, title: `Crowd ${i}`,
         category: "yoga", sport: "yoga", originalPlanDate: day, lastVerifiedCorosDate: day, effectiveDate: day, effectiveTime: "18:00",
@@ -290,8 +291,12 @@ describe("the watch follows a phone's place and take-back (R1.2 item 7)", () => 
     expect(placed.status, placed.text).toBe(201);
     // The pass's write: a row's new time, held to the row as it read it (`guardOrFail` on its day).
     const retimed = placed.writes.filter((s) => /^update "planned_workouts" set /.test(s) && /"effective_time" = \?/.test(s) && / = case when /.test(s)).length;
-    expect(retimed, "the collision pass re-timed the day's rows").toBeGreaterThan(3);
-    expect(placed.total, `the place, ${retimed} rows re-timed by its collision pass, and its calendar step`).toBeLessThanOrEqual(BUDGET);
+    expect(retimed, "the collision pass re-timed the day's rows").toBeGreaterThanOrEqual(9);
+    expect(placed.total, `the place, ${retimed} rows re-timed by its collision pass`).toBeLessThanOrEqual(BUDGET);
+    // No room left beside them: its event waits for the half-hourly run, which books it.
+    expect(google.inserted).toEqual([]);
+    for (let run = 0; run < 4 && !google.inserted.includes(placed.json.workoutId as string); run++) await halfHourly();
+    expect(google.inserted).toContain(placed.json.workoutId);
   });
 
   it("while a restore is replacing the account: the read is 503 and runs nothing; the place and take-back are 423", async () => {
