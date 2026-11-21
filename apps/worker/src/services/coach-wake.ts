@@ -1005,7 +1005,8 @@ export async function guardrailCtx(
     for (const m of await db
       .select({ activityId: workoutCompletionMatches.activityId })
       .from(workoutCompletionMatches)
-      .where(inArray(workoutCompletionMatches.workoutId, ids))) {
+      // Live matches only (R1.3 review, MAJOR-1): an undone match's activity is unplanned now, and its minutes count here.
+      .where(and(inArray(workoutCompletionMatches.workoutId, ids), isNull(workoutCompletionMatches.undoneAt)))) {
       matched.add(m.activityId);
     }
   }

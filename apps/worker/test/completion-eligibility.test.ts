@@ -21,7 +21,7 @@ import { activityDate } from "../src/services/garden-sync.js";
 import type { Env } from "../src/env.js";
 import { makeTestDb, makeTestUser, mountRoutes } from "./helpers.js";
 
-const { activities, plannedWorkouts, workoutCompletionMatches } = schema;
+const { activities, performedSessions, plannedWorkouts, trainingPlans, workoutCompletionMatches } = schema;
 
 /** A one-off session on `date`, written at `createdAt` (a yoga, 25 minutes, unless told). */
 async function session(db: Db, userId: string, date: string, createdAt: string, over: Partial<typeof plannedWorkouts.$inferInsert> = {}): Promise<string> {
@@ -145,9 +145,38 @@ describe("auto-match eligibility from occurrence time (R1.3)", () => {
     expect((await activityRow(db, "yoga-1403"))!.completionMatchId).toBeNull();
   });
 
+  // A SESSION IMPORTED FROM COROS (the review's MINOR-2): its `created_at` is when run-garden first read it, not when it was
+  // planned. A workout added in the COROS app, done, then synced arrives in the same read as its activity, "created" after
+  // it ended. Its creation is unknown, so only the day rule holds it; a session the app wrote keeps both rules.
+  it("a session imported from COROS is judged by its day alone: its creation is when run-garden read it", async () => {
+    /** An account with a COROS plan, a session of it on `date` imported at `importedAt`, and the yoga synced. */
+    const imported = async (date: string, importedAt: string) => {
+      const db = makeTestDb();
+      const { userId } = await makeTestUser(db);
+      await db.insert(trainingPlans).values({ id: `coros-plan-${userId}`, userId, provider: "coros", sourcePlanId: "p-1", name: "COROS plan", status: "active", createdAt: importedAt, updatedAt: importedAt });
+      const id = await session(db, userId, date, importedAt, { planId: `coros-plan-${userId}`, origin: null, sourceWorkoutId: `p-1:${date}` });
+      const stats = await ingestActivities(db, { userId, sources: [NOV20_YOGA] });
+      return { db, id, stats };
+    };
+    // Read in the same sync as the yoga, after it ended: its day's session still answers it.
+    const sameDay = await imported("2026-11-20", "2026-11-21T05:00:00Z");
+    expect(sameDay.stats.matchesCreated).toBe(1);
+    expect([(await liveMatches(sameDay.db))[0]!.workoutId, (await rowOf(sameDay.db, sameDay.id)).completionState]).toEqual([sameDay.id, "completed"]);
+    // The day rule still holds: the next day's imported session never does.
+    const nextDay = await imported("2026-11-21", "2026-11-21T05:00:00Z");
+    expect(nextDay.stats.matchesCreated).toBe(0);
+    expect((await rowOf(nextDay.db, nextDay.id)).completionState).toBe("scheduled");
+    // A session the app wrote in that plan (an origin of its own) keeps its creation rule.
+    const db = makeTestDb();
+    const { userId } = await makeTestUser(db);
+    await db.insert(trainingPlans).values({ id: `coros-plan-${userId}`, userId, provider: "coros", sourcePlanId: "p-1", name: "COROS plan", status: "active", createdAt: "2026-11-01T00:00:00Z", updatedAt: "2026-11-01T00:00:00Z" });
+    await session(db, userId, "2026-11-20", "2026-11-21T05:00:00Z", { planId: `coros-plan-${userId}` });
+    expect((await ingestActivities(db, { userId, sources: [NOV20_YOGA] })).matchesCreated).toBe(0);
+  });
+
   it("the write re-checks what may have changed since scoring: archived, moved, skipped, matched or undone since, it writes nothing", async () => {
     /** The yoga synced, a session of its day there before it, read as scoring read it; `change` lands; then the write. */
-    const scene = async (change: (db: Db, workoutId: string, activityId: string, now: string) => Promise<unknown>) => {
+    const scene = async (change: (db: Db, workoutId: string, activityId: string, now: string, userId: string) => Promise<unknown>) => {
       const db = makeTestDb();
       const { userId } = await makeTestUser(db);
       await ingestActivities(db, { userId, sources: [NOV20_YOGA] });
@@ -155,7 +184,7 @@ describe("auto-match eligibility from occurrence time (R1.3)", () => {
       const id = await session(db, userId, "2026-11-20", "2026-11-19T18:00:00Z");
       const scored = await rowOf(db, id);
       const now = nowInstant();
-      await change(db, id, yoga.id, now);
+      await change(db, id, yoga.id, now, userId);
       const before = { workout: await rowOf(db, id), matches: await db.select().from(workoutCompletionMatches) };
       const wrote = await commitMatch(db, userId, { workoutId: id, activityId: yoga.id, confidence: 0.8, method: "scored" }, scored, now);
       return { wrote, db, id, yoga, before };
@@ -176,6 +205,12 @@ describe("auto-match eligibility from occurrence time (R1.3)", () => {
       },
       "the activity's match undone": (db, _w, a, now) =>
         db.insert(workoutCompletionMatches).values({ id: "undone", workoutId: "elsewhere", activityId: a, confidence: 0.6, method: "scored_auto", matchedAt: now, undoneAt: now }),
+      // The phone's save adopted the watch's copy and landed unmatched (its slot held by hand): the app's session owns it,
+      // and it counts as unplanned (ruling 2b-R5; the review's MINOR-3).
+      "the activity an app session's since": (db, _w, a, now, userId) =>
+        db.insert(performedSessions).values({
+          id: "app-save", userId, workoutId: null, activityId: a, source: "app", localDate: "2026-11-20", seconds: 1500, payloadHash: "h", createdAt: now, updatedAt: now,
+        } as typeof performedSessions.$inferInsert),
     };
     for (const [why, change] of Object.entries(refusals)) {
       const { wrote, db, id, before } = await scene(change);

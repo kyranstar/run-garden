@@ -246,10 +246,12 @@ on the `training-v5` scope only (`apps/worker/src/auth/device-scope.ts`; routes 
   check or a background read: the harness reads a receipt with the laptop's cookie, which runs no step and writes nothing
   (tested).
   *Who an automatic match may pair (R1.3):* matching runs from when things happened, not when they were imported. A scored
-  match needs the session on the activity's own training day, and the session there before the activity ended. The write
-  re-checks, in its own transaction, that the session is still open, on that day and unmatched, and that the activity has
-  never been matched. An activity whose match was undone is never matched again by the machine; a manual match is never
-  overridden. It applies to the matches written from now on: no stored match is rescored or redone.
+  match needs the session on the activity's own training day, and the session there before the activity ended. A session
+  the COROS import wrote has no known creation (its row's time is when run-garden read it), so only its day holds it. The
+  write re-checks, in its own transaction, that the session is still open, on that day and unmatched, and that the
+  activity has never been matched and no app session owns it. An activity whose match was undone is never matched again by
+  the machine, and every reader (the coach's and take-back's included) reads an undone match as none; a manual match is
+  never overridden. It applies to the matches written from now on: no stored match is rescored or redone.
   *Rolling back:* code from before R1 leaves `take_back_receipts` and `native_device_sharing` rows in place on delete-all
   (its registry doesn't know them); a rollback is followed by deleting both tables' rows of the account by `user_id`,
   or by a forward fix — migration 0040 is additive and safe under the old code.

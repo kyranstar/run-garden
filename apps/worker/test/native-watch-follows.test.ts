@@ -299,6 +299,32 @@ describe("the watch follows a phone's place and take-back (R1.2 item 7)", () => 
     expect(google.inserted).toContain(placed.json.workoutId);
   });
 
+  // O2 (the R1.3 review's NIT-6): with writes on, the record gives way too. Beside a crowded day's collision pass it no longer
+  // fits its declared room, so the place leaves it to the phone's read, whose step makes it, and the read after sends it.
+  it("with writes on, a crowded untimed day's place leaves its record to the read: each request within 45 (O2)", async () => {
+    await world();
+    const day = addDays(T, 1);
+    for (let i = 0; i < 10; i++) {
+      await w.db.insert(plannedWorkouts).values({
+        id: `crowd-${i}`, userId: w.userId, planId: `studio-${w.userId}`, origin: "studio", sourceWorkoutId: `studio:crowd-${i}`, title: `Crowd ${i}`,
+        category: "yoga", sport: "yoga", originalPlanDate: day, lastVerifiedCorosDate: day, effectiveDate: day, effectiveTime: "18:00",
+        sourceContentFingerprint: "fp", calendarBlockDurationSeconds: 1500, sourceEstimatedDurationSeconds: 1500, completionState: "scheduled",
+        createdAt: nowInstant(), updatedAt: nowInstant(),
+      });
+    }
+    const placed = await place("t-1", "c-crowd-on", null);
+    expect(placed.status, placed.text).toBe(201);
+    expect(placed.total, "the place and its collision pass").toBeLessThanOrEqual(BUDGET);
+    const workoutId = placed.json.workoutId as string;
+    expect(await pushesOf(workoutId)).toEqual([]);
+    const first = await readReceipt(placed.json.receiptId as string);
+    expect(first.total, "the read, its record included").toBeLessThanOrEqual(BUDGET);
+    expect((await pushesOf(workoutId)).map((j) => j.status)).toEqual(["queued"]);
+    const second = await readReceipt(placed.json.receiptId as string);
+    expect(second.total, "the read, the push included").toBeLessThanOrEqual(BUDGET);
+    expect((await pushesOf(workoutId)).map((j) => j.status)).toEqual(["verified"]);
+  });
+
   it("while a restore is replacing the account: the read is 503 and runs nothing; the place and take-back are 423", async () => {
     await world();
     const placed = await place();

@@ -224,6 +224,17 @@ describe("refusals, each writing nothing", () => {
     }
   });
 
+  // An undone match is no performed work (R1.3 review, NIT-5): a guess the owner took off — the Nov 20 yoga's, on a
+  // LifeOS place — leaves its row undone, and the place it named still goes back.
+  it("an undone match is no performed work: the place still goes back (R1.3)", async () => {
+    const { workoutId, receiptId } = await place(T, "18:00", "c-undone");
+    await w.db.insert(schema.workoutCompletionMatches).values({
+      id: newId(), workoutId, activityId: "a-1", confidence: 0.507, method: "scored_auto", matchedAt: nowInstant(), undoneAt: nowInstant(),
+    } as typeof schema.workoutCompletionMatches.$inferInsert);
+    const a = await takeBack([receiptId]);
+    expect([a.json.outcomes[0].outcome, a.json.outcomes[0].error], a.text).toEqual(["taken_back", undefined]);
+  });
+
   it("expired after 8 days (or once its day has ended); a move back to a day gone is past; a race is ineligible", async () => {
     const far = await place(addDays(T, 12), "07:00", "c-far");
     const today = await place(T, "18:00", "c-today");

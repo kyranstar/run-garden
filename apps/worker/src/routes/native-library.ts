@@ -344,8 +344,11 @@ nativeLibraryRoutes.post("/templates/:id/place", requireUser, async (c) => {
     // record, its push queued) BEFORE it answers — the phone's read of the receipt, straight after, finds the push queued
     // and sends it, never racing a record still under way (the re-check's MAJOR-B). The laptop's own drain does both for
     // a place it makes. A failed record is left to the read's own step, or the hourly's.
-    // A record runs only for a phone, with the watch switch and COROS writes on (`deviceWatchRecord`'s own conditions).
-    const records = !!c.get("device") && watchPushEnabled(c.env) && prefs.corosWritesEnabled;
+    // A record runs only for a phone, with the watch switch and COROS writes on (`deviceWatchRecord`'s own conditions), and
+    // only in the room the place left: beside a crowded day's collision pass it gives way, and the phone's read of the
+    // receipt, straight after, makes it (its step; the R1.3 review's O2).
+    const records =
+      !!c.get("device") && watchPushEnabled(c.env) && prefs.corosWritesEnabled && PLACE_COST + (made.retimed ?? 0) + DEVICE_RECORD_COST <= REQUEST_BUDGET;
     if (records) await deviceWatchRecord(db, c.env, userId, made.workout.id, prefs).catch(() => false);
     // The calendar follows, as after a Studio save — in the room the request has left (the re-check's MAJOR-A): beside a
     // phone's record none is left, so its event waits for the half-hourly run; the reconcile books what any step leaves.

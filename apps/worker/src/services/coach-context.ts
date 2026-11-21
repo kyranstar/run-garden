@@ -641,7 +641,9 @@ export async function buildDossier(
       ...(await db
         .select()
         .from(workoutCompletionMatches)
-        .where(inArray(workoutCompletionMatches.workoutId, ids))),
+        // Live matches only (R1.3 review, MAJOR-1): an undone one is the owner's correction — its session reopened, its
+        // activity unplanned — and the coach reads it as everything else does.
+        .where(and(inArray(workoutCompletionMatches.workoutId, ids), isNull(workoutCompletionMatches.undoneAt)))),
     );
   }
   const actById = new Map(recentActs.map((a) => [a.id, a]));

@@ -1,4 +1,4 @@
-import { and, desc, eq, gte, lt } from "drizzle-orm";
+import { and, desc, eq, gte, isNull, lt } from "drizzle-orm";
 import {
   activities,
   activityLaps,
@@ -202,7 +202,8 @@ export async function buildEffortPackage(
   const [match] = await db
     .select()
     .from(workoutCompletionMatches)
-    .where(eq(workoutCompletionMatches.activityId, act.id))
+    // Its live match (R1.3 review, MAJOR-1): an undone one before it would hide the session the owner matched it to.
+    .where(and(eq(workoutCompletionMatches.activityId, act.id), isNull(workoutCompletionMatches.undoneAt)))
     .limit(1);
   const planLines: string[] = [];
   if (match && !match.undoneAt) {

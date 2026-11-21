@@ -695,8 +695,16 @@ export async function ingestActivities(db: Db, input: IngestInput): Promise<Inge
     const maxDate = addDays(dates.reduce((a, b) => (a > b ? a : b)), 1);
     // A session the athlete marked done is open to its own activity (`linkOnly`, below): a copy played on the watch and
     // marked before it synced is one session, and left unmatched it would be credited twice, once as extra training.
+    //
+    // A SESSION IMPORTED FROM COROS has no known creation (R1.3 review, MINOR-2): its `created_at` is when run-garden first
+    // read it, and a workout added in the COROS app, done and then synced arrives in the same read as its activity. Such a
+    // row is one the import wrote: its plan a COROS training plan, and no origin of the app's (an app-authored row at a
+    // COROS address keeps its own creation). Its guess is held by the day rule alone (`guessMayPair`, no `createdAt`).
     const openWorkouts = await db
-      .select(plannedRowColumns())
+      .select({
+        ...plannedRowColumns(),
+        importedFromCoros: sql<number>`exists (select 1 from training_plans tp where tp.id = "planned_workouts"."plan_id" and tp.provider = 'coros')`,
+      })
       .from(plannedWorkouts)
       .where(
         and(
@@ -784,8 +792,9 @@ export async function ingestActivities(db: Db, input: IngestInput): Promise<Inge
       },
       corosProgramId: w.sourceProgramId ?? undefined,
       linkOnly: w.origin === "program" || w.courseSession !== null,
-      // When it was written: a guess never pairs it with an activity that ended before (`guessMayPair`, R1.3).
-      createdAt: w.createdAt,
+      // When it was written: a guess never pairs it with an activity that ended before (`guessMayPair`, R1.3). Unknown for a
+      // row the COROS import wrote (above): only its day holds it.
+      createdAt: Number(w.importedFromCoros) === 1 && w.origin === null ? undefined : w.createdAt,
     }));
 
     const matches = matchActivities(matchables as never, candidates);
@@ -844,7 +853,8 @@ function matchRefused(e: unknown): boolean {
  * when writing"). Scoring read `scored` a moment ago; since then the owner may have archived, moved, skipped or matched the
  * session by hand, or the activity been matched elsewhere or had a match undone. The match row's insert carries the check:
  * its `workout_id` is the session's id only while the session is the account's, not archived, on the day and in the state
- * scoring read, with no live match, and the activity is the account's, unmatched and never matched before — else NULL,
+ * scoring read, with no live match, and the activity is the account's, unmatched, never matched before and owned by no app
+ * session (ruling 2b-R5, as the candidates are; the R1.3 review's MINOR-3) — else NULL,
  * which fails the batch (one D1 transaction, or the test driver's), so the activity's link and the session's completion,
  * after it, land only with it. A refused match writes nothing and answers false; any other failure throws, as before.
  * The same three statements as before, now one batch.
@@ -856,7 +866,8 @@ export async function commitMatch(db: Db, userId: string, m: MatchCandidate, sco
     and (completion_state <> 'completed' or sanctioned_by = ${ATHLETE_SAID_DONE})
     and not exists (select 1 from workout_completion_matches held where held.workout_id = ${m.workoutId} and held.undone_at is null)
     and exists (select 1 from activities a where a.id = ${m.activityId} and a.user_id = ${userId} and a.completion_match_id is null)
-    and not exists (select 1 from workout_completion_matches seen where seen.activity_id = ${m.activityId}))`;
+    and not exists (select 1 from workout_completion_matches seen where seen.activity_id = ${m.activityId})
+    and not exists (select 1 from performed_sessions ps where ps.activity_id = ${m.activityId} and ps.source = 'app'))`;
   try {
     await runAtomically(db, [
       db.insert(workoutCompletionMatches).values({

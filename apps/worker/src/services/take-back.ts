@@ -454,7 +454,8 @@ async function rowsNow(db: Db, userId: string, ids: readonly string[]): Promise<
       workoutDoc: sql<string | null>`${pw.workoutDoc}`,
       // Correlated by explicit names: a column inside a select's own SQL is written unqualified.
       performed: sql<number>`exists (select 1 from "performed_sessions" ps where ps."workout_id" = "planned_workouts"."id" and ps."user_id" = ${userId})`,
-      matched: sql<number>`exists (select 1 from "workout_completion_matches" m where m."workout_id" = "planned_workouts"."id")`,
+      // A live match: an undone one is no performed work (R1.3 review, NIT-5), as no other reader counts it.
+      matched: sql<number>`exists (select 1 from "workout_completion_matches" m where m."workout_id" = "planned_workouts"."id" and m."undone_at" is null)`,
     })
     .from(pw)
     .where(and(eq(pw.userId, userId), inArray(pw.id, [...ids])));
