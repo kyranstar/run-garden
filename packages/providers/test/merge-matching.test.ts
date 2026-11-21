@@ -7,7 +7,7 @@ import {
   scoreAgainstStoredRow,
   singleSourceActivity,
 } from "../src/merge.js";
-import { matchActivities, matchBand, scoreWorkoutActivity } from "../src/matching.js";
+import { activityDayOf, matchActivities, matchBand, scoreWorkoutActivity } from "../src/matching.js";
 
 const START = "2026-08-04T14:02:05Z";
 const corosSrc = () => {
@@ -210,5 +210,74 @@ describe("planned-to-completed matching", () => {
     // …while a real lift still refuses a yoga activity, whatever its sport.
     expect(scoreWorkoutActivity(workout({ category: "strength", sport: "yoga" }), sportActivity("yoga"))).toBeNull();
     expect(scoreWorkoutActivity(workout({ category: "strength", sport: "strength" }), sportActivity("yoga"))).toBeNull();
+  });
+});
+
+/**
+ * WHO A GUESS MAY PAIR (R1.3; the lead's v0.22 ruling: "Fix matching from occurrence time, not import time. Apply the
+ * creation/day restrictions before scoring"). Seen on production: a 2:03 PM yoga on Nov 20, synced at 22:29:55Z, was paired
+ * (0.507) with a one-off session placed at 22:30:18Z for Nov 21. A scored match now needs the session on the activity's
+ * own training day (`activityDayOf`: run-garden's one rule, garden-sync.ts `activityDate`) and the session to have existed
+ * before the activity ended. The COROS plan link is no guess: it still pairs across days.
+ */
+describe("who a guess may pair (R1.3): occurrence time, not import time", () => {
+  /** An activity of `sport` starting at a local wall time, `minutes` long, with its UTC start. */
+  const activityAt = (id: string, local: string, utc: string, minutes: number, sport = "yoga"): NormalizedActivity => ({
+    id, startTime: utc, startTimeLocal: local, sport, durationSeconds: minutes * 60, sourceMergeConfidence: 1,
+  });
+  const yogaSession = (over: Partial<PlannedWorkout>) =>
+    workout({ category: "yoga", sport: "yoga", sourceEstimatedDurationSeconds: 1500, expectedDistanceMeters: undefined, effectiveTime: "18:00", ...over });
+
+  it("the incident: a yoga on Nov 20 never pairs with a session placed after it, for Nov 21", () => {
+    const yoga = activityAt("yoga-nov20", "2026-11-20T14:03:00", "2026-11-20T22:03:00Z", 25);
+    const tre = yogaSession({ id: "tre-floor", effectiveDate: "2026-11-21", originalPlanDate: "2026-11-21" });
+    // The scorer alone gives it a medium score (the medium band auto-matches): the day and creation rules must stop it.
+    expect(matchBand(scoreWorkoutActivity(tre, yoga)!.confidence)).toBe("medium");
+    expect(matchActivities([{ workout: tre, createdAt: "2026-11-20T22:30:18Z" }], [{ activity: yoga }])).toEqual([]);
+    // Either rule alone refuses it: another day, created before; the same day, created after.
+    expect(matchActivities([{ workout: tre, createdAt: "2026-11-01T00:00:00Z" }], [{ activity: yoga }])).toEqual([]);
+    const sameDay = yogaSession({ id: "tre-same-day", effectiveDate: "2026-11-20", originalPlanDate: "2026-11-20" });
+    expect(matchActivities([{ workout: sameDay, createdAt: "2026-11-20T22:30:18Z" }], [{ activity: yoga }])).toEqual([]);
+    // A session there before the yoga, on its day, is its guess.
+    expect(matchActivities([{ workout: sameDay, createdAt: "2026-11-20T08:00:00Z" }], [{ activity: yoga }])).toEqual([
+      expect.objectContaining({ workoutId: "tre-same-day", activityId: "yoga-nov20", method: "scored" }),
+    ]);
+  });
+
+  it("the session must exist before the activity ENDED: created during it still counts, after it never", () => {
+    const yoga = activityAt("yoga", "2026-11-20T14:03:00", "2026-11-20T22:03:00Z", 25); // ends 22:28:00Z
+    const s = yogaSession({ id: "s", effectiveDate: "2026-11-20", originalPlanDate: "2026-11-20" });
+    expect(matchActivities([{ workout: s, createdAt: "2026-11-20T22:28:00Z" }], [{ activity: yoga }])).toHaveLength(1);
+    expect(matchActivities([{ workout: s, createdAt: "2026-11-20T22:28:01Z" }], [{ activity: yoga }])).toEqual([]);
+    // Its elapsed time, when it says one, is how long it lasted.
+    const paused = { ...yoga, elapsedSeconds: 40 * 60 }; // ends 22:43:00Z
+    expect(matchActivities([{ workout: s, createdAt: "2026-11-20T22:40:00Z" }], [{ activity: paused }])).toHaveLength(1);
+  });
+
+  it("another day is never a guess: a day either side, a moved session's old day, either side of midnight", () => {
+    const run = activityAt("run", "2026-08-04T23:50:00", "2026-08-05T06:50:00Z", 54, "run");
+    const at = (date: string, original = date) => workout({ id: `w-${date}-${original}`, effectiveDate: date, originalPlanDate: original });
+    // 23:50 local is its day, whatever its UTC date says.
+    expect(matchActivities([{ workout: at("2026-08-04") }], [{ activity: run }])).toHaveLength(1);
+    expect(matchActivities([{ workout: at("2026-08-05") }], [{ activity: run }])).toEqual([]);
+    expect(matchActivities([{ workout: at("2026-08-03") }], [{ activity: run }])).toEqual([]);
+    // Moved off this day: its old day is not its day now.
+    expect(matchActivities([{ workout: at("2026-08-05", "2026-08-04") }], [{ activity: run }])).toEqual([]);
+    // 00:10 local is the next day's.
+    const early = activityAt("early", "2026-08-05T00:10:00", "2026-08-05T07:10:00Z", 54, "run");
+    expect(matchActivities([{ workout: at("2026-08-05") }], [{ activity: early }])).toHaveLength(1);
+    expect(matchActivities([{ workout: at("2026-08-04") }], [{ activity: early }])).toEqual([]);
+    // With no local start, its day is its UTC start's (the one rule's fallback).
+    const utcOnly: NormalizedActivity = { ...early, id: "utc-only", startTimeLocal: undefined, startTime: "2026-08-05T06:50:00Z" };
+    expect(activityDayOf(utcOnly)).toBe("2026-08-05");
+    expect(matchActivities([{ workout: at("2026-08-05") }], [{ activity: utcOnly }])).toHaveLength(1);
+  });
+
+  it("the COROS plan link is no guess: it still pairs its own copy across days, and a session written after", () => {
+    const act = singleSourceActivity(corosSrc(), "linked");
+    const tomorrow = workout({ id: "linked-w", effectiveDate: "2026-08-05", originalPlanDate: "2026-08-05" });
+    expect(matchActivities([{ workout: tomorrow, corosProgramId: "p-1", createdAt: "2026-08-06T00:00:00Z" }], [{ activity: act, corosProgramId: "p-1" }])).toEqual([
+      expect.objectContaining({ workoutId: "linked-w", method: "coros_plan_link" }),
+    ]);
   });
 });

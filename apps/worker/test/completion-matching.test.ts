@@ -45,7 +45,8 @@ async function insertWorkout(
     sourceContentFingerprint: "fp",
     calendarBlockDurationSeconds: 3600,
     completionState: "unresolved",
-    createdAt: nowInstant(),
+    // Planned before its run, as a plan's sessions are: a guess never pairs a session written after the activity (R1.3).
+    createdAt: "2026-08-01T00:00:00.000Z",
     updatedAt: nowInstant(),
   });
   return workoutId;

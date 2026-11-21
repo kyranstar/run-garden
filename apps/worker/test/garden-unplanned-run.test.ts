@@ -71,7 +71,8 @@ async function plannedRun(date: string): Promise<string> {
     sourceContentFingerprint: "fp",
     calendarBlockDurationSeconds: 3600,
     sourceEstimatedDurationSeconds: 3240,
-    createdAt: nowInstant(),
+    // Planned before its day, as a plan's run is: a guess never pairs a session written after the activity (R1.3).
+    createdAt: `${addDays(date, -1)}T00:00:00.000Z`,
     updatedAt: nowInstant(),
   });
   return id;

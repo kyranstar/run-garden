@@ -235,11 +235,21 @@ on the `training-v5` scope only (`apps/worker/src/auth/device-scope.ts`; routes 
   - a place makes its session's watch copy before it answers;
   - a take-back syncs the calendar in its own request;
   - a phone's read of a receipt then runs that one session's next watch step: its queued push or delete, else its owed
-    copy, one record of a session at a time. Never another session's work, and never two steps.
+    copy. One record at a time per account (a lock): a record that meets another's lock makes nothing, and the next read
+    or the hourly run makes it. Never another session's work, and never two steps.
 
   This is one step a request, because the free plan's budget holds no route and its watch job together. Each calendar step
   takes only the room its request has left, and the half-hourly run books the rest. Nothing runs with COROS writes off or
   while a restore runs.
+  *A phone's receipt read is mutation-capable (R1.3):* though a GET, that step can write the session's copy and its push, or
+  send a queued push or delete to COROS. LifeOS sends it only in the foreground, from its delivery. It is never a passive
+  check or a background read: the harness reads a receipt with the laptop's cookie, which runs no step and writes nothing
+  (tested).
+  *Who an automatic match may pair (R1.3):* matching runs from when things happened, not when they were imported. A scored
+  match needs the session on the activity's own training day, and the session there before the activity ended. The write
+  re-checks, in its own transaction, that the session is still open, on that day and unmatched, and that the activity has
+  never been matched. An activity whose match was undone is never matched again by the machine; a manual match is never
+  overridden. It applies to the matches written from now on: no stored match is rescored or redone.
   *Rolling back:* code from before R1 leaves `take_back_receipts` and `native_device_sharing` rows in place on delete-all
   (its registry doesn't know them); a rollback is followed by deleting both tables' rows of the account by `user_id`,
   or by a forward fix — migration 0040 is additive and safe under the old code.

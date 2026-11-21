@@ -471,7 +471,11 @@ const stable = (a) => (a.outcomes ?? []).map(({ compensation: _c, ...o }) => o);
 const tbAgain = await call("POST", "/api/native/take-back", { bearer: token, body: { receiptIds: [placed.json.receiptId], requestId: tbReq } });
 check("R1: the same take-back again: the same answer, nothing written", [JSON.stringify(stable(tbAgain.json)) === JSON.stringify(stable(tb.json)), tbAgain.json.remaining, d1Hash() === hashTb], [true, [], true]);
 check("R1: another request id: already_taken_back", (await call("POST", "/api/native/take-back", { bearer: token, body: { receiptIds: [placed.json.receiptId], requestId: `${tbReq}-b` } })).json.outcomes?.[0]?.outcome, "already_taken_back");
-check("R1: /receipts/:id: taken back, its compensation live", [(await call("GET", `/api/native/receipts/${placed.json.receiptId}`, { bearer: token })).json.status], ["taken_back"]);
+// A PHONE'S RECEIPT READ IS MUTATION-CAPABLE (R1.3): with the device token it runs that session's next watch step after it
+// answers (R1.2 item 7). A check is a passive read, so this one reads as the laptop, whose read runs no step, and shows it.
+const hashRead = d1Hash();
+const readBack = await call("GET", `/api/native/receipts/${placed.json.receiptId}`, { cookie: true });
+check("R1: /receipts/:id, read as the laptop (passive; a phone's read can write, R1.3): taken back, its compensation live, nothing written", [readBack.status, readBack.json.status, Array.isArray(readBack.json.compensation), d1Hash() === hashRead], [200, "taken_back", true, true]);
 const hashOff = d1Hash();
 const resentOff = await call("POST", `/api/native/templates/${tplId}/place`, { bearer: token, body: { date: d4, time: "18:00", clientId: placeKey } });
 check("R1.2: the same clientId again once taken back: 422 taken_back with its workout and receipt, never repeated; nothing written", [resentOff.status, resentOff.json.error, resentOff.json.workoutId === placed.json.workoutId, resentOff.json.receiptId === placed.json.receiptId, "repeated" in resentOff.json, d1Hash() === hashOff], [422, "taken_back", true, true, false, true]);

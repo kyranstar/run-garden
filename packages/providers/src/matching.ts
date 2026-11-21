@@ -24,6 +24,33 @@ export interface MatchableWorkout {
    * the watch recorded must never mark it done).
    */
   linkOnly?: boolean;
+  /**
+   * When the session was written (`planned_workouts.created_at`, an instant). A scored guess never pairs it with an
+   * activity that ended before it existed (`guessMayPair`). Absent, nothing is known and only the day rule applies.
+   */
+  createdAt?: string;
+}
+
+/** An activity's training day: its own local start's, or its UTC start's when it has none — run-garden's one rule for
+ * dating an activity (the garden's `activityDate`, garden-sync.ts; the Plan's days list extras by it). */
+export const activityDayOf = (a: Pick<NormalizedActivity, "startTime" | "startTimeLocal">): string =>
+  (a.startTimeLocal ?? a.startTime).slice(0, 10);
+
+/** When an activity ended, in epoch ms: its start plus how long it lasted (elapsed, pauses included, when it says). */
+const endedAt = (a: NormalizedActivity): number => Date.parse(a.startTime) + (a.elapsedSeconds ?? a.durationSeconds) * 1000;
+
+/**
+ * WHO A GUESS MAY PAIR, decided from when things happened, never from when they were imported (R1.3; seen on production:
+ * a yoga on Nov 20, synced that evening, was paired at 0.507 with a one-off placed 23 seconds after the sync, for Nov 21).
+ * Asked before any score: a scored match needs the session on the activity's own training day (`activityDayOf` against
+ * the session's day now, `effectiveDate`: neither a day either side nor the day it was moved from), and the session there
+ * before the activity ended. The COROS plan link (pass 1) is the session's own copy, not a guess, and is not asked.
+ */
+export function guessMayPair(mw: MatchableWorkout, a: NormalizedActivity): boolean {
+  if (activityDayOf(a) !== mw.workout.effectiveDate) return false;
+  if (mw.createdAt === undefined) return true;
+  // An instant that doesn't read is no proof the session was there first.
+  return Date.parse(mw.createdAt) <= endedAt(a);
 }
 
 export function scoreWorkoutActivity(
@@ -40,6 +67,8 @@ export function scoreWorkoutActivity(
   const activityDateLocal = (a.startTimeLocal ?? a.startTime).slice(0, 10);
   const parts: Record<string, number> = {};
 
+  // The score keeps its date arms, but `matchActivities` asks `guessMayPair` first, so only the same day (0.3) reaches an
+  // automatic match now: a session's old day (0.2) or a day either side (0.1) never does (R1.3).
   parts.date =
     activityDateLocal === w.effectiveDate
       ? 0.3
@@ -122,6 +151,11 @@ function timeToMinutes(t: string): number {
 
 export type MatchBand = "high" | "medium" | "low";
 
+/**
+ * The bands. `ingestActivities` writes a match for high and medium alike and leaves low unmatched, so 0.5 is the
+ * automatic floor by design (completion.ts: "review queue … no auto-match" for low only). With the same-day rule a scored
+ * pair starts at 0.55 (day 0.3 + sport 0.15 + the 0.1 base), so the floor stops no guess now: `guessMayPair` does (R1.3).
+ */
 export function matchBand(confidence: number): MatchBand {
   if (confidence >= 0.75) return "high";
   if (confidence >= 0.5) return "medium";
@@ -158,12 +192,12 @@ export function matchActivities(
     }
   }
 
-  // Pass 2: scored matching for the rest.
+  // Pass 2: scored matching for the rest, among the pairs a guess may make (`guessMayPair`, before any score).
   const scored: MatchCandidate[] = [];
   for (const { activity } of activities) {
     if (usedActivities.has(activity.id)) continue;
     for (const mw of workouts) {
-      if (usedWorkouts.has(mw.workout.id) || mw.linkOnly) continue;
+      if (usedWorkouts.has(mw.workout.id) || mw.linkOnly || !guessMayPair(mw, activity)) continue;
       const cand = scoreWorkoutActivity(mw.workout, activity);
       if (cand) scored.push(cand);
     }

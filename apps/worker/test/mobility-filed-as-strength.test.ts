@@ -49,7 +49,8 @@ async function seedPushedMobility(db: Db, userId: string, day: string) {
     structuredJson: { exercises: [{ name: "Couch stretch", sets: 2, holdSeconds: 45 }] },
     corosSyncState: "synced",
     completionState: "scheduled",
-    createdAt: now,
+    // Written the day before, as the coach's session was: a guess never pairs a session written after the activity (R1.3).
+    createdAt: `${addDays(day, -1)}T12:00:00.000Z`,
     updatedAt: now,
   });
   await db.insert(corosWriteJobs).values({

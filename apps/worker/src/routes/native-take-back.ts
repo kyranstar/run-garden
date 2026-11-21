@@ -14,6 +14,10 @@
  *   GET  /api/native/receipts/:id → { id, source, op, workoutId, status, createdAt, expiresAt, takenBackAt, compensation }
  *        — the receipt as it stands and the providers' work, live (`no-store`; 404 not_found; 503 during a restore). A
  *        phone's read then runs that session's next watch step, after it answers (R1.2 item 7: services/device-watch.ts).
+ *        A PHONE'S READ IS MUTATION-CAPABLE, though a GET (R1.3; the lead's v0.22 ruling): that step can write the session's
+ *        copy and its push, or send a queued push or delete to COROS. LifeOS sends it only from its delivery, in the
+ *        foreground, straight after a place or take-back and while its watch work is pending — never as a background or
+ *        passive read. A check reads as the laptop (its cookie): that read runs no step, writes nothing and sends nothing.
  */
 import { Hono } from "hono";
 import { z } from "zod";
@@ -62,7 +66,8 @@ nativeTakeBackRoutes.get("/receipts/:id", requireUser, async (c) => {
   if (!r) return c.json({ error: "not_found" }, 404);
   // THE WATCH FOLLOWS (R1.2 item 7): a phone's delivery reads a receipt straight after each place and each take-back, and
   // while its watch work is pending. That read runs its session's next watch step, one, after it answers
-  // (services/device-watch.ts). The answer is the receipt as it stood; the next read says what the step did.
+  // (services/device-watch.ts). The answer is the receipt as it stood; the next read says what the step did. So a phone's
+  // read is mutation-capable (R1.3): never a passive check's. The laptop's runs no step.
   if (c.get("device")) waitUntilSafe(c, deviceWatchStep(db, c.env, userId, r.workoutId));
   return c.json(r);
 });

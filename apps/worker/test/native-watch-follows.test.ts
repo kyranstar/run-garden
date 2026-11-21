@@ -10,7 +10,7 @@
  *    follows finds the push queued (the re-check's MAJOR-B: a record still running in waitUntil raced the read's own);
  *  - the phone's read of the receipt, which its delivery sends straight after each place and each take-back (LifeOS
  *    f83daf9f `receiptsToRead`), runs that session's next watch step: its queued push or delete, else its owed record —
- *    one record of a session at a time (a lock);
+ *    one record at a time per account (a lock: a record that meets another's makes nothing, the next read or the hourly does);
  *  - each request's calendar step is sized to the room its declared costs left (`calendarOpsFitting`, as the approve's;
  *    the re-check's MAJOR-A): a place with its record leaves none, so its event waits for the half-hourly run; a take-back
  *    of one receipt books its one op, a grouped one none.
@@ -34,7 +34,7 @@ import { calmDoc } from "./doc-workout-fixture.js";
 import { nativeWorld, seedDevice, type Answer, type NativeWorld } from "./native-fixture.js";
 import { connectMock, seedCatalog } from "./watch-push-fixture.js";
 
-const { accountState, corosWriteJobs, providerConnections, workoutTemplates } = schema;
+const { accountState, corosWriteJobs, plannedWorkouts, providerConnections, workoutTemplates } = schema;
 const LA = "America/Los_Angeles";
 const T = "2026-11-18";
 const at = (d: string, hm: string) => DateTime.fromISO(`${d}T${hm}`, { zone: LA }).toUTC().toISO()!;
@@ -186,6 +186,24 @@ describe("the watch follows a phone's place and take-back (R1.2 item 7)", () => 
     expect((await pushesOf(workoutId)).map((j) => j.status)).toEqual(["queued"]);
   });
 
+  // A PHONE'S RECEIPT READ IS MUTATION-CAPABLE (R1.3; the lead's v0.22 ruling: "a receipt read that advances watch work is
+  // mutation-capable, even if it uses GET. Keep it out of passive verification"). The laptop's read of the same receipt is
+  // the passive one, which the harness's check uses: it reads, and writes and sends nothing.
+  it("the laptop's read of a receipt is passive — no step, no write, no fetch; the phone's same read sends the copy (R1.3)", async () => {
+    await world();
+    const placed = await place();
+    const workoutId = placed.json.workoutId as string;
+    expect((await pushesOf(workoutId)).map((j) => j.status)).toEqual(["queued"]);
+    fetches = 0;
+    const laptop = await w.call("GET", `/api/native/receipts/${placed.json.receiptId}`);
+    expect([laptop.status, laptop.json.status], laptop.text).toEqual([200, "open"]);
+    expect([laptop.writes, fetches]).toEqual([[], 0]);
+    expect((await pushesOf(workoutId)).map((j) => j.status)).toEqual(["queued"]);
+    const read = await readReceipt(placed.json.receiptId as string);
+    expect(read.writes.length).toBeGreaterThan(0);
+    expect((await pushesOf(workoutId)).map((j) => j.status)).toEqual(["verified"]);
+  });
+
   it("a take-back books its calendar op in the room it left; the phone's read takes the copy off — each within 45", async () => {
     await world();
     const placed = await place();
@@ -225,13 +243,18 @@ describe("the watch follows a phone's place and take-back (R1.2 item 7)", () => 
     expect(google.deleted).toHaveLength(2);
   });
 
-  it("with COROS writes off, or the watch switch off: no copy made, nothing sent, nothing run", async () => {
+  it("with COROS writes off, or the watch switch off: no copy made, nothing sent to the watch, nothing run", async () => {
     for (const [env, writes] of [[{ WATCH_PUSH_ENABLED: "1" }, false], [{ WATCH_PUSH_ENABLED: undefined }, true]] as const) {
       await world(env, writes);
+      await expireToken();
+      const booked = google.inserted.length;
       const placed = await place();
       expect(placed.status, placed.text).toBe(201);
       const workoutId = placed.json.workoutId as string;
       expect(await jobsOf(workoutId)).toEqual([]);
+      // No record can run, so none holds its room (the R1.2 re-check's NIT-2): the place books its event itself, within 45.
+      expect(google.inserted.slice(booked)).toEqual([workoutId]);
+      expect(placed.total, "the place and its calendar step, the token refreshed").toBeLessThanOrEqual(BUDGET);
       fetches = 0;
       const read = await readReceipt(placed.json.receiptId as string);
       expect(read.status).toBe(200);
@@ -247,6 +270,28 @@ describe("the watch follows a phone's place and take-back (R1.2 item 7)", () => 
     });
     await readReceipt(placed.json.receiptId as string);
     expect([(await jobOfKind(workoutId, "coach_delete_workout"))?.status, fetches]).toEqual(["queued", 0]);
+  });
+
+  // PLACE_COST is a light day's figure (the R1.2 re-check's NIT-3): an untimed place's collision pass writes one statement a
+  // row it re-times. With no record to make, the calendar step takes the room left, so a crowded day must still fit.
+  it("an untimed place on a crowded day stays within 45: its collision pass, and the calendar step in the room left (NIT-3)", async () => {
+    await world({ WATCH_PUSH_ENABLED: "1" }, false);
+    const day = addDays(T, 1);
+    for (let i = 0; i < 8; i++) {
+      await w.db.insert(plannedWorkouts).values({
+        id: `crowd-${i}`, userId: w.userId, planId: `studio-${w.userId}`, origin: "studio", sourceWorkoutId: `studio:crowd-${i}`, title: `Crowd ${i}`,
+        category: "yoga", sport: "yoga", originalPlanDate: day, lastVerifiedCorosDate: day, effectiveDate: day, effectiveTime: "18:00",
+        sourceContentFingerprint: "fp", calendarBlockDurationSeconds: 1500, sourceEstimatedDurationSeconds: 1500, completionState: "scheduled",
+        createdAt: nowInstant(), updatedAt: nowInstant(),
+      });
+    }
+    await expireToken();
+    const placed = await place("t-1", "c-crowd", null);
+    expect(placed.status, placed.text).toBe(201);
+    // The pass's write: a row's new time, held to the row as it read it (`guardOrFail` on its day).
+    const retimed = placed.writes.filter((s) => /^update "planned_workouts" set /.test(s) && /"effective_time" = \?/.test(s) && / = case when /.test(s)).length;
+    expect(retimed, "the collision pass re-timed the day's rows").toBeGreaterThan(3);
+    expect(placed.total, `the place, ${retimed} rows re-timed by its collision pass, and its calendar step`).toBeLessThanOrEqual(BUDGET);
   });
 
   it("while a restore is replacing the account: the read is 503 and runs nothing; the place and take-back are 423", async () => {

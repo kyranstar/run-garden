@@ -21,11 +21,12 @@ import {
   scoreAgainstStoredRow,
   ORPHAN_ADOPTION_FLOOR,
   singleSourceActivity,
+  type MatchCandidate,
   type RawCorosActivityDetail,
 } from "@rg/providers";
 import { ATHLETE_SAID_DONE, courseNumberOnCompletion, markGivesWay } from "./course-number.js";
-import { chunkedInsert, type Db } from "./db.js";
-import { plannedRowColumns } from "./planned-columns.js";
+import { chunkedInsert, runAtomically, type Db } from "./db.js";
+import { plannedRowColumns, type PlannedRow } from "./planned-columns.js";
 import { isRuntimeLimit } from "./runtime-limit.js";
 import { linkWatchSessionsToWorkouts, matchedWorkoutId, upsertWatchSession } from "./watch-sets.js";
 
@@ -734,8 +735,15 @@ export async function ingestActivities(db: Db, input: IngestInput): Promise<Inge
     // copy, linked by its COROS program (`linkOnly`). A course's session once written is no slot any more
     // (`origin = 'studio'`), and no guess completes it either: its number counts sessions done, so an unrelated activity
     // would skip a dose. Its `course_session` says what it is; its fingerprint can't, as a verified push overwrites it.
+    //
+    // AN ACTIVITY WHOSE MATCH WAS UNDONE IS NEVER MATCHED AGAIN BY THE MACHINE (R1.3; the owner, 2026-11-20, of a yoga the
+    // matcher had paired with the next day's session: "just yoga"). The owner's unmatch (routes/plan.ts) is a correction,
+    // and the app's save undoing a guess it displaced (above; session-save.ts) says the same: either leaves an undone row
+    // naming the activity, which no later sync's guess or link overrides. The owner can still match it by hand. (This
+    // takes in the displaced-by-the-app rule, whose undone row it names too.) The session it was taken off stays open to
+    // another activity.
     const appOwned = sql`exists (select 1 from ${performedSessions} where ${performedSessions.activityId} = ${activities.id} and ${performedSessions.source} = 'app')`;
-    const displacedByApp = sql`exists (select 1 from workout_completion_matches as undone join workout_completion_matches as app_match on app_match.workout_id = undone.workout_id where undone.activity_id = ${activities.id} and undone.undone_at is not null and app_match.undone_at is null and app_match.method = 'app_session')`;
+    const undoneOnce = sql`exists (select 1 from workout_completion_matches as undone where undone.activity_id = ${activities.id} and undone.undone_at is not null)`;
     const unmatchedActivities = await db
       .select()
       .from(activities)
@@ -745,7 +753,7 @@ export async function ingestActivities(db: Db, input: IngestInput): Promise<Inge
           isNull(activities.completionMatchId),
           ne(activities.source, "import"),
           sql`not ${appOwned}`,
-          sql`not ${displacedByApp}`,
+          sql`not ${undoneOnce}`,
         ),
       );
     const candidates = unmatchedActivities
@@ -776,6 +784,8 @@ export async function ingestActivities(db: Db, input: IngestInput): Promise<Inge
       },
       corosProgramId: w.sourceProgramId ?? undefined,
       linkOnly: w.origin === "program" || w.courseSession !== null,
+      // When it was written: a guess never pairs it with an activity that ended before (`guessMayPair`, R1.3).
+      createdAt: w.createdAt,
     }));
 
     const matches = matchActivities(matchables as never, candidates);
@@ -788,30 +798,8 @@ export async function ingestActivities(db: Db, input: IngestInput): Promise<Inge
       const workout = openWorkouts.find((w) => w.id === m.workoutId)!;
       const activityRow = unmatchedActivities.find((a) => a.id === m.activityId)!;
 
-      const matchId = newId();
-      await db.insert(workoutCompletionMatches).values({
-        id: matchId,
-        workoutId: m.workoutId,
-        activityId: m.activityId,
-        confidence: m.confidence,
-        method: m.method === "coros_plan_link" ? "coros_plan_link" : "scored_auto",
-        matchedAt: now,
-      });
-      await db
-        .update(activities)
-        .set({ completionMatchId: matchId, updatedAt: now })
-        .where(eq(activities.id, m.activityId));
-
-      await db
-        .update(plannedWorkouts)
-        .set({
-          completionState: "completed",
-          resolutionDate: (activityRow.startTimeLocal ?? activityRow.startTime).slice(0, 10),
-          ...courseNumberOnCompletion(),
-          ...markGivesWay(),
-          updatedAt: now,
-        })
-        .where(eq(plannedWorkouts.id, m.workoutId));
+      // Written only if it still may be (`commitMatch`): scoring read the rows a moment ago.
+      if (!(await commitMatch(db, input.userId, m, workout, now))) continue;
       stats.matchesCreated += 1;
       stats.completions += 1;
       // A watch session is logged before matching runs; it learns its workout
@@ -839,5 +827,66 @@ export async function ingestActivities(db: Db, input: IngestInput): Promise<Inge
 
   stats.affectedDates = [...affectedDates].sort();
   return stats;
+}
+
+const MATCH_REFUSED = /NOT NULL constraint failed: workout_completion_matches\.workout_id/;
+
+/** The error a `commitMatch` batch answers when its check found the pair no longer open (D1 may wrap it, as `cause`). */
+function matchRefused(e: unknown): boolean {
+  for (let x: unknown = e, i = 0; x && i < 4; i++, x = (x as { cause?: unknown }).cause) {
+    if (x instanceof Error && MATCH_REFUSED.test(x.message)) return true;
+  }
+  return false;
+}
+
+/**
+ * WRITE A MATCH THE MATCHER CHOSE, ONLY IF IT STILL MAY BE (R1.3; the lead's v0.22 ruling: "recheck mutable eligibility
+ * when writing"). Scoring read `scored` a moment ago; since then the owner may have archived, moved, skipped or matched the
+ * session by hand, or the activity been matched elsewhere or had a match undone. The match row's insert carries the check:
+ * its `workout_id` is the session's id only while the session is the account's, not archived, on the day and in the state
+ * scoring read, with no live match, and the activity is the account's, unmatched and never matched before — else NULL,
+ * which fails the batch (one D1 transaction, or the test driver's), so the activity's link and the session's completion,
+ * after it, land only with it. A refused match writes nothing and answers false; any other failure throws, as before.
+ * The same three statements as before, now one batch.
+ */
+export async function commitMatch(db: Db, userId: string, m: MatchCandidate, scored: PlannedRow, now: string): Promise<boolean> {
+  const matchId = newId();
+  const stillOpen = sql`(select id from planned_workouts where id = ${m.workoutId} and user_id = ${userId} and archived_at is null
+    and effective_date = ${scored.effectiveDate} and completion_state = ${scored.completionState}
+    and (completion_state <> 'completed' or sanctioned_by = ${ATHLETE_SAID_DONE})
+    and not exists (select 1 from workout_completion_matches held where held.workout_id = ${m.workoutId} and held.undone_at is null)
+    and exists (select 1 from activities a where a.id = ${m.activityId} and a.user_id = ${userId} and a.completion_match_id is null)
+    and not exists (select 1 from workout_completion_matches seen where seen.activity_id = ${m.activityId}))`;
+  try {
+    await runAtomically(db, [
+      db.insert(workoutCompletionMatches).values({
+        id: matchId,
+        workoutId: stillOpen,
+        activityId: m.activityId,
+        confidence: m.confidence,
+        method: m.method === "coros_plan_link" ? "coros_plan_link" : "scored_auto",
+        matchedAt: now,
+      }),
+      db
+        .update(activities)
+        .set({ completionMatchId: matchId, updatedAt: now })
+        .where(and(eq(activities.id, m.activityId), eq(activities.userId, userId))),
+      db
+        .update(plannedWorkouts)
+        .set({
+          completionState: "completed",
+          // The activity's training day (`activityDayOf`), as the matcher read it.
+          resolutionDate: sql`(select substr(coalesce(start_time_local, start_time), 1, 10) from activities where id = ${m.activityId})`,
+          ...courseNumberOnCompletion(),
+          ...markGivesWay(),
+          updatedAt: now,
+        })
+        .where(and(eq(plannedWorkouts.id, m.workoutId), eq(plannedWorkouts.userId, userId))),
+    ]);
+    return true;
+  } catch (e) {
+    if (matchRefused(e)) return false;
+    throw e;
+  }
 }
 

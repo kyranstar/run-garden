@@ -783,8 +783,9 @@ describe("matching", () => {
     const p = await placed();
     const id = slotId(p, MON);
     await writeCourseSession(db, userId, await row(id), ctx);
-    // A same-day activity that scores well: its stand-in, filed under the plan with no number, shows it would match.
-    const control = await filed(p, day(0, 1), "scheduled", { effectiveTime: "18:15", fallbackEstimatedDurationSeconds: INTRO_FIRST_SECONDS });
+    // A same-day activity that scores well: its stand-in, filed under the plan with no number, shows it would match. On the
+    // activity's own training day, Monday (its local start's; its UTC start is Tuesday's): a guess pairs no other (R1.3).
+    const control = await filed(p, MON, "scheduled", { effectiveTime: "18:15", fallbackEstimatedDurationSeconds: INTRO_FIRST_SECONDS });
     await ingestActivities(db, { userId, sources: [strengthOnMonday("a-1")] });
     expect((await row(id)).completionState).toBe("scheduled");
     expect(await courseSessionsDone(db, userId, p)).toBe(0);
