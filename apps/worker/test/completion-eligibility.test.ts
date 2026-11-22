@@ -174,6 +174,24 @@ describe("auto-match eligibility from occurrence time (R1.3)", () => {
     expect((await ingestActivities(db, { userId, sources: [NOV20_YOGA] })).matchesCreated).toBe(0);
   });
 
+  // THE IMPORT MARKER'S COACH CASE (R1.4; the lead's v0.23: "trusted provenance controls the exemption"). A coach session has
+  // no origin either, and once pushed it carries a COROS address — but its plan is the coach's (coach-apply.ts writes only
+  // into coach plans, and refuses a COROS plan's id), so its creation is its own and the creation rule holds it.
+  it("a coach session keeps its creation rule: no origin and a COROS address, but its plan is the coach's", async () => {
+    const db = makeTestDb();
+    const { userId } = await makeTestUser(db);
+    await db.insert(schema.coachPlans).values({
+      id: "coach-plan", userId, discipline: "run", name: "Coach plan", status: "active", startDate: "2026-11-01", endDate: "2026-12-31",
+      stampPrefix: "RG", createdAt: "2026-11-01T00:00:00Z", updatedAt: "2026-11-01T00:00:00Z",
+    } as typeof schema.coachPlans.$inferInsert);
+    // Written by the coach after the yoga ended, then pushed: the COROS address the create's verify stamps.
+    const coach = await session(db, userId, "2026-11-20", "2026-11-20T23:00:00Z", {
+      planId: "coach-plan", origin: null, sourceWorkoutId: "9001:3", sourceIdInPlan: "3", lastVerifiedCorosDate: "2026-11-20",
+    });
+    expect((await ingestActivities(db, { userId, sources: [NOV20_YOGA] })).matchesCreated).toBe(0);
+    expect((await rowOf(db, coach)).completionState).toBe("scheduled");
+  });
+
   it("the write re-checks what may have changed since scoring: archived, moved, skipped, matched or undone since, it writes nothing", async () => {
     /** The yoga synced, a session of its day there before it, read as scoring read it; `change` lands; then the write. */
     const scene = async (change: (db: Db, workoutId: string, activityId: string, now: string, userId: string) => Promise<unknown>) => {

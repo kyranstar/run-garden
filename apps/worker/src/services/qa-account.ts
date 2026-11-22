@@ -44,9 +44,11 @@ import {
   studioPlanPushes,
   syncIntents,
   syncRuns,
+  takeBackReceipts,
   trainingPlans,
   users,
   workoutCompletionMatches,
+  workoutTemplates,
 } from "@rg/database";
 import { adaptiveConfigSchema, addDays, DEFAULT_USER_PREFERENCES, newId, nowInstant, todayInZone, type UserPreferences } from "@rg/domain";
 import { classifyWorkout } from "@rg/scheduling";
@@ -196,6 +198,36 @@ export function qaDoc(title: string): Record<string, unknown> {
   };
 }
 
+/** A short mobility document of timed holds: two holds a side, so the phone's player counts seconds, not reps. */
+export function qaHoldDoc(title: string): Record<string, unknown> {
+  return {
+    version: 1,
+    title,
+    intent: { summary: "Timed holds for the phone's QA run.", goals: ["mobility"], focus: [], effort: "maintain" },
+    parts: [
+      {
+        purpose: "main",
+        format: "straight",
+        items: [
+          { kind: "exercise", libraryId: "figureFour", dose: { sets: 1, holdSec: 30, perSide: true, restSec: 10 } },
+          { kind: "exercise", libraryId: "lowLungeBlock", dose: { sets: 1, holdSec: 30, perSide: true, restSec: 10 } },
+        ],
+      },
+    ],
+    source: { kind: "studio" },
+  };
+}
+
+/**
+ * THE QA ACCOUNT'S SAVED TEMPLATES (R1.4; the lead's v0.23: synthetic templates for take-back timing, *Do it now* and the
+ * phone's library egress): fixture-named as its sessions are (`QA_TITLE_PREFIX`), on the QA account only, and purged with it
+ * (`workout_templates` is in the registry). One under ten minutes; one of timed-hold mobility.
+ */
+export const QA_TEMPLATES = [
+  { key: "quick", name: `${QA_TITLE_PREFIX}Quick reset`, doc: qaDoc(`${QA_TITLE_PREFIX}Quick reset`) },
+  { key: "holds", name: `${QA_TITLE_PREFIX}Hold series`, doc: qaHoldDoc(`${QA_TITLE_PREFIX}Hold series`) },
+] as const;
+
 const hh = (hour: number): string => `${String(hour).padStart(2, "0")}:00`;
 
 /**
@@ -240,13 +272,15 @@ function slotRow(userId: string, programId: string, title: string, date: string,
  * THE FIXTURES, on the QA account's own clock (refused unless the account has no plan rows yet: purge first):
  *  - today: `QA Hips and back` (a Studio document workout), `QA Mobility` (an adaptive programme's slot), `QA Easy run`
  *    (a run, imported as a COROS plan's session is, at no address on any watch);
- *  - tomorrow: `QA Core reset` (a document workout) and `QA Mobility`'s next slot.
+ *  - tomorrow: `QA Core reset` (a document workout) and `QA Mobility`'s next slot;
+ *  - the saved templates `QA_TEMPLATES` (R1.4), in one statement, for the phone's library.
  * Through the services the web's routes use, never the route layer: no calendar booking, no cloud job runs from here.
  */
 export async function seedQaFixtures(db: Db, env: Pick<Env, "ALLOWED_GOOGLE_EMAIL">, target: QaTarget, now: string = nowInstant()): Promise<{
   today: string;
   tomorrow: string;
   fixtures: QaFixture[];
+  templates: Array<{ id: string; name: string }>;
 }> {
   await assertQaRow(db, env, target);
   const userId = target.userId;
@@ -314,7 +348,13 @@ export async function seedQaFixtures(db: Db, env: Pick<Env, "ALLOWED_GOOGLE_EMAI
   fixtures.push({ id: runId, title: runTitle, date: today, time: t3, kind: "run" });
 
   await doc(`${QA_TITLE_PREFIX}Core reset`, tomorrow, "07:00", "core");
-  return { today, tomorrow, fixtures };
+
+  // The saved templates (R1.4): one statement for both, on the QA account only.
+  const templates = QA_TEMPLATES.map((t) => ({ id: newId(), name: t.name, doc: t.doc }));
+  await db.insert(workoutTemplates).values(
+    templates.map((t) => ({ id: t.id, userId, name: t.name, doc: JSON.stringify(t.doc), pinned: false, uses: 0, lastUsedAt: null, createdAt: now, updatedAt: now })),
+  );
+  return { today, tomorrow, fixtures, templates: templates.map(({ id, name }) => ({ id, name })) };
 }
 
 // ── Pairing and the run's tokens ─────────────────────────────────────────────────────────────────────────────
@@ -456,6 +496,20 @@ export async function qaState(db: Db, userId: string): Promise<Record<string, un
     .select({ state: nativeDevices.state, scope: nativeDevices.scope, label: nativeDevices.label, lastUsedAt: nativeDevices.lastUsedAt, expiresAt: nativeDevices.expiresAt })
     .from(nativeDevices)
     .where(eq(nativeDevices.userId, userId));
+  // The library's fixtures and what the phone did with them (R1.4): names and counts, the receipts' states and times.
+  const templates = await db
+    .select({ id: workoutTemplates.id, name: workoutTemplates.name, uses: workoutTemplates.uses, lastUsedAt: workoutTemplates.lastUsedAt })
+    .from(workoutTemplates)
+    .where(eq(workoutTemplates.userId, userId))
+    .orderBy(workoutTemplates.name);
+  const receipts = await db
+    .select({
+      id: takeBackReceipts.id, source: takeBackReceipts.source, op: takeBackReceipts.op, status: takeBackReceipts.status, workoutId: takeBackReceipts.workoutId,
+      createdAt: takeBackReceipts.createdAt, takenBackAt: takeBackReceipts.takenBackAt,
+    })
+    .from(takeBackReceipts)
+    .where(eq(takeBackReceipts.userId, userId))
+    .orderBy(takeBackReceipts.createdAt);
   // The provider rows, in one statement.
   const [p] = (await db.all(sql`select
       (select count(*) from ${providerConnections} where ${providerConnections.userId} = ${userId}) as connections,
@@ -484,6 +538,8 @@ export async function qaState(db: Db, userId: string): Promise<Record<string, un
     matches,
     audits,
     devices,
+    templates,
+    receipts,
     providers,
     rows: await qaRowCounts(db, userId),
   };

@@ -248,6 +248,16 @@ const placeSchema = z
  */
 export const PLACE_COST = 24;
 
+/**
+ * THE MOST ROWS A PLACE'S COLLISION PASS MAY RE-TIME AND STILL MAKE THE WATCH COPY ITSELF (R1.4). The installed phone
+ * (LifeOS `f83daf9f`, `receiptsToRead`) reads a placed receipt ONCE, so a copy left to that read is made there and its push
+ * waits for the hourly run or the laptop. So the place's record gives way only where it truly wouldn't fit: measured, an
+ * untimed place with its record costs 35 + N statements and fetches for N rows re-timed (2: 37, 8: 43, 10: 45, 12: 47).
+ * Eight keeps two spare. (The declared figures, `PLACE_COST` + N + `DEVICE_RECORD_COST`, are upper bounds 8 above that,
+ * and gave way from 3 rows: R1.3's O2.) Past it, the copy is the read's, and its push the hourly's.
+ */
+export const RECORD_BESIDE_RETIMED_MAX = 8;
+
 /** The template's use, counted in the place's own batch: a resent clientId writes no batch, so it counts once. */
 const useCounted = (c: C, id: string) => (w: { now: string }) => [
   c
@@ -345,10 +355,11 @@ nativeLibraryRoutes.post("/templates/:id/place", requireUser, async (c) => {
     // and sends it, never racing a record still under way (the re-check's MAJOR-B). The laptop's own drain does both for
     // a place it makes. A failed record is left to the read's own step, or the hourly's.
     // A record runs only for a phone, with the watch switch and COROS writes on (`deviceWatchRecord`'s own conditions), and
-    // only in the room the place left: beside a crowded day's collision pass it gives way, and the phone's read of the
-    // receipt, straight after, makes it (its step; the R1.3 review's O2).
+    // beside a collision pass that leaves it room (`RECORD_BESIDE_RETIMED_MAX`, measured): past that it gives way, and the
+    // phone's read of the receipt, straight after, makes it (its step; the R1.3 review's O2) — its push then waits for the
+    // hourly or the laptop, as the installed phone reads a placed receipt once (R1.4).
     const records =
-      !!c.get("device") && watchPushEnabled(c.env) && prefs.corosWritesEnabled && PLACE_COST + (made.retimed ?? 0) + DEVICE_RECORD_COST <= REQUEST_BUDGET;
+      !!c.get("device") && watchPushEnabled(c.env) && prefs.corosWritesEnabled && (made.retimed ?? 0) <= RECORD_BESIDE_RETIMED_MAX;
     if (records) await deviceWatchRecord(db, c.env, userId, made.workout.id, prefs).catch(() => false);
     // The calendar follows, as after a Studio save — in the room the request has left (the re-check's MAJOR-A): beside a
     // phone's record none is left, so its event waits for the half-hourly run; the reconcile books what any step leaves.

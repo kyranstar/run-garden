@@ -277,6 +277,14 @@ on the `training-v5` scope only (`apps/worker/src/auth/device-scope.ts`; routes 
 - **The QA account's phone has no coach.** After `requireUser` (where the QA account's switches go off), every coach route
   answers 404 `coach_off` to it — no run, no model call, no `llm_usage` row. Its library, place and take-back work on its
   fixtures only. The $20 weekly cutoff is unchanged; a call's 32,000-token ceiling is reserved at its worst case first.
+- **The QA account's library is synthetic (R1.4).** Its seed saves two templates, fixture-named as its sessions are
+  (`QA Quick reset`, under ten minutes; `QA Hold series`, timed-hold mobility), on the QA account only; the purge removes
+  them with everything else and checks zero rows. No provider is ever attached to it — no COROS, no calendar — so a
+  place, *Do it now* or a take-back there writes no watch job and no calendar link, and every receipt's compensation is
+  an empty list: nothing for a provider to do. **What QA proves, and what it doesn't:** take-back timing on the QA account
+  is the phone's and the server's only. The watch's copy, its removal and their timing need the owner's physical device
+  and his own account; QA evidence never stands in for them. The harness's state (`/api/qa/run/state`) names the
+  templates and the receipts (ids, states, times — no document).
 
 ## One provider, no third-party egress
 

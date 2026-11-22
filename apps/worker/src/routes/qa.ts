@@ -5,11 +5,13 @@
  * 403 `out_of_scope` (`requireUser`'s list, and again here), and every route is 404 where the QA account can't exist:
  *   GET  /status      {qa: {userId, accountTag, createdAt} | null, today, rows, devices, plan}: what Settings → Developer shows
  *   POST /user        the QA account made (201), or 409 `qa_exists`
- *   POST /seed        its fixtures for today and tomorrow, or 404 `no_qa_account` / 409 `already_seeded`
+ *   POST /seed        its fixtures for today and tomorrow and its two saved templates (`templates`: ids and names; R1.4),
+ *                     or 404 `no_qa_account` / 409 `already_seeded`
  *   POST /pairings    a pairing code for the QA account, with the run's plan and harness tokens (429 `too_many_codes`)
  *   POST /revoke      {revoked}: every paired phone of the QA account revoked — the panel's "Revoke QA phone"; the account
  *                     and its fixtures stay
- *   GET  /state       what the QA account holds (ids, states, kinds, counts — no detail text)
+ *   GET  /state       what the QA account holds (ids, states, kinds, counts — no detail text), its templates (id, name, uses)
+ *                     and its take-back receipts (id, source, op, status, workout, times) since R1.4
  *   POST /purge       {confirm: "purge qa"}: one bounded step of the purge (≤ 45 statements a request) — `{done: false,
  *                     removed, remaining}` until the step that empties the last table, its sign-ins and its user row, and
  *                     checks every table zero: `{done: true, removed, remaining (all 0), total: 0}` (500 `purge_incomplete`

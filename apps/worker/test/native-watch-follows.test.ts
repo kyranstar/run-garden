@@ -299,12 +299,10 @@ describe("the watch follows a phone's place and take-back (R1.2 item 7)", () => 
     expect(google.inserted).toContain(placed.json.workoutId);
   });
 
-  // O2 (the R1.3 review's NIT-6): with writes on, the record gives way too. Beside a crowded day's collision pass it no longer
-  // fits its declared room, so the place leaves it to the phone's read, whose step makes it, and the read after sends it.
-  it("with writes on, a crowded untimed day's place leaves its record to the read: each request within 45 (O2)", async () => {
-    await world();
+  /** `n` sessions at 18:00 tomorrow, unpinned: a day the untimed place's collision pass re-lays. */
+  const crowd = async (n: number) => {
     const day = addDays(T, 1);
-    for (let i = 0; i < 10; i++) {
+    for (let i = 0; i < n; i++) {
       await w.db.insert(plannedWorkouts).values({
         id: `crowd-${i}`, userId: w.userId, planId: `studio-${w.userId}`, origin: "studio", sourceWorkoutId: `studio:crowd-${i}`, title: `Crowd ${i}`,
         category: "yoga", sport: "yoga", originalPlanDate: day, lastVerifiedCorosDate: day, effectiveDate: day, effectiveTime: "18:00",
@@ -312,6 +310,31 @@ describe("the watch follows a phone's place and take-back (R1.2 item 7)", () => 
         createdAt: nowInstant(), updatedAt: nowInstant(),
       });
     }
+  };
+
+  // THE INSTALLED PHONE READS A PLACED RECEIPT ONCE (R1.4; LifeOS `f83daf9f` `receiptsToRead`: each placed receipt never
+  // read, and only a taken-back one while its provider work is pending). R1.3's O2 left the record to that read from 3 rows
+  // re-timed, and the read's step makes the copy but no later read comes to send it. Measured, a place with its record
+  // costs 35 + N for N rows re-timed, so the record stays in the place to `RECORD_BESIDE_RETIMED_MAX`: the one read sends it.
+  it("a busy untimed day still makes the copy in the place, so the phone's one read sends it (R1.4)", async () => {
+    await world();
+    await crowd(6);
+    const placed = await place("t-1", "c-busy", null);
+    expect(placed.status, placed.text).toBe(201);
+    expect(placed.total, "the place, its collision pass and its record").toBeLessThanOrEqual(BUDGET);
+    const workoutId = placed.json.workoutId as string;
+    expect((await pushesOf(workoutId)).map((j) => j.status)).toEqual(["queued"]);
+    const read = await readReceipt(placed.json.receiptId as string);
+    expect(read.total, "the read, the push included").toBeLessThanOrEqual(BUDGET);
+    expect((await pushesOf(workoutId)).map((j) => j.status)).toEqual(["verified"]);
+  });
+
+  // Past the bound (O2, kept for the extreme day): the record gives way, and the phone's one read makes it. Its push then
+  // waits for the hourly or the laptop's drain — the installed phone reads that receipt no more. A phone that read again
+  // would send it.
+  it("past it, a crowded untimed day's place leaves its record to the read: each request within 45 (O2)", async () => {
+    await world();
+    await crowd(10);
     const placed = await place("t-1", "c-crowd-on", null);
     expect(placed.status, placed.text).toBe(201);
     expect(placed.total, "the place and its collision pass").toBeLessThanOrEqual(BUDGET);
