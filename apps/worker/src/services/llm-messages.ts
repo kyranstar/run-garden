@@ -223,7 +223,7 @@ export interface MessagesRequest {
   maxTokens: number;
   /** Omitted: the model's default (Opus 5.5: medium). */
   effort?: Effort;
-  /** The call carries LifeOS's day frame or text a framed turn wrote (R1.5): Anthropic only, no fallback (gateway-route.ts). */
+  /** Switch A has been on for the account (R1.5, device-sharing.ts `sharesDaySql`): Anthropic only, no fallback (gateway-route.ts). */
   anthropicOnly?: boolean;
 }
 

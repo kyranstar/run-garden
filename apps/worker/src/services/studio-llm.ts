@@ -617,7 +617,7 @@ export async function chatCompletion(
   model: string,
   maxTokens: number,
   messages: ChatMessage[],
-  /** `anthropicOnly`: the call carries text a framed turn wrote (R1.5) — Anthropic only, its retry too (gateway-route.ts). */
+  /** `anthropicOnly`: switch A has been on for the account (R1.5, device-sharing.ts `sharesDaySql`) — Anthropic only, its retry too. */
   opts: { anthropicOnly?: boolean } = {},
 ): Promise<
   | { ok: true; content: string; inputTokens: number; outputTokens: number; truncated: boolean }
@@ -902,8 +902,10 @@ async function runFullPlanAttempt(
   requestFingerprint: string,
   fetchImpl: typeof fetch,
   maxTokens: number,
+  /** Switch A has been on for the account (R1.5, device-sharing.ts `sharesDaySql`): Anthropic only. */
+  anthropicOnly: boolean,
 ): Promise<AttemptResult> {
-  const chat = await chatCompletion(env, fetchImpl, model, maxTokens, messages);
+  const chat = await chatCompletion(env, fetchImpl, model, maxTokens, messages, { anthropicOnly });
   await noteGatewayOutcome(db, userId, chat); // a 402 is on record for Settings → AI; a working call clears it
   if (!chat.ok) return { kind: "transport_failure", reason: chat.reason };
   await recordUsage(db, userId, usageKind, model, "strong", chat, requestFingerprint);
@@ -962,8 +964,10 @@ async function runOpsEditAttempt(
   catalogIds: Set<string>,
   requestFingerprint: string,
   fetchImpl: typeof fetch,
+  /** Switch A has been on for the account (R1.5, device-sharing.ts `sharesDaySql`): Anthropic only. */
+  anthropicOnly: boolean,
 ): Promise<AttemptResult> {
-  const chat = await chatCompletion(env, fetchImpl, model, MAX_OUTPUT_TOKENS_EDIT, messages);
+  const chat = await chatCompletion(env, fetchImpl, model, MAX_OUTPUT_TOKENS_EDIT, messages, { anthropicOnly });
   await noteGatewayOutcome(db, userId, chat); // a 402 is on record for Settings → AI; a working call clears it
   if (!chat.ok) return { kind: "transport_failure", reason: chat.reason };
   await recordUsage(db, userId, "studio_edit", model, "edit", chat, requestFingerprint);
@@ -1106,13 +1110,13 @@ export async function generatePlan(
     ];
 
     let attempt = await runFullPlanAttempt(
-      env, db, userId, model, messages, catalogIds, "studio_generate", requestFingerprint, fetchImpl, maxTokens,
+      env, db, userId, model, messages, catalogIds, "studio_generate", requestFingerprint, fetchImpl, maxTokens, budget.sharesDay,
     );
     if (attempt.kind === "validation_failure") {
       messages.push({ role: "assistant", content: attempt.rawContent });
       messages.push({ role: "user", content: feedbackMessage(attempt.feedback) });
       attempt = await runFullPlanAttempt(
-        env, db, userId, model, messages, catalogIds, "studio_generate", requestFingerprint, fetchImpl, maxTokens,
+        env, db, userId, model, messages, catalogIds, "studio_generate", requestFingerprint, fetchImpl, maxTokens, budget.sharesDay,
       );
     }
     if (attempt.kind === "success") return { plan: attempt.plan };
@@ -1169,13 +1173,13 @@ export async function editPlan(
         { role: "user", content: buildMajorReviseUserPrompt(plan, request, athlete) },
       ];
       let attempt = await runFullPlanAttempt(
-        env, db, userId, model, messages, catalogIds, "studio_edit", requestFingerprint, fetchImpl, maxTokens,
+        env, db, userId, model, messages, catalogIds, "studio_edit", requestFingerprint, fetchImpl, maxTokens, budget.sharesDay,
       );
       if (attempt.kind === "validation_failure") {
         messages.push({ role: "assistant", content: attempt.rawContent });
         messages.push({ role: "user", content: feedbackMessage(attempt.feedback) });
         attempt = await runFullPlanAttempt(
-          env, db, userId, model, messages, catalogIds, "studio_edit", requestFingerprint, fetchImpl, maxTokens,
+          env, db, userId, model, messages, catalogIds, "studio_edit", requestFingerprint, fetchImpl, maxTokens, budget.sharesDay,
         );
       }
       if (attempt.kind === "success") return { plan: attempt.plan };
@@ -1188,13 +1192,13 @@ export async function editPlan(
       { role: "user", content: buildEditUserPrompt(plan, request) },
     ];
     let attempt = await runOpsEditAttempt(
-      env, db, userId, model, messages, plan, catalogIds, requestFingerprint, fetchImpl,
+      env, db, userId, model, messages, plan, catalogIds, requestFingerprint, fetchImpl, budget.sharesDay,
     );
     if (attempt.kind === "validation_failure") {
       messages.push({ role: "assistant", content: attempt.rawContent });
       messages.push({ role: "user", content: feedbackMessage(attempt.feedback) });
       attempt = await runOpsEditAttempt(
-        env, db, userId, model, messages, plan, catalogIds, requestFingerprint, fetchImpl,
+        env, db, userId, model, messages, plan, catalogIds, requestFingerprint, fetchImpl, budget.sharesDay,
       );
     }
     if (attempt.kind === "success") return { plan: attempt.plan };

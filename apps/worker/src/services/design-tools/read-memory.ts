@@ -80,8 +80,6 @@ export const recallMemory: DesignTool = {
         expiresAt: m.expiresAt,
         evidence: m.evidence,
         source: sql<string | null>`case when json_valid(${m.provenance}) then json_extract(${m.provenance}, '$.source') end`,
-        // Written by a tree that carried LifeOS's frame (R1.5, design-frame.ts): never shown, it pins the run.
-        frame: sql<number | null>`case when json_valid(${m.provenance}) then json_extract(${m.provenance}, '$.frame') end`,
       })
       .from(m)
       .where(
@@ -98,9 +96,7 @@ export const recallMemory: DesignTool = {
       )
       .orderBy(desc(LEARNED), desc(m.id))
       .limit(limit + 1);
-    // An item a framed tree wrote, among those shown (R1.5): the loop pins the run from this call on.
-    const framed = rows.slice(0, limit).some((r) => Number(r.frame) === 1);
-    const answer = pagedAnswer({
+    return pagedAnswer({
       source: "the coach's memory of the athlete, beyond the pinned core",
       now: ctx.now,
       missing: [...athlete.missing, ...(rows.length === 0 && !at ? [p.query ? `no memory matches "${p.query}"` : "no memory beyond the pinned core"] : [])],
@@ -124,6 +120,5 @@ export const recallMemory: DesignTool = {
       data: (memories) => ({ memories }),
       summary: (shown) => (shown ? `Recalled ${plural(shown, "memory", "memories")}${p.query ? " matching the search" : ""}` : "That's everything the coach remembers."),
     });
-    return framed && !("error" in answer) ? { ...answer, carriesFrame: true } : answer;
   },
 };

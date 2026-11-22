@@ -24,7 +24,7 @@ import { libraryForDocs } from "./account-library.js";
 import { checkFocus, dayOutOfRange, type RunFocus } from "./design-focus.js";
 import { DESIGNER_CEILING_MICROS, MAX_TOOL_CALLS_PER_TURN, RUN_LIMITS, SET_REDO_ROUNDS } from "./design-limits.js";
 import { NO_TOOL_LINE } from "./design-prompt.js";
-import { frameLines, settingsCarryFrame, type DayFrame } from "./design-frame.js";
+import { frameLines, type DayFrame } from "./design-frame.js";
 import {
   DEFAULT_SET_MAIN_COST_MICROS,
   DEFAULT_WORKOUT_COST_MICROS,
@@ -274,12 +274,13 @@ export const usageKindOf = (role: ToolRole, rehearsal: boolean | undefined): str
 
 /** What a run's lane may spend in the rolling week, and what it has: the athlete's (the cutoff) or a rehearsal's (the
  * rehearsal lane's cap: rehearsals and replays together). ONE statement. */
-async function laneWeek(db: Db, userId: string, rehearsal: boolean): Promise<{ spentMicros: number; cutoffMicros: number }> {
+async function laneWeek(db: Db, userId: string, rehearsal: boolean): Promise<{ spentMicros: number; cutoffMicros: number; sharesDay: boolean }> {
   if (rehearsal) {
     const dev = await devBudgetStatus(db, userId);
-    return { spentMicros: dev.spentMicros, cutoffMicros: dev.capMicros };
+    return { spentMicros: dev.spentMicros, cutoffMicros: dev.capMicros, sharesDay: dev.sharesDay };
   }
-  return { spentMicros: (await llmBudgetStatus(db, userId)).spentMicros, cutoffMicros: LLM_BUDGET.cutoffMicros };
+  const athlete = await llmBudgetStatus(db, userId);
+  return { spentMicros: athlete.spentMicros, cutoffMicros: LLM_BUDGET.cutoffMicros, sharesDay: athlete.sharesDay };
 }
 
 // ── The budget ──────────────────────────────────────────────────────────
@@ -466,9 +467,6 @@ export interface RunSettings {
    * owner accepted (`consent`). Read into the opening context as data; its lines shown on the laptop. */
   frame?: DayFrame;
   consent?: string;
-  /** R1.5 (design-frame.ts): the run read text a framed turn wrote — a framed conversation's turn, a marked memory item —
-   * so it and its tree are Anthropic's only, as a framed run's are; and what it writes is marked in turn. */
-  anthropicOnly?: boolean;
 }
 
 export interface PendingCall {
@@ -806,8 +804,7 @@ export interface ContextRun {
  */
 export interface ContextBuilder {
   statementCost: number;
-  /** `carriesFrame` (R1.5): what it read holds text a framed turn wrote (a framed conversation's turn, a marked memory item). */
-  build(db: Db, env: Env, userId: string, run: ContextRun, now: Date): Promise<{ system: SystemBlock[]; header: string; carriesFrame?: boolean }>;
+  build(db: Db, env: Env, userId: string, run: ContextRun, now: Date): Promise<{ system: SystemBlock[]; header: string }>;
 }
 
 export interface RunDeps {
@@ -2914,15 +2911,6 @@ async function resumeSet(s: StepCtx): Promise<StepEnd> {
   return { status: "active", state, costMicros: 0, error: null, proposalId: null, events };
 }
 
-/**
- * THE TURN CARRIES LIFEOS'S FRAME (R1.5; design-frame.ts): a run of its tree has the frame, or read text a framed turn wrote
- * (`anthropicOnly`) — this run's settings as they stand now, then its tree as the step read it. Every model call the tree
- * makes is then Anthropic's only (gateway-route.ts), and what its runs write is marked (remember's `provenance.frame`).
- */
-function carriesFrame(s: Pick<StepCtx, "state" | "root" | "nodes">): boolean {
-  return settingsCarryFrame(s.state.settings) || settingsCarryFrame(s.root.settings) || s.nodes.some((n) => settingsCarryFrame(n.settings));
-}
-
 async function contextStep(s: StepCtx): Promise<StepEnd> {
   const run: ContextRun = {
     id: s.run.id,
@@ -2954,8 +2942,6 @@ async function contextStep(s: StepCtx): Promise<StepEnd> {
     ...(s.run.role === "main" && s.state.settings.frame ? { frame: s.state.settings.frame } : {}),
   };
   const built = await s.deps.buildContext.build(s.db, s.env, s.userId, run, s.now);
-  // What it read was written by a framed turn (R1.5): a framed conversation's turn, a marked memory item. Pinned from here.
-  if (built.carriesFrame) s.state.settings.anthropicOnly = true;
   s.state.system = built.system;
   s.state.messages = [{ role: "user", content: [{ type: "text", text: built.header }] }];
   s.state.toldAt = s.now.toISOString();
@@ -3039,8 +3025,10 @@ async function modelStep(s: StepCtx): Promise<Advance> {
     tools,
     maxTokens: settings.maxTokens,
     effort: settings.effort,
-    // Its tree carries LifeOS's frame (R1.5): every call of it — each step, a sub-run's, a repair — Anthropic's only.
-    ...(carriesFrame(s) ? { anthropicOnly: true } : {}),
+    // Switch A has been on for the account, read with the week before this very call (R1.5, device-sharing.ts
+    // `sharesDaySql`): every call of every run — each step, a sub-run's, a repair — is Anthropic's only. (A run carrying a
+    // frame is such an account's by construction: no frame is taken with the switch off, and the switch audits itself.)
+    ...(week.sharesDay ? { anthropicOnly: true } : {}),
   });
 
   // What the call cost — the answer's usage; a broken-off answer's, as far as it got; nothing if never billed — known
@@ -3307,8 +3295,6 @@ async function runTools(
       // A plan's draft (plans with a purpose §4.2): who asked, and the plan plan_set and propose_plan default to.
       ...(run.role === "main" && state.settings.origin === "plan_draft" ? { origin: "plan_draft" as const } : {}),
       ...(run.role === "main" && state.settings.planId ? { planId: state.settings.planId } : {}),
-      // Its tree carries LifeOS's frame (R1.5): what it remembers is marked so (remember's `provenance.frame`).
-      ...(carriesFrame(s) ? { carriesFrame: true } : {}),
     },
     now: s.now,
     ...(s.deps.review && run.role !== "reviewer" ? { review: reviewHooks(s) } : {}),
@@ -3378,11 +3364,6 @@ async function runTools(
           : { error: "not_for_role", why: `${call.name} is not a tool for the ${run.role}.`, fix }
         : { error: "unknown_tool", why: `There is no tool named ${call.name}.`, fix };
     const ok = !isToolErr(result);
-    // Frame-derived text read back (R1.5): a memory item a framed turn wrote. From this call on, the tree is Anthropic's only.
-    if (ok && result.carriesFrame) {
-      state.settings.anthropicOnly = true;
-      ctx.run.carriesFrame = true; // a later call of this step (a remember) marks what it writes
-    }
     if (tool?.control === "ask" && ok) {
       state.awaiting = call.id;
       // An ask for today's condition check waits on a check the athlete logs from now on (fix wave 3A, A8).

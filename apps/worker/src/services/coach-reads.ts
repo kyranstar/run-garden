@@ -303,21 +303,23 @@ interface GenerateOutcome {
   outOfCredits?: boolean;
 }
 
-/** One claimed read → one model call (plus one schema-repair round-trip). */
+/**
+ * One claimed read → one model call (plus one schema-repair round-trip). `anthropicOnly`: switch A has been on for the account
+ * (R1.5, device-sharing.ts `sharesDaySql`, read with its caller's week) — both calls Anthropic's only.
+ */
 async function generateRead(
   db: Db,
   env: Env,
   userId: string,
   activityId: string,
   fetchImpl: typeof fetch,
+  anthropicOnly: boolean,
 ): Promise<GenerateOutcome> {
   const isDigest = activityId.startsWith("digest:");
-  const effort = isDigest ? null : await buildEffortPackage(db, userId, activityId);
-  const packageText = isDigest ? await buildDigestPackage(db, userId) : effort?.text;
+  const packageText = isDigest
+    ? await buildDigestPackage(db, userId)
+    : (await buildEffortPackage(db, userId, activityId))?.text;
   if (!packageText) return { ok: false };
-  // Its package holds a memory item a framed turn or a pinned call wrote (R1.5, design-frame.ts): Anthropic's only, its
-  // schema repair too. A digest reads activities and their reads alone.
-  const anthropicOnly = effort?.carriesFrame === true;
 
   const model = env.AI_COACH_READ_MODEL || env.AI_STUDIO_MODEL_STRONG || DEFAULT_MODEL_STRONG;
   const system = isDigest ? DIGEST_SYSTEM_PROMPT : READ_SYSTEM_PROMPT;
@@ -436,7 +438,7 @@ export async function processCoachReads(
     const token = await claimRead(db, userId, candidate, now);
     if (!token) continue; // lost the race for this row — try the next
     attempted += 1;
-    const gen = await generateRead(db, env, userId, candidate.activityId, fetchImpl);
+    const gen = await generateRead(db, env, userId, candidate.activityId, fetchImpl, budget.sharesDay);
     // A restore that began during the model call wins (B9): nothing lands.
     if (await restoreInProgress(db, userId)) break;
     if (gen.outOfCredits) {
@@ -553,7 +555,7 @@ export async function ensureRead(
   const token = await claimRead(db, userId, row, now);
   if (!token) return { status: "working" };
 
-  const gen = await generateRead(db, env, userId, activityId, fetchImpl);
+  const gen = await generateRead(db, env, userId, activityId, fetchImpl, budget.sharesDay);
   if (await restoreInProgress(db, userId)) return { status: "error" };
   if (gen.outOfCredits) {
     await returnUnread(db, row.id, token, row.attempt);

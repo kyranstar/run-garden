@@ -661,8 +661,6 @@ async function persistMessage(
     wakeFailure?: boolean;
     focus?: string;
     raceLine?: string;
-    /** R1.5 (design-frame.ts): written by a wake that carried text a framed turn wrote — a later wake reading it is pinned. */
-    frame?: true;
   } = {},
 ): Promise<string> {
   const id = newId();
@@ -1241,7 +1239,8 @@ export async function wake(
     ): Promise<{ out: WakeOutput | null; raw: string; issues: string; outOfCredits?: boolean }> => {
       const chat =
         gateway.kind === "model"
-          ? await chatCompletion(gateway.env, fetchImpl, model, MAX_OUTPUT_TOKENS_WAKE, msgs, { anthropicOnly: dossier.carriesFrame })
+          ? // Switch A has been on for the account (R1.5, device-sharing.ts `sharesDaySql`, read with the week above): Anthropic only.
+            await chatCompletion(gateway.env, fetchImpl, model, MAX_OUTPUT_TOKENS_WAKE, msgs, { anthropicOnly: budget.sharesDay })
           : CANNED_WAKE_CHAT;
       // A 402 records "out of credits"; any call that worked clears it.
       if (gateway.kind === "model") await noteGatewayOutcome(db, userId, chat);
@@ -1338,8 +1337,6 @@ export async function wake(
         memoryIds: extraRefs.memoryIds?.length ? extraRefs.memoryIds : undefined,
         focus: focus ?? undefined,
         raceLine: raceLine ?? undefined,
-        // This wake carried text a framed turn wrote (R1.5, design-frame.ts): a later wake whose thread holds it is pinned.
-        ...(dossier.carriesFrame ? { frame: true as const } : {}),
       };
       if (existingId) {
         await db
@@ -1448,7 +1445,7 @@ export async function wake(
             : "The plan changes the coach drafted alongside this couldn't be formatted — ask again (smaller steps help) and it will draft them as proposals.",
           // Diagnosability: the zod issues ride the receipt's refs — three
           // live failures were unexplainable post-hoc without a running tail.
-          { schemaIssues: issues.slice(0, 500), repairSkipped, ...(dossier.carriesFrame ? { frame: true } : {}) } as never,
+          { schemaIssues: issues.slice(0, 500), repairSkipped } as never,
         );
         await consumeOnce();
         return { status: "ok", coachMessageId };
@@ -1605,7 +1602,7 @@ export async function wake(
           x.p.ops.map((o) => o.kind),
           x.v.fatal.map((h) => h.detail),
         ),
-        { proposalId: rejectedId, ...(dossier.carriesFrame ? { frame: true as const } : {}) },
+        { proposalId: rejectedId },
       );
       rejectedIds.push(rejectedId);
     }
@@ -1718,8 +1715,7 @@ export async function wake(
           userId,
           kind: m.kind,
           body: m.text,
-          // Written by a wake that carried text a framed turn wrote (R1.5, design-frame.ts): marked, as a framed run's is.
-          provenance: { source: cause.kind, at: now, ...(dossier.carriesFrame ? { frame: true } : {}) },
+          provenance: { source: cause.kind, at: now },
           learnedAt: now,
           expiresAt: m.expiresAt ?? null,
           active: true,

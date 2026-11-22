@@ -81,7 +81,8 @@ describe("the athlete's week and the rehearsal lane are counted apart", () => {
   it("llmBudgetStatus counts only the athlete's calls; devBudgetStatus only rehearsals' and replays'", async () => {
     await prodWeek();
     expect((await llmBudgetStatus(db, userId)).spentMicros).toBe(6_400_000);
-    expect(await devBudgetStatus(db, userId)).toEqual({ spentMicros: 11_790_000, capMicros: DEV_BUDGET.capMicros, over: false });
+    // `sharesDay` (R1.5): switch A never on for this account.
+    expect(await devBudgetStatus(db, userId)).toEqual({ spentMicros: 11_790_000, capMicros: DEV_BUDGET.capMicros, over: false, sharesDay: false });
     expect(DEV_BUDGET.capMicros).toBe(15_000_000);
   });
 

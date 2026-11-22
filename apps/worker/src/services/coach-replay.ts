@@ -71,7 +71,6 @@ import { allTools } from "./design-tools/index.js";
 import { designProposalId } from "./design-tools/propose.js";
 import type { DesignTool } from "./design-tools/types.js";
 import { athleteText, clipProse } from "./design-prose.js";
-import { settingsCarryFrame } from "./design-frame.js";
 import { gatewayRouting } from "./gateway-route.js";
 import { devBudgetStatus, DEV_BUDGET, REPLAY_USAGE_KIND, RESERVATION_MARK } from "./llm.js";
 import {
@@ -386,7 +385,15 @@ export interface ReplayRequest {
   headBytes: number;
 }
 
-export function replayRequest(state: RunState, cut: number, tools: DesignTool[], model: string, system: SystemBlock[] = state.system ?? []): ReplayRequest {
+/** `anthropicOnly`: switch A has been on for the account (R1.5, device-sharing.ts `sharesDaySql`) — the replay is Anthropic's only. */
+export function replayRequest(
+  state: RunState,
+  cut: number,
+  tools: DesignTool[],
+  model: string,
+  system: SystemBlock[] = state.system ?? [],
+  opts: { anthropicOnly?: boolean } = {},
+): ReplayRequest {
   const sent = withMessageBreakpoint(state.messages.slice(0, cut));
   const settings = state.settings;
   const specs = toolSpecs(tools, state);
@@ -399,9 +406,7 @@ export function replayRequest(state: RunState, cut: number, tools: DesignTool[],
   });
   // `open` ends with the messages' `]}`: the newest message goes on after the others.
   const head = `${open.slice(0, -2)}${sent.length > 1 ? "," : ""}`;
-  // A replay of a run that carried LifeOS's frame, or read text a framed turn wrote (R1.5, design-frame.ts): Anthropic's only.
-  const routing = gatewayRouting(model, { anthropicOnly: settingsCarryFrame(settings) });
-  const close = JSON.stringify({ ...(settings.effort ? { output_config: { effort: settings.effort } } : {}), ...routing, stream: true });
+  const close = JSON.stringify({ ...(settings.effort ? { output_config: { effort: settings.effort } } : {}), ...gatewayRouting(model, { anthropicOnly: opts.anthropicOnly === true }), stream: true });
   return { model, maxTokens: settings.maxTokens, head, newest: sent.at(-1)!, tail: `],${close.slice(1)}`, headBytes: utf8Bytes(head) };
 }
 
@@ -463,7 +468,11 @@ export async function replayRun(db: Db, env: Env, userId: string, input: ReplayB
         : { prose: proseOf(designed?.doc) ?? undefined };
 
   const model = designModel(env);
-  const request = replayRequest(state, cut, deps.tools, model, system);
+  // The rehearsal lane's week (audit C1): a replay is the developer's, never the athlete's — counted with rehearsals, against
+  // their own cap. Read before the request is written: it also says whether switch A has been on for the account (R1.5,
+  // device-sharing.ts `sharesDaySql`), and then the replay — of any run, framed or not — is Anthropic's only.
+  const lane = await devBudgetStatus(db, userId);
+  const request = replayRequest(state, cut, deps.tools, model, system, { anthropicOnly: lane.sharesDay });
   const variants: ReplayVariantDto[] = input.variants.map((v) => ({ id: v.id, settings: voiceSettingsOf(v), costUsd: 0 }));
   const plan = (index: number): Planned => {
     const body = replayBody(request, voiceBlock(input.variants[index]!));
@@ -545,10 +554,8 @@ export async function replayRun(db: Db, env: Env, userId: string, input: ReplayB
     return messagesCostMicros(model, { inputTokens: 0, cacheReadTokens: first ? 0 : p.promptTokens, cacheWriteTokens: first ? p.promptTokens : 0, outputTokens: out });
   };
 
-  // ── The first variant, alone: it writes the shared prefix to the cache ──
-  // The rehearsal lane's week (audit C1): a replay is the developer's, never the athlete's — counted with rehearsals,
-  // against their own cap.
-  const week = (await devBudgetStatus(db, userId)).spentMicros;
+  // ── The first variant, alone: it writes the shared prefix to the cache ── (its week read above)
+  const week = lane.spentMicros;
   const first = plan(0);
   if (week + first.worstMicros > DEV_BUDGET.capMicros) {
     return { kind: "weekly_cap", why: REPLAY_WORDS.weeklyCap, spentUsd: usd(week), cutoffUsd: usd(DEV_BUDGET.capMicros) };

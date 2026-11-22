@@ -4,6 +4,7 @@ import { fingerprint, newId, nowInstant, type UserPreferences } from "@rg/domain
 import type { Env } from "../env.js";
 import type { Db } from "./db.js";
 import { restoreInProgress } from "./account-state.js";
+import { sharesDaySql } from "./device-sharing.js";
 import { gatewayRouting } from "./gateway-route.js";
 
 /**
@@ -41,6 +42,8 @@ export interface LlmBudgetStatus {
   spentMicros: number;
   warn: boolean;
   cutoff: boolean;
+  /** Switch A has been on for the account (device-sharing.ts `sharesDaySql`): its coach calls are Anthropic's only. */
+  sharesDay: boolean;
 }
 
 /** The voice workshop's replay calls' kind in `llm_usage` (coach-replay.ts). */
@@ -112,25 +115,30 @@ export function weekCostSql(now: Date): SQL {
     ELSE ${llmUsage.costMicros} END)`;
 }
 
-/** The rolling week's spend of one lane — the athlete's, or the rehearsal lane's (`DEV_BUDGET`). ONE statement. */
-async function weekSpentMicros(db: Db, userId: string, dev: boolean): Promise<number> {
+/**
+ * The rolling week's spend of one lane — the athlete's, or the rehearsal lane's (`DEV_BUDGET`) — and whether switch A has
+ * ever been on for the account (R1.5, device-sharing.ts `sharesDaySql`), which every coach model call reads here before it
+ * is sent. ONE statement.
+ */
+async function weekSpentMicros(db: Db, userId: string, dev: boolean): Promise<{ spentMicros: number; sharesDay: boolean }> {
   const now = new Date(Date.now());
   const since = new Date(now.getTime() - 7 * 86_400_000).toISOString();
   const lane = dev ? devUsageSql() : ownerUsageSql();
   const [row] = await db
-    .select({ spent: sql<number | null>`sum(${weekCostSql(now)})` })
+    .select({ spent: sql<number | null>`sum(${weekCostSql(now)})`, sharesDay: sql<number>`${sharesDaySql(userId)}` })
     .from(llmUsage)
     .where(and(eq(llmUsage.userId, userId), gte(llmUsage.createdAt, since), lane));
-  return Math.round(Number(row?.spent ?? 0));
+  return { spentMicros: Math.round(Number(row?.spent ?? 0)), sharesDay: Number(row?.sharesDay ?? 0) === 1 };
 }
 
 /** The athlete's week: every call but the rehearsal lane's. */
 export async function llmBudgetStatus(db: Db, userId: string): Promise<LlmBudgetStatus> {
-  const spentMicros = await weekSpentMicros(db, userId, false);
+  const { spentMicros, sharesDay } = await weekSpentMicros(db, userId, false);
   return {
     spentMicros,
     warn: spentMicros >= LLM_BUDGET.warnMicros,
     cutoff: spentMicros >= LLM_BUDGET.cutoffMicros,
+    sharesDay,
   };
 }
 
@@ -138,12 +146,14 @@ export interface DevBudgetStatus {
   spentMicros: number;
   capMicros: number;
   over: boolean;
+  /** As `LlmBudgetStatus.sharesDay`: a rehearsal's and a replay's calls are the account's coach too. */
+  sharesDay: boolean;
 }
 
 /** The rehearsal lane's week: rehearsals' and replays' calls, against `DEV_BUDGET`. ONE statement. */
 export async function devBudgetStatus(db: Db, userId: string): Promise<DevBudgetStatus> {
-  const spentMicros = await weekSpentMicros(db, userId, true);
-  return { spentMicros, capMicros: DEV_BUDGET.capMicros, over: spentMicros >= DEV_BUDGET.capMicros };
+  const { spentMicros, sharesDay } = await weekSpentMicros(db, userId, true);
+  return { spentMicros, capMicros: DEV_BUDGET.capMicros, over: spentMicros >= DEV_BUDGET.capMicros, sharesDay };
 }
 
 type Units = UserPreferences["units"];

@@ -12,12 +12,30 @@
  *    version stored. Anything else is refused (`sharing_off`): a frame is never ignored, so the phone never says it shared
  *    what didn't go, and nothing starts without what the owner was told it carries.
  */
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql, type SQL } from "drizzle-orm";
 import { auditEvents, nativeDeviceSharing } from "@rg/database";
 import { newId } from "@rg/domain";
 import { runAtomicallyRowsAt, type Db } from "./db.js";
 
 export const SHARING_SET_KIND = "native_device_sharing_set";
+
+/**
+ * ONCE SWITCH A HAS BEEN ON, THE ACCOUNT'S COACH IS READ BY ANTHROPIC ONLY (R1.5; DESIGN-3 §3.12.4; the R1.5 review's F1).
+ * LifeOS's switch A promises the day frame is "Read by Claude (Anthropic)". Every Claude call asks the gateway for Anthropic
+ * first (`order`), keeping Claude on Bedrock or Vertex as fallbacks; once the owner has ever turned A on, the frame — and
+ * whatever the coach wrote after reading it: a workout's name and notes, a proposal, a receipt, a memory, a read — can be
+ * anywhere in the account. So the account, not the text, is pinned: every coach model call for it (a run's every step, its
+ * sub-runs and repairs, a replay, the wake, an activity's read, the Studio's plan calls) goes `only: ["anthropic"]`
+ * (gateway-route.ts) and fails rather than falls back. Turning A off never unpins: what was derived stays.
+ *
+ * Derived from the switch's own audit rows (`setSharing` writes one in the switch's batch), which are the account's
+ * (`audit_events`, account-tables.ts): exported, restored and removed by delete-all exactly as they are — so the pin travels
+ * with exactly the data that can hold frame-derived text. An uncorrelated scalar, read inside the budget statement every coach
+ * model call already makes (llm.ts `weekSpentMicros`): no statement more. It stops at the first row that says on; an account
+ * that never turned A on reads its way through the table (no `user_id` index yet), which is what keeps it routed as before.
+ */
+export const sharesDaySql = (userId: string): SQL =>
+  sql`exists (select 1 from audit_events a where a.user_id = ${userId} and a.kind = ${SHARING_SET_KIND} and json_valid(a.detail) and json_extract(a.detail, '$.toTraining') = 1)`;
 
 export interface SharingState {
   /** Switch A: the owner's day frame may go with a training ask. */

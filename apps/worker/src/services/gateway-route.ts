@@ -34,10 +34,10 @@ export function loopbackUrl(raw: string | undefined): string | null {
  * requests Anthropic serves, and a Claude model alone may be routed to Bedrock or Vertex instead. `order`, not `only`:
  * those stay as fallbacks, on the gateway's credits, when Anthropic is down. Any other model: nothing.
  *
- * `anthropicOnly` (R1.5; DESIGN-3 §3.12.4): a call that carries LifeOS's day frame, or text a framed turn wrote, is read by
- * Anthropic alone — `only`, never `order`, whatever the model (a non-Claude model is then refused by the gateway, never
- * routed to its own provider). If Anthropic can't serve it, it fails as an ordinary provider error: no fallback. LifeOS's
- * sharing switch A promises "Read by Claude (Anthropic)"; this is what keeps it true. Which calls: design-frame.ts.
+ * `anthropicOnly` (R1.5; DESIGN-3 §3.12.4): Anthropic alone — `only`, never `order`, whatever the model (a non-Claude model
+ * is then refused by the gateway, never routed to its own provider). If Anthropic can't serve it, it fails as an ordinary
+ * provider error: no fallback. Every coach model call of an account for which LifeOS's switch A has ever been on is sent so
+ * (device-sharing.ts `sharesDaySql`): the switch promises "Read by Claude (Anthropic)", and this is what keeps it true.
  */
 export function gatewayRouting(
   model: string,

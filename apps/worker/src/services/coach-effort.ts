@@ -21,7 +21,6 @@ import { COROS_EXERCISE_NAMES } from "@rg/providers";
 import { loadPreferences } from "./calendar-sync.js";
 import type { Db } from "./db.js";
 import { liveMemoryWhere } from "./memory-core.js";
-import { markedByFrame } from "./design-frame.js";
 
 /** Storage is °C; the athlete reads their own unit (prefs.temperatureUnit,
  * default °F) and the model must never convert — a converted number is an
@@ -46,8 +45,6 @@ export interface EffortPackage {
   approxTokens: number;
   /** Local calendar date of the effort — cache key context for callers. */
   date: string;
-  /** R1.5 (design-frame.ts): it holds a memory item a framed turn or a pinned call wrote — the read is Anthropic's only. */
-  carriesFrame: boolean;
 }
 
 type ActivityRow = typeof activities.$inferSelect;
@@ -379,5 +376,5 @@ export async function buildEffortPackage(
 
   let text = `# EFFORT PACKAGE · ${date}\n\n${out.join("\n")}`;
   if (text.length / 4 > TOKEN_BUDGET) text = text.slice(0, TOKEN_BUDGET * 4);
-  return { text, sections, approxTokens: Math.round(text.length / 4), date, carriesFrame: memory.some((m) => markedByFrame(m.provenance)) };
+  return { text, sections, approxTokens: Math.round(text.length / 4), date };
 }

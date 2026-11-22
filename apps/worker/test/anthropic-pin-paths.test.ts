@@ -1,39 +1,52 @@
 /**
- * EVERY PATH THAT CAN CARRY LIFEOS'S DAY FRAME INTO A MODEL IS ANTHROPIC'S ONLY (R1.5; DESIGN-3 §3.12.4; the routing and
- * its clients: anthropic-pin.test.ts). The frame reaches a model directly in its turn's opening; text that turn writes
- * reaches later calls through the conversation and the coach's memory. So:
- *  - a framed turn: every call of its tree — the main run's steps, its reviewer's and its designers' — is pinned;
- *  - a later turn of its conversation is pinned (it reads that turn's words), and so is a later one of a pinned turn's;
- *  - memory a pinned call writes is marked (`provenance.frame`), and any call whose input holds a marked item is pinned:
- *    a run whose core holds it, or the moment a run recalls it; the wake; an activity's read;
- *  - a pinned wake's thread messages are marked (`refs.frame`), and a later wake whose thread holds one is pinned.
- * A call with none of these is routed exactly as before: no request asks for the pin. Synthetic data, test accounts.
+ * ONCE SWITCH A HAS BEEN ON, EVERY COACH MODEL CALL OF THE ACCOUNT IS ANTHROPIC'S ONLY (R1.5 fix round 1; the review's F1;
+ * device-sharing.ts `sharesDaySql`; the routing and its clients: anthropic-pin.test.ts). LifeOS's day frame — and whatever
+ * the coach writes after reading it: a workout's name, a proposal, a receipt, a memory, a read — can be anywhere in the
+ * account, so the account is pinned, not the text:
+ *  - an account that never turned A on: every call routed exactly as before (`order`, no `anthropicOnly`);
+ *  - once on: every call — a run's every step, its reviewer's, a new conversation's, a replay, the wake, an activity's read,
+ *    the Studio's plan — is `only: ["anthropic"]`, and stays so after A is turned off;
+ *  - another account's switch pins nothing here; a phone that only ever said off pins nothing;
+ *  - the review's probe: a framed turn's workout reaches the wake, a new conversation, the plan and a matched read — all pinned.
+ * Synthetic data, test accounts, scripted model, no network.
  */
 import { beforeAll, describe, expect, it } from "vitest";
 import { eq } from "drizzle-orm";
 import { schema } from "@rg/database";
-import { addDays, newId, nowInstant, todayInZone } from "@rg/domain";
+import { addDays, newId, nowInstant, todayInZone, type LiftingPlan, type PlanBrief } from "@rg/domain";
 import type { Env } from "../src/env.js";
 import type { Db } from "../src/services/db.js";
-import { enqueueCoachReads, processCoachReads } from "../src/services/coach-reads.js";
+import { loadPreferences } from "../src/services/calendar-sync.js";
+import { enqueueCoachReads, ensureRead, processCoachReads } from "../src/services/coach-reads.js";
+import { REPLAY_CONFIRM, replayRun, type ReplayDeps } from "../src/services/coach-replay.js";
 import { createRun, runStep, type RunDeps } from "../src/services/coach-runs.js";
 import { wake } from "../src/services/coach-wake.js";
+import { approveDesignOps } from "../src/services/design-approve.js";
 import { designContextBuilder } from "../src/services/design-context.js";
 import type { DayFrame } from "../src/services/design-frame.js";
 import { REVIEW_DIMENSIONS } from "../src/services/design-prompt.js";
 import { allTools } from "../src/services/design-tools/index.js";
+import { designProposalId } from "../src/services/design-tools/propose.js";
+import { setSharing } from "../src/services/device-sharing.js";
 import type { ContentBlock, MessagesOk, MessagesRequest, MessagesResult } from "../src/services/llm-messages.js";
+import { editPlan, generatePlan } from "../src/services/studio-llm.js";
 import { NOW, seedRichAthlete, TODAY } from "./design-read-fixture.js";
 import { calmDoc } from "./doc-workout-fixture.js";
-import { makeTestDb, makeTestUser, untilDone } from "./helpers.js";
+import { makeTestDb, untilDone } from "./helpers.js";
 
-const { coachMemory, coachMessages, coachReads, activities } = schema;
+const { activities, coachProposals } = schema;
 const env = { APP_URL: "https://app.test", FIXTURE_MODE: "0", AI_DEFAULT_ENABLED: "1", AI_GATEWAY_API_KEY: "test-key" } as Env;
+const ONLY = { gateway: { only: ["anthropic"] } };
+const ORDER = { gateway: { order: ["anthropic"] } };
+const VERSION = "2026-11-19.1";
 
 let db: Db;
 beforeAll(() => {
   db = makeTestDb({ boundVariableCap: 100 });
 });
+
+/** The phone's own switch (`PUT /api/native/sharing`'s service): its row and its audit row, in one batch. */
+const switchA = (userId: string, on: boolean, deviceId = "d-1") => setSharing(db, userId, deviceId, { toTraining: on, disclosureVersion: VERSION }, nowInstant());
 
 const frame = (): DayFrame =>
   ({
@@ -43,7 +56,7 @@ const frame = (): DayFrame =>
     dayEnd: "23:00",
     load: { [TODAY]: "full" },
     coverage: { [TODAY]: { planAsOf: NOW.toISOString(), calendarAsOf: NOW.toISOString(), drafted: false } },
-    consent: "2026-11-19.1",
+    consent: VERSION,
   }) as DayFrame;
 
 let seq = 0;
@@ -58,12 +71,27 @@ const turn = (uses: ContentBlock[], text = "Working on it."): MessagesOk => ({
 });
 const DIMS = REVIEW_DIMENSIONS.map((d) => d.id);
 const verdict = { scores: Object.fromEntries(DIMS.map((d) => [d, 4])), notes: Object.fromEntries(DIMS.map((d) => [d, `${d}: fine.`])), mustFix: [], improvements: [] };
-const propose = () => use("propose_workout", { doc: calmDoc({ title: "Calm hips" }), target: { kind: "new", date: TODAY } });
-const finish = () => use("finish", { summary: "A calm hips session, ready to approve." });
 
-/** A scripted model: each turn in order, and every request it was sent. */
-function scripted(turns: MessagesResult[]) {
+/** A run driven through a proposal, its review and a finish: every request it sent (its reviewer's among them). */
+async function aTurn(userId: string, o: { title?: string; framed?: boolean; rehearsal?: boolean } = {}) {
+  const run = await createRun(
+    db,
+    userId,
+    {
+      scope: { kind: "now" },
+      request: "Something calm for the hips.",
+      conversationId: null,
+      ...(o.rehearsal ? { rehearsal: true } : {}),
+      ...(o.framed ? { lifeos: { deviceId: "d-1", frame: frame() } } : {}),
+    },
+    NOW,
+  );
   const requests: MessagesRequest[] = [];
+  const turns: MessagesResult[] = [
+    turn([use("propose_workout", { doc: calmDoc({ title: o.title ?? "Calm hips" }), target: { kind: "new", date: TODAY } })]),
+    turn([use("submit_review", verdict)]),
+    turn([use("finish", { summary: "A calm hips session, ready to approve." })]),
+  ];
   const deps: RunDeps = {
     callModel: async (_env, req) => {
       requests.push(structuredClone(req));
@@ -76,162 +104,181 @@ function scripted(turns: MessagesResult[]) {
     review: true,
     clock: () => 0,
   };
-  return { deps, requests };
-}
-
-async function drive(userId: string, runId: string, deps: RunDeps) {
   await untilDone(
     async (i) => {
-      const out = await runStep(db, env, runId, userId, new Date(NOW.getTime() + i * 1000), deps);
+      const out = await runStep(db, env, run.run.id, userId, new Date(NOW.getTime() + i * 1000), deps);
       if (out.kind !== "ok") throw new Error(`step answered ${out.kind}`);
       return out.result.status !== "active";
     },
     { max: 60, what: "drive" },
   );
-}
-
-/** A run of the athlete's, framed or not, driven through a proposal, its review and a finish: every request it sent. */
-async function aTurn(userId: string, o: { frame?: boolean; conversationId?: string | null; extra?: MessagesResult[] } = {}) {
-  const run = await createRun(
-    db,
-    userId,
-    { scope: { kind: "now" }, request: "Something calm for the hips.", ...(o.conversationId !== undefined ? { conversationId: o.conversationId } : {}), ...(o.frame ? { lifeos: { deviceId: "d-1", frame: frame() } } : {}) },
-    NOW,
-  );
-  const { deps, requests } = scripted([...(o.extra ?? []), turn([propose()]), turn([use("submit_review", verdict)]), turn([finish()])]);
-  await drive(userId, run.run.id, deps);
   return { runId: run.run.id, requests };
 }
 
-const pinned = (rs: MessagesRequest[]) => rs.map((r) => r.anthropicOnly === true);
-
-describe("a framed turn, and what it writes (R1.5)", () => {
-  it("every call of a framed turn's tree — its steps and its reviewer's — is Anthropic's only", async () => {
-    const { userId } = await seedRichAthlete(db);
-    const { requests } = await aTurn(userId, { frame: true });
-    expect(requests.length).toBeGreaterThanOrEqual(3);
-    expect(pinned(requests)).toEqual(requests.map(() => true));
-  });
-
-  it("a turn without one, in a conversation without one, is routed as before: no request asks for the pin", async () => {
-    const { userId } = await seedRichAthlete(db);
-    const { requests } = await aTurn(userId, { conversationId: null });
-    expect(requests.length).toBeGreaterThanOrEqual(3);
-    expect(requests.every((r) => !("anthropicOnly" in r))).toBe(true);
-  });
-
-  it("a later turn of a framed conversation is pinned, frame or not — and a turn of a new conversation is not", async () => {
-    const { userId } = await seedRichAthlete(db);
-    const first = await aTurn(userId, { frame: true });
-    const later = await aTurn(userId, { conversationId: first.runId });
-    expect(pinned(later.requests)).toEqual(later.requests.map(() => true));
-    // And a turn after that one (pinned, never framed itself): its words are frame-derived too.
-    const third = await aTurn(userId, { conversationId: first.runId });
-    expect(pinned(third.requests)).toEqual(third.requests.map(() => true));
-    const fresh = await aTurn(userId, { conversationId: null });
-    expect(fresh.requests.every((r) => !("anthropicOnly" in r))).toBe(true);
-  });
-
-  it("memory a framed turn writes is marked; a later run whose core holds it is pinned", async () => {
-    const { userId } = await seedRichAthlete(db);
-    const framed = await aTurn(userId, { frame: true, extra: [turn([use("remember", { kind: "fact", body: "Evenings are the athlete's free time on weekdays.", confidence: "inferred", evidence: ["the day's free window"] })])] });
-    const item = (await db.select().from(coachMemory).where(eq(coachMemory.userId, userId))).find((m) => m.body.startsWith("Evenings are the athlete"));
-    expect((item!.provenance as { frame?: unknown; runId?: unknown }).frame).toBe(true);
-    expect((item!.provenance as { runId?: unknown }).runId).toBe(framed.runId);
-    const later = await aTurn(userId, { conversationId: null });
-    expect(pinned(later.requests)).toEqual(later.requests.map(() => true));
-  });
-
-  it("an unframed turn's memory is not marked, and recalling a marked note pins the run from that call on", async () => {
-    const { userId } = await seedRichAthlete(db);
-    const plain = await aTurn(userId, { conversationId: null, extra: [turn([use("remember", { kind: "fact", body: "Likes a long warm-up.", confidence: "inferred", evidence: ["said so"] })])] });
-    expect(plain.requests.every((r) => !("anthropicOnly" in r))).toBe(true);
-    const mine = (await db.select().from(coachMemory).where(eq(coachMemory.userId, userId))).find((m) => m.body === "Likes a long warm-up.");
-    expect((mine!.provenance as { frame?: unknown }).frame).toBeUndefined();
-    // A note (beyond the core) a framed turn wrote.
-    await db.insert(coachMemory).values({
-      id: newId(), userId, kind: "note", body: "Tuesday evening is free.", confidence: "inferred", learnedAt: nowInstant(), expiresAt: addDays(TODAY, 5), active: true,
-      provenance: { source: "coach_inference", runId: "framed-run", role: "main", at: nowInstant(), frame: true } as never,
-    } as typeof coachMemory.$inferInsert);
-    const recalled = await aTurn(userId, { conversationId: null, extra: [turn([use("recall_memory", { query: "Tuesday" })])] });
-    // The first call recalled it (sent unpinned: it held nothing marked yet); every call after carried it, pinned.
-    expect(pinned(recalled.requests)).toEqual(recalled.requests.map((_, i) => i > 0));
-  });
-});
-
-// ── The wake and the activity reads (chat completions) ───────────────────────────────────────────────────────────────
-
-/** A gateway that answers each body in turn as a chat completion, and the requests' bodies. */
-function chatGateway(contents: unknown[]) {
+/** A gateway answering each content in turn as a chat completion (or refusing every call), and the bodies it was sent. */
+function chatGateway(contents: unknown[], status = 200) {
   const bodies: Array<Record<string, unknown>> = [];
   const fetchImpl = (async (_url: string | URL | Request, init?: RequestInit) => {
     bodies.push(JSON.parse(String(init!.body)) as Record<string, unknown>);
+    if (status !== 200) return new Response("bad request", { status });
     const content = contents.shift();
     if (content === undefined) throw new Error("no more scripted responses");
-    const body = { choices: [{ message: { content: typeof content === "string" ? content : JSON.stringify(content) }, finish_reason: "stop" }], usage: { prompt_tokens: 100, completion_tokens: 40 } };
+    const body = { choices: [{ message: { content: JSON.stringify(content) }, finish_reason: "stop" }], usage: { prompt_tokens: 100, completion_tokens: 40 } };
     return new Response(JSON.stringify(body), { status: 200, headers: { "content-type": "application/json" } });
   }) as typeof fetch;
   return { fetchImpl, bodies };
 }
-const ONLY = { gateway: { only: ["anthropic"] } };
-const ORDER = { gateway: { order: ["anthropic"] } };
-const markedNote = (on: Db, userId: string, today: string) =>
-  on.insert(coachMemory).values({
-    id: newId(), userId, kind: "note", body: "Evenings are free.", confidence: "inferred", learnedAt: nowInstant(), expiresAt: addDays(today, 5), active: true,
-    provenance: { source: "coach_inference", runId: "framed-run", role: "main", at: nowInstant(), frame: true } as never,
-  } as typeof coachMemory.$inferInsert);
+const briefing = { briefing: "Noted.", proposals: [], question: null, memoryOps: [] };
+const read = { glance: "Steady and easy.", body: "A steady easy run.", flags: [] };
 
-describe("the wake and the activity reads (R1.5)", () => {
-  const briefing = (memoryOps: unknown[] = []) => ({ briefing: "Easy day — keep it light.", proposals: [], question: null, memoryOps });
+/** The wake's request: its routing and its text. */
+async function wakeRouting(userId: string) {
+  const g = chatGateway([briefing]);
+  await wake(db, env, userId, await loadPreferences(db, userId), { kind: "manual" }, g.fetchImpl);
+  return { routing: g.bodies[0]!.providerOptions, text: JSON.stringify(g.bodies[0]!.messages) };
+}
+/** An activity's reads' routings: the queue's (a run yesterday, enqueued and read), then one asked for on the page. */
+async function readRouting(userId: string) {
+  const prefs = await loadPreferences(db, userId);
+  const day = addDays(todayInZone(prefs.timezone), -1);
+  const run = async () => {
+    const id = `act-${newId().slice(0, 8)}`;
+    await db.insert(activities).values({
+      id, userId, startTime: `${day}T15:00:00Z`, startTimeLocal: `${day}T07:00:00`, sport: "run", durationSeconds: 1800,
+      distanceMeters: 5000, sourceMergeConfidence: 1, createdAt: nowInstant(), updatedAt: nowInstant(),
+    } as typeof activities.$inferInsert);
+    return id;
+  };
+  await run();
+  await enqueueCoachReads(db, userId, todayInZone(prefs.timezone));
+  const queued = chatGateway([read]);
+  await processCoachReads(db, env, userId, prefs, { fetchImpl: queued.fetchImpl });
+  const asked = chatGateway([read]);
+  await ensureRead(db, env, userId, prefs, await run(), { fetchImpl: asked.fetchImpl });
+  expect(asked.bodies.length).toBeGreaterThan(0);
+  return [queued.bodies[0]!.providerOptions, asked.bodies[0]!.providerOptions];
+}
+/** A replay of a finished run's finish: the routing of the body it sends. */
+async function replayRouting(userId: string, runId: string) {
+  const bodies: Array<Record<string, unknown>> = [];
+  const deps: ReplayDeps = {
+    send: async (_env, call) => {
+      bodies.push(JSON.parse(call.body) as Record<string, unknown>);
+      return turn([use("finish", { summary: "Replayed." })]);
+    },
+    tools: allTools(),
+  };
+  const out = await replayRun(db, env, userId, { confirm: REPLAY_CONFIRM, runId, variants: [{ id: "a" }] }, deps, () => new Date(NOW.getTime() + 600_000));
+  expect(bodies.length, JSON.stringify(out)).toBeGreaterThan(0);
+  return bodies[0]!.providerOptions;
+}
+/** The Studio's plan calls' routings — a plan made, a major revise, a small edit (its gateway refuses: the bodies count). */
+async function studioRouting(userId: string) {
+  const brief: PlanBrief = { goal: "strength", durationWeeks: 2, sessionsPerWeek: 1, preferredDays: [1], sessionMinutes: 45, equipment: "full gym", constraints: "", notes: "", startDate: "2026-09-07" };
+  const catalog = [{ id: "sq-1", name: "Back Squat" }];
+  const exercise = { originId: "sq-1", name: "Back Squat", sets: 3, reps: 8, weight: { type: "kg", value: 60 }, restSeconds: 90 };
+  const plan = { name: "Plan", brief, weeks: [0, 1].map(() => ({ sessions: [{ title: "Full Body", weekday: 1, exercises: [exercise] }] })) } as unknown as LiftingPlan;
+  const routings: unknown[] = [];
+  for (const send of [
+    (f: typeof fetch) => generatePlan(env, db, userId, brief, catalog, f),
+    (f: typeof fetch) => editPlan(env, db, userId, plan, "add more volume", true, catalog, f),
+    (f: typeof fetch) => editPlan(env, db, userId, plan, "rename it", false, catalog, f),
+  ]) {
+    // Its first answer doesn't validate, so it asks once more (its validation retry, a call of its own); that one is refused.
+    const bodies: Array<Record<string, unknown>> = [];
+    const fetchImpl = (async (_url: string | URL | Request, init?: RequestInit) => {
+      bodies.push(JSON.parse(String(init!.body)) as Record<string, unknown>);
+      if (bodies.length > 1) return new Response("bad request", { status: 400 });
+      const body = { choices: [{ message: { content: JSON.stringify({ nothing: "valid" }) }, finish_reason: "stop" }], usage: { prompt_tokens: 100, completion_tokens: 40 } };
+      return new Response(JSON.stringify(body), { status: 200, headers: { "content-type": "application/json" } });
+    }) as typeof fetch;
+    await send(fetchImpl);
+    expect(bodies).toHaveLength(2);
+    routings.push(...bodies.map((b) => b.providerOptions));
+  }
+  return routings;
+}
 
-  it("a wake whose memory holds a marked item is pinned; its briefing and memory are marked; the next wake reads them, pinned", async () => {
-    const wdb = makeTestDb();
-    const { userId, prefs } = await makeTestUser(wdb);
-    const today = todayInZone(prefs.timezone);
-    // Unmarked: routed as before.
-    const before = chatGateway([briefing()]);
-    await wake(wdb, env, userId, prefs, { kind: "manual" }, before.fetchImpl);
-    expect(before.bodies[0]!.providerOptions).toEqual(ORDER);
-    // A marked item: pinned, and what it writes is marked.
-    await markedNote(wdb, userId, today);
-    const g = chatGateway([{ ...briefing([{ op: "add", kind: "note", text: "Keep evenings easy.", expiresAt: addDays(today, 3) }]), briefing: "Evenings stay easy this week." }]);
-    await wake(wdb, env, userId, prefs, { kind: "manual" }, g.fetchImpl);
-    expect(g.bodies[0]!.providerOptions).toEqual(ONLY);
-    const added = (await wdb.select().from(coachMemory).where(eq(coachMemory.userId, userId))).find((m) => m.body === "Keep evenings easy.")!;
-    expect((added.provenance as { frame?: unknown }).frame).toBe(true);
-    const [said] = await wdb.select().from(coachMessages).where(eq(coachMessages.body, "Evenings stay easy this week."));
-    expect((said!.refs as { frame?: unknown }).frame).toBe(true);
-    const [unmarked] = await wdb.select().from(coachMessages).where(eq(coachMessages.body, "Easy day — keep it light."));
-    expect((unmarked!.refs as { frame?: unknown } | null)?.frame).toBeUndefined();
-    // Every memory item gone: the thread's marked briefing still pins the next wake.
-    await wdb.update(coachMemory).set({ active: false }).where(eq(coachMemory.userId, userId));
-    const next = chatGateway([briefing()]);
-    await wake(wdb, env, userId, prefs, { kind: "manual" }, next.fetchImpl);
-    expect(next.bodies[0]!.providerOptions).toEqual(ONLY);
-  });
+describe("an account that never turned switch A on: routed exactly as before (R1.5)", () => {
+  it("a run (its steps and its reviewer's), the wake, an activity's read, a replay and the Studio's plan: order, no pin", async () => {
+    const { userId } = await seedRichAthlete(db);
+    const { runId, requests } = await aTurn(userId);
+    expect(requests.length).toBeGreaterThanOrEqual(3);
+    expect(requests.every((r) => !("anthropicOnly" in r))).toBe(true);
+    expect((await wakeRouting(userId)).routing).toEqual(ORDER);
+    expect(await readRouting(userId)).toEqual([ORDER, ORDER]);
+    expect(await replayRouting(userId, runId)).toEqual(ORDER);
+    expect(await studioRouting(userId)).toEqual(Array(6).fill(ORDER));
+    const rehearsal = await aTurn(userId, { rehearsal: true });
+    expect(rehearsal.requests.every((r) => !("anthropicOnly" in r))).toBe(true);
+  }, 30_000);
 
-  it("an activity's read whose package holds a marked item is pinned; one without, routed as before", async () => {
-    const rdb = makeTestDb();
-    const { userId, prefs } = await makeTestUser(rdb);
-    const today = todayInZone(prefs.timezone);
-    const read = { glance: "Steady and easy.", body: "A steady easy run.", flags: [] };
-    const queue = async (id: string) => {
-      const day = addDays(today, -1);
-      await rdb.insert(activities).values({
-        id, userId, startTime: `${day}T15:00:00Z`, startTimeLocal: `${day}T07:00:00`, sport: "run", durationSeconds: 1800, distanceMeters: 5000,
-        sourceMergeConfidence: 1, createdAt: nowInstant(), updatedAt: nowInstant(),
-      } as typeof activities.$inferInsert);
-      await enqueueCoachReads(rdb, userId, today);
-    };
-    await queue("a-plain");
-    const plain = chatGateway([read]);
-    await processCoachReads(rdb, env, userId, prefs, { fetchImpl: plain.fetchImpl });
-    expect(plain.bodies[0]!.providerOptions).toEqual(ORDER);
-    await markedNote(rdb, userId, today);
-    await queue("a-marked");
-    const g = chatGateway([read]);
-    await processCoachReads(rdb, env, userId, prefs, { fetchImpl: g.fetchImpl });
-    expect(g.bodies[0]!.providerOptions).toEqual(ONLY);
-    expect((await rdb.select().from(coachReads).where(eq(coachReads.userId, userId))).map((r) => r.status)).toEqual(["done", "done"]);
-  });
+  it("a phone that only ever said off pins nothing; another account's switch pins nothing here", async () => {
+    const { userId } = await seedRichAthlete(db);
+    await switchA(userId, false);
+    const other = await seedRichAthlete(db);
+    await switchA(other.userId, true);
+    const { requests } = await aTurn(userId);
+    expect(requests.every((r) => !("anthropicOnly" in r))).toBe(true);
+    expect((await wakeRouting(userId)).routing).toEqual(ORDER);
+  }, 30_000);
+
+  // The review's F3: a run's pin is its account's, or its own frame's — never another tree's live runs'.
+  it("a rehearsal run beside a live framed run, on an account whose switch was never on, is routed as before", async () => {
+    const { userId } = await seedRichAthlete(db);
+    // A framed run left live (asked, never stepped), the switch never on: no route allows it, but no tree's pin spreads.
+    await createRun(db, userId, { scope: { kind: "now" }, request: "Today's run, easier.", lifeos: { deviceId: "d-1", frame: frame() } }, NOW);
+    const { requests } = await aTurn(userId, { rehearsal: true });
+    expect(requests.every((r) => !("anthropicOnly" in r))).toBe(true);
+  }, 30_000);
+});
+
+describe("once switch A has been on: every coach call of the account is Anthropic's only (R1.5 fix round 1)", () => {
+  it("a new conversation's run (its steps and its reviewer's), the wake, an activity's read, a replay and the Studio's plan", async () => {
+    const { userId } = await seedRichAthlete(db);
+    await switchA(userId, true);
+    const { runId, requests } = await aTurn(userId);
+    expect(requests.length).toBeGreaterThanOrEqual(3);
+    expect(requests.map((r) => r.anthropicOnly)).toEqual(requests.map(() => true));
+    expect((await wakeRouting(userId)).routing).toEqual(ONLY);
+    expect(await readRouting(userId)).toEqual([ONLY, ONLY]);
+    expect(await replayRouting(userId, runId)).toEqual(ONLY);
+    expect(await studioRouting(userId)).toEqual(Array(6).fill(ONLY));
+    // A rehearsal (the live scenario suite, its own lane and week) is the account's coach too.
+    const rehearsal = await aTurn(userId, { rehearsal: true });
+    expect(rehearsal.requests.map((r) => r.anthropicOnly)).toEqual(rehearsal.requests.map(() => true));
+  }, 30_000);
+
+  it("turning A off never unpins: what was derived stays in the account", async () => {
+    const { userId } = await seedRichAthlete(db);
+    await switchA(userId, true);
+    await switchA(userId, false);
+    const { requests } = await aTurn(userId);
+    expect(requests.map((r) => r.anthropicOnly)).toEqual(requests.map(() => true));
+    expect((await wakeRouting(userId)).routing).toEqual(ONLY);
+    expect(await readRouting(userId)).toEqual([ONLY, ONLY]);
+  }, 30_000);
+
+  // The review's probe (review-leak-probe.test.ts), with the switch turned on first, as the route requires before a frame.
+  it("the review's probe: a framed turn's workout reaches the wake, a new conversation, the plan and a read — all pinned", async () => {
+    const { userId } = await seedRichAthlete(db);
+    const prefs = await loadPreferences(db, userId);
+    const TITLE = "Easy 25 for a low-energy full day";
+    await switchA(userId, true);
+    const framed = await aTurn(userId, { framed: true, title: TITLE });
+    expect(framed.requests.every((r) => r.anthropicOnly === true)).toBe(true);
+    // The wake lists the pending proposal by title: pinned.
+    const w1 = await wakeRouting(userId);
+    expect([w1.text.includes(TITLE), w1.routing]).toEqual([true, ONLY]);
+    // A new conversation's opening lists the open suggestion by title: pinned.
+    const later = await aTurn(userId);
+    expect(later.requests.every((r) => r.anthropicOnly === true)).toBe(true);
+    // Approved: the plan and the thread's receipt hold the title, and the wake reading them is pinned.
+    const [p] = await db.select().from(coachProposals).where(eq(coachProposals.id, designProposalId(framed.runId)));
+    await approveDesignOps(db, userId, { ...p!, ops: p!.ops as never } as never, {}, { today: TODAY, now: NOW.toISOString(), prefs } as never, Number.POSITIVE_INFINITY);
+    const w2 = await wakeRouting(userId);
+    expect([w2.text.includes(TITLE), w2.routing]).toEqual([true, ONLY]);
+    // An activity's reads: pinned.
+    expect(await readRouting(userId)).toEqual([ONLY, ONLY]);
+  }, 30_000);
 });

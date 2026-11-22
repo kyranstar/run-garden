@@ -266,8 +266,6 @@ export const remember: DesignTool = {
           at,
           ...(ctx.run.rehearsal ? { rehearsal: true as const } : {}),
           ...(p.drift && p.checkBack ? { drift: p.drift, checkBack: p.checkBack } : {}),
-          // Its tree carried LifeOS's frame (R1.5, design-frame.ts): whatever reads this item is Anthropic's only.
-          ...(ctx.run.carriesFrame ? { frame: true as const } : {}),
         },
 
         // A rehearsal never supersedes the athlete's item.

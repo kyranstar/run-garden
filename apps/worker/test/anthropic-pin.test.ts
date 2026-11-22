@@ -1,12 +1,11 @@
 /**
- * A TURN CARRYING LIFEOS'S DAY FRAME IS READ BY ANTHROPIC ONLY (R1.5; DESIGN-3 §3.12.4). Every Claude call asks the gateway
- * for Anthropic first (`order`), which leaves Claude on Bedrock or Vertex as fallbacks; LifeOS's sharing switch A promises
- * "Read by Claude (Anthropic)". So a call that carries the frame — or text a framed turn wrote — is pinned: `only:
- * ["anthropic"]`, no `order`. If Anthropic can't serve it, it fails as an ordinary provider error and never falls back. A call
- * that carries none is routed exactly as before.
+ * ONCE SWITCH A HAS BEEN ON, THE ACCOUNT'S COACH IS READ BY ANTHROPIC ONLY (R1.5; DESIGN-3 §3.12.4). Every Claude call asks
+ * the gateway for Anthropic first (`order`), which leaves Claude on Bedrock or Vertex as fallbacks; LifeOS's sharing switch A
+ * promises "Read by Claude (Anthropic)". So a pinned call is `only: ["anthropic"]`, no `order`; if Anthropic can't serve it,
+ * it fails as an ordinary provider error and never falls back. An unpinned call is routed exactly as before.
  *
- * Here, the routing and the three clients that send it (the designer's Messages call, the chat-completions call the wake and
- * the activity reads use, and the voice workshop's replay). The coach's paths: anthropic-pin-paths.test.ts.
+ * Here, the routing and the three clients that send it (the designer's Messages call, the chat-completions call the wake,
+ * the activity reads and the Studio use, and the voice workshop's replay). Which calls are pinned: anthropic-pin-paths.test.ts.
  */
 import { describe, expect, it } from "vitest";
 import type { Env } from "../src/env.js";
@@ -68,12 +67,11 @@ describe("the clients send it (R1.5)", () => {
     expect(plain.bodies[0]!.providerOptions).toEqual({ gateway: { order: ["anthropic"] } });
   }, 15_000);
 
-  it("the voice workshop's replay of a stored run: pinned when that run carried the frame, as before when it didn't", () => {
-    const state = (over: Partial<RunState>) =>
-      ({ v: 1, settings: { maxTokens: 100, effort: "medium" }, messages: [{ role: "user", content: [{ type: "text", text: "Hi" }] }], system: [], ...over }) as unknown as RunState;
-    const tail = (s: RunState) => JSON.parse(`{${replayRequest(s, 1, [], CLAUDE).tail.slice(2)}`) as Record<string, unknown>;
-    expect(tail(state({ settings: { maxTokens: 100, effort: "medium", anthropicOnly: true } as never })).providerOptions).toEqual(PINNED.providerOptions);
-    expect(tail(state({ settings: { maxTokens: 100, effort: "medium", frame: { days: [] } } as never })).providerOptions).toEqual(PINNED.providerOptions);
-    expect(tail(state({})).providerOptions).toEqual({ gateway: { order: ["anthropic"] } });
+  it("the voice workshop's replay request: pinned when asked, as before when not", () => {
+    const state = { v: 1, settings: { maxTokens: 100, effort: "medium" }, messages: [{ role: "user", content: [{ type: "text", text: "Hi" }] }], system: [] } as unknown as RunState;
+    const tail = (o?: { anthropicOnly?: boolean }) => JSON.parse(`{${replayRequest(state, 1, [], CLAUDE, [], o).tail.slice(2)}`) as Record<string, unknown>;
+    expect(tail({ anthropicOnly: true }).providerOptions).toEqual(PINNED.providerOptions);
+    expect(tail().providerOptions).toEqual({ gateway: { order: ["anthropic"] } });
+    expect(tail({ anthropicOnly: false }).providerOptions).toEqual({ gateway: { order: ["anthropic"] } });
   });
 });

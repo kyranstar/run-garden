@@ -107,39 +107,3 @@ export function frameSection(frame: DayFrame): string {
     ...coverage.map((l) => `- ${l}`),
   ].join("\n");
 }
-
-// ── Anthropic only (R1.5; DESIGN-3 §3.12.4) ──────────────────────────────────────────────────────────────────────────
-//
-// LifeOS's switch A promises the frame is "Read by Claude (Anthropic)". Every Claude call asks the gateway for Anthropic
-// first (`order`), which keeps Claude on Bedrock or Vertex as fallbacks; a call that carries the frame — or text a framed
-// turn wrote — is pinned instead (`only: ["anthropic"]`, gateway-route.ts), and fails rather than falls back. The frame
-// reaches a model directly in its turn's opening (a main run's header, `frameSection`); what that turn writes reaches later
-// calls through three stores, each marked by the call that wrote it while pinned:
-//  - a coach run's settings (`frame`, or `anthropicOnly` for a run pinned by what it read): its tree's every call is
-//    pinned (coach-runs.ts), a later turn of its conversation reads its words (`conversationRows`) and is pinned, and the
-//    voice workshop's replay of it is pinned (coach-replay.ts);
-//  - the coach's memory (`provenance.frame`, written by a pinned run's `remember` or a pinned wake's memory op): any call
-//    whose input holds a marked item is pinned — a run whose core holds one (design-context.ts), a run from the moment it
-//    recalls one (recall_memory), the wake (coach-context.ts), an activity's read (coach-effort.ts);
-//  - the thread coach's messages (`refs.frame`, a pinned wake's): a later wake whose thread holds one is pinned.
-// A call with none of these is routed exactly as before.
-
-/** The run's settings say it carries the frame: its own, or frame-derived text it read (`anthropicOnly`). */
-export function settingsCarryFrame(settings: unknown): boolean {
-  const s = (typeof settings === "string" ? safeJson(settings) : settings) as { frame?: unknown; anthropicOnly?: unknown } | null | undefined;
-  return !!s && typeof s === "object" && (s.frame !== undefined && s.frame !== null ? true : s.anthropicOnly === true);
-}
-
-/** A memory item's provenance, or a thread message's refs, say a pinned call wrote it (`frame: true`). */
-export function markedByFrame(meta: unknown): boolean {
-  const m = (typeof meta === "string" ? safeJson(meta) : meta) as { frame?: unknown } | null | undefined;
-  return !!m && typeof m === "object" && m.frame === true;
-}
-
-function safeJson(text: string): unknown {
-  try {
-    return JSON.parse(text);
-  } catch {
-    return null;
-  }
-}
