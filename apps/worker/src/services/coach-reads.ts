@@ -312,10 +312,12 @@ async function generateRead(
   fetchImpl: typeof fetch,
 ): Promise<GenerateOutcome> {
   const isDigest = activityId.startsWith("digest:");
-  const packageText = isDigest
-    ? await buildDigestPackage(db, userId)
-    : (await buildEffortPackage(db, userId, activityId))?.text;
+  const effort = isDigest ? null : await buildEffortPackage(db, userId, activityId);
+  const packageText = isDigest ? await buildDigestPackage(db, userId) : effort?.text;
   if (!packageText) return { ok: false };
+  // Its package holds a memory item a framed turn or a pinned call wrote (R1.5, design-frame.ts): Anthropic's only, its
+  // schema repair too. A digest reads activities and their reads alone.
+  const anthropicOnly = effort?.carriesFrame === true;
 
   const model = env.AI_COACH_READ_MODEL || env.AI_STUDIO_MODEL_STRONG || DEFAULT_MODEL_STRONG;
   const system = isDigest ? DIGEST_SYSTEM_PROMPT : READ_SYSTEM_PROMPT;
@@ -328,7 +330,7 @@ async function generateRead(
   const attempt = async (
     msgs: ChatMsg[],
   ): Promise<{ out: z.infer<typeof readOutputSchema> | null; raw: string; issues: string; outOfCredits?: boolean }> => {
-    const chat = await chatCompletion(env, fetchImpl, model, MAX_OUTPUT_TOKENS_READ, msgs);
+    const chat = await chatCompletion(env, fetchImpl, model, MAX_OUTPUT_TOKENS_READ, msgs, { anthropicOnly });
     await noteGatewayOutcome(db, userId, chat);
     if (!chat.ok) return { out: null, raw: "", issues: "", outOfCredits: isOutOfCredits(chat.reason) };
     await recordUsage(db, userId, "coach_read", model, "strong", chat, `read:${activityId}`);

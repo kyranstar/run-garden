@@ -48,6 +48,8 @@ export interface DesignMemoryProvenance {
   /** A drift's conclusion (where you stand, spec §7.2): the chip's id and the day to look again. */
   drift?: string;
   checkBack?: string;
+  /** R1.5 (design-frame.ts): written by a tree that carried LifeOS's frame — any call that reads it is Anthropic's only. */
+  frame?: true;
 }
 
 /** R1 (3c): an item the owner told the training coach from LifeOS, by a tap on the exact sentence shown (`training_tell`). */

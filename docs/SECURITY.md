@@ -262,6 +262,22 @@ on the `training-v5` scope only (`apps/worker/src/auth/device-scope.ts`; routes 
   clock times, the day's end, how full each day is, coverage, the consent) with exact keys at every level — no free text
   of LifeOS's day reaches run-garden. It is kept with the run, read into its opening context as data and shown on the
   laptop's run view. A phone run is marked `via: lifeos` from the device that signed it in, never from the body.
+- **The frame is read by Anthropic only (R1.5; DESIGN-3 §3.12.4).** Every Claude call asks the AI Gateway for Anthropic
+  first (`providerOptions.gateway.order: ["anthropic"]`), which keeps Claude on Bedrock or Vertex as fallbacks when
+  Anthropic is down. A call that carries the frame — or text a framed turn wrote — is pinned instead: `only:
+  ["anthropic"]`, no `order`, whatever the model. If Anthropic can't serve it, it fails as an ordinary provider error and is
+  never sent elsewhere. That is what keeps switch A's "Read by Claude (Anthropic)" true. Pinned:
+  - every call of a framed turn's run tree: the main coach's steps, its designers' and reviewers', each repair, and the voice
+    workshop's replay of any of them;
+  - a later turn of the same conversation (it reads that turn's words), and a turn after it, in turn;
+  - any call whose input holds an item of the coach's memory a pinned call wrote (marked `provenance.frame`): a run whose
+    opening core holds one, a run from the moment it recalls one, the thread coach's wake, an activity's read;
+  - a wake whose thread holds a message a pinned wake wrote (`refs.frame`).
+
+  A call with none of these is routed exactly as before. Not tracked: the plan changes, questions and activity reads a
+  pinned wake or read writes carry no mark (their stores have no field for one without a migration). They reach a later,
+  unpinned wake only once the marked memory they drew on is itself gone. Switch A has been off in production, so no
+  framed text existed before this.
 - **What the coach remembers.** A phone reads, edits and deletes the account's memory as the laptop does; it may add one
   stated line (≤ 140 characters, note, fact or rule) only on the owner's tap and only with switch A on under the very
   words the owner accepted (`consent`, as a frame), kept with provenance `lifeos`; it never supersedes what the owner

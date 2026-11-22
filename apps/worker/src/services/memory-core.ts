@@ -92,6 +92,8 @@ export function memoryCore(db: Db, userId: string, today: string) {
       confidence: m.confidence,
       // Where it came from (`provenance.source`): a saved post's tip reads as one, never as the coach's inference.
       source: sql<string | null>`case when json_valid(${m.provenance}) then json_extract(${m.provenance}, '$.source') end`,
+      // Written by a tree that carried LifeOS's frame (R1.5, design-frame.ts): never shown, it pins the run reading it.
+      frame: sql<number | null>`case when json_valid(${m.provenance}) then json_extract(${m.provenance}, '$.frame') end`,
     })
     .from(m)
     .where(memoryCoreWhere(userId, today))

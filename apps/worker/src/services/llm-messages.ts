@@ -223,6 +223,8 @@ export interface MessagesRequest {
   maxTokens: number;
   /** Omitted: the model's default (Opus 5.5: medium). */
   effort?: Effort;
+  /** The call carries LifeOS's day frame or text a framed turn wrote (R1.5): Anthropic only, no fallback (gateway-route.ts). */
+  anthropicOnly?: boolean;
 }
 
 export type StopReason = "end_turn" | "max_tokens" | "stop_sequence" | "tool_use" | "pause_turn" | "refusal";
@@ -298,7 +300,7 @@ export async function callMessages(
     ...(req.tools.length > 0 ? { tools: req.tools } : {}),
     messages: req.messages,
     ...(req.effort ? { output_config: { effort: req.effort } } : {}),
-    ...gatewayRouting(model),
+    ...gatewayRouting(model, { anthropicOnly: req.anthropicOnly === true }),
     stream: true,
   });
   return post(gateway.env, env, model, body, req.maxTokens, fetchImpl);

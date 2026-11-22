@@ -68,6 +68,7 @@ import {
   type ProgrammeChangeOp,
 } from "./proposal-kinds.js";
 import { liveMemoryWhere } from "./memory-core.js";
+import { markedByFrame } from "./design-frame.js";
 import { SLEEP_RECONNECT_WORDS, sleepConnectionStatusSql, sleepNeedsReconnect } from "./coros-mcp.js";
 
 /** Nights without sleep past which the feed reads as stopped (sleep lands keyed on the day it ended, a pull a night). */
@@ -167,6 +168,8 @@ export interface Dossier {
   text: string;
   sections: string[];
   approxTokens: number;
+  /** R1.5 (design-frame.ts): it holds text a framed turn or a pinned call wrote — the wake is then Anthropic's only. */
+  carriesFrame: boolean;
 }
 
 const fmt = (v: number | null | undefined, digits = 0): string =>
@@ -1178,7 +1181,10 @@ export async function buildDossier(
   }
   let text = render(kept);
   if (text.length / 4 > TOKEN_BUDGET) text = text.slice(0, TOKEN_BUDGET * 4);
-  return { text, sections: kept.map((b) => b.name), approxTokens: Math.round(text.length / 4) };
+  // What it holds was written by a framed turn or a pinned call (R1.5, design-frame.ts): a memory item, the thread's last
+  // briefing or a message of its tail. The wake is then Anthropic's only, and what it writes is marked.
+  const carriesFrame = memory.some((m) => markedByFrame(m.provenance)) || markedByFrame(lastBriefing?.refs) || tail.some((m) => markedByFrame(m.refs));
+  return { text, sections: kept.map((b) => b.name), approxTokens: Math.round(text.length / 4), carriesFrame };
 }
 
 // ── STRENGTH PLAN rendering ──────────────────────────────────────────────

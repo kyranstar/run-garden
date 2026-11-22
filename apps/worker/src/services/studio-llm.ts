@@ -617,6 +617,8 @@ export async function chatCompletion(
   model: string,
   maxTokens: number,
   messages: ChatMessage[],
+  /** `anthropicOnly`: the call carries text a framed turn wrote (R1.5) — Anthropic only, its retry too (gateway-route.ts). */
+  opts: { anthropicOnly?: boolean } = {},
 ): Promise<
   | { ok: true; content: string; inputTokens: number; outputTokens: number; truncated: boolean }
   | { ok: false; reason: string }
@@ -643,7 +645,7 @@ export async function chatCompletion(
           body: JSON.stringify({
             model,
             max_tokens: maxTokens,
-            ...gatewayRouting(model),
+            ...gatewayRouting(model, { anthropicOnly: opts.anthropicOnly === true }),
             messages,
             // Streaming is load-bearing, not cosmetic: a buffered completion
             // must finish inside the gateway's own response window, and a

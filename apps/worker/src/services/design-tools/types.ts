@@ -66,6 +66,8 @@ export interface ToolContext {
     savesBatchId?: string;
     /** That batch's skipped moves, as the create read them (`skipSetOf`): what this run's workout tools refuse. */
     savesSkip?: SavesSkip[];
+    /** R1.5 (design-frame.ts): its tree carries LifeOS's frame, or text a framed turn wrote — what it remembers is marked. */
+    carriesFrame?: boolean;
   };
   now: Date;
   /**
@@ -126,6 +128,9 @@ export interface ToolOk {
    * memory's id. The loop puts it in the call's event payload. Never shown to the model. Small, bounded JSON.
    */
   receipt?: Record<string, unknown>;
+  /** R1.5 (design-frame.ts): the answer holds text a framed turn wrote (a marked memory item). The loop pins the run's tree
+   * from this call on. Never shown to the model. */
+  carriesFrame?: boolean;
   /**
    * `review`: the run pauses (`waiting_review`) while the reviewer sub-run this call started reviews its draft; the
    * call's result for the model is that review, given when the run resumes (design-review.ts).

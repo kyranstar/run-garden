@@ -86,7 +86,7 @@ import { COACH_REACH_DAYS, RUN_LIMITS } from "./design-limits.js";
 import { LATER_LEAD_MIN } from "./design-time.js";
 import { memoryCore } from "./memory-core.js";
 import { SAVED_POST_SOURCE } from "./coach-memory.js";
-import { frameSection, type DayFrame } from "./design-frame.js";
+import { frameSection, settingsCarryFrame, type DayFrame } from "./design-frame.js";
 import { FIT_SAVES_REQUEST } from "@rg/saves";
 import { focusReadInContext, type RunFocus } from "./design-focus.js";
 import { CONTEXT_TURNS, conversationBlock, conversationRows, type TurnRow } from "./coach-conversation.js";
@@ -227,6 +227,8 @@ export const DRAFT_REQUEST_SUB_LINE = "The run's request is the app's, made for 
 export interface DesignContext {
   system: SystemBlock[];
   header: string;
+  /** R1.5 (design-frame.ts): what it read holds text a framed turn wrote — the run is then Anthropic's only. */
+  carriesFrame: boolean;
 }
 
 /** The shape the step loop takes (`ContextBuilder` in coach-runs.ts). */
@@ -381,7 +383,7 @@ interface Reads {
   activeProfiles: string[];
   checks: Array<{ id: string; profileId: string; value: number | null; feelingOff: boolean; at: string }>;
   objectives: Array<{ id: string; title: string }>;
-  memory: Array<{ id: string; kind: string; body: string; pinned: boolean; confidence: string; source?: string | null }>;
+  memory: Array<{ id: string; kind: string; body: string; pinned: boolean; confidence: string; source?: string | null; frame?: number | null }>;
   plan: Array<{
     id: string;
     date: string;
@@ -1548,5 +1550,8 @@ export async function buildDesignContext(db: Db, env: Env, userId: string, run: 
       { type: "text", text: memoryBlock(r) },
     ],
     header: header(r, run, role, scope, now, runWireOf(env)),
+    // What it read holds text a framed turn wrote (R1.5, design-frame.ts): an earlier turn of its conversation that carried
+    // the frame (or was pinned by what it read), or a memory item a framed tree wrote. The run is then Anthropic's only.
+    carriesFrame: (r.conversation ?? []).some((t) => settingsCarryFrame(t.settings)) || r.memory.some((m) => Number(m.frame) === 1),
   };
 }
