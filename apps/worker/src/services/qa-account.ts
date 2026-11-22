@@ -269,7 +269,8 @@ function slotRow(userId: string, programId: string, title: string, date: string,
 }
 
 /**
- * THE FIXTURES, on the QA account's own clock (refused unless the account has no plan rows yet: purge first):
+ * THE FIXTURES, on the QA account's own clock (refused unless the account has no plan rows yet: purge first — though a refused
+ * seed still makes its templates where they are missing, `topUpQaTemplates`):
  *  - today: `QA Hips and back` (a Studio document workout), `QA Mobility` (an adaptive programme's slot), `QA Easy run`
  *    (a run, imported as a COROS plan's session is, at no address on any watch);
  *  - tomorrow: `QA Core reset` (a document workout) and `QA Mobility`'s next slot;
@@ -285,7 +286,11 @@ export async function seedQaFixtures(db: Db, env: Pick<Env, "ALLOWED_GOOGLE_EMAI
   await assertQaRow(db, env, target);
   const userId = target.userId;
   const [{ n }] = (await db.select({ n: count() }).from(plannedWorkouts).where(eq(plannedWorkouts.userId, userId))) as [{ n: number }];
-  if (n > 0) throw new QaAlreadySeededError();
+  if (n > 0) {
+    // Seeded already: its sessions stand, but its templates are made if it has none yet (an account seeded before R1.4).
+    await topUpQaTemplates(db, userId, now);
+    throw new QaAlreadySeededError();
+  }
   const prefs = await loadPreferences(db, userId);
   const today = todayInZone(prefs.timezone, new Date(now));
   const tomorrow = addDays(today, 1);
@@ -349,12 +354,29 @@ export async function seedQaFixtures(db: Db, env: Pick<Env, "ALLOWED_GOOGLE_EMAI
 
   await doc(`${QA_TITLE_PREFIX}Core reset`, tomorrow, "07:00", "core");
 
-  // The saved templates (R1.4): one statement for both, on the QA account only.
-  const templates = QA_TEMPLATES.map((t) => ({ id: newId(), name: t.name, doc: t.doc }));
-  await db.insert(workoutTemplates).values(
-    templates.map((t) => ({ id: t.id, userId, name: t.name, doc: JSON.stringify(t.doc), pinned: false, uses: 0, lastUsedAt: null, createdAt: now, updatedAt: now })),
-  );
-  return { today, tomorrow, fixtures, templates: templates.map(({ id, name }) => ({ id, name })) };
+  return { today, tomorrow, fixtures, templates: await topUpQaTemplates(db, userId, now) };
+}
+
+/**
+ * THE QA ACCOUNT'S SAVED TEMPLATES, MADE WHERE MISSING (R1.4; the fix round's NIT-1): by name, on the QA account only (its
+ * callers have checked `assertQaRow`). A fresh seed makes both; an account seeded before R1.4, or a seed whose last statement
+ * failed, gets them on its next seed (which is otherwise refused `already_seeded`); a second call writes nothing. Two
+ * statements at most: the read, and one insert of what is missing.
+ */
+async function topUpQaTemplates(db: Db, userId: string, now: string): Promise<Array<{ id: string; name: string }>> {
+  const names = QA_TEMPLATES.map((t) => t.name);
+  const have = await db
+    .select({ id: workoutTemplates.id, name: workoutTemplates.name })
+    .from(workoutTemplates)
+    .where(and(eq(workoutTemplates.userId, userId), inArray(workoutTemplates.name, names)));
+  const missing = QA_TEMPLATES.filter((t) => !have.some((h) => h.name === t.name)).map((t) => ({ id: newId(), name: t.name, doc: t.doc }));
+  if (missing.length > 0) {
+    await db.insert(workoutTemplates).values(
+      missing.map((t) => ({ id: t.id, userId, name: t.name, doc: JSON.stringify(t.doc), pinned: false, uses: 0, lastUsedAt: null, createdAt: now, updatedAt: now })),
+    );
+  }
+  const all = [...have, ...missing.map(({ id, name }) => ({ id, name }))];
+  return names.map((name) => all.find((t) => t.name === name)!);
 }
 
 // ── Pairing and the run's tokens ─────────────────────────────────────────────────────────────────────────────
@@ -505,7 +527,8 @@ export async function qaState(db: Db, userId: string): Promise<Record<string, un
   const receipts = await db
     .select({
       id: takeBackReceipts.id, source: takeBackReceipts.source, op: takeBackReceipts.op, status: takeBackReceipts.status, workoutId: takeBackReceipts.workoutId,
-      createdAt: takeBackReceipts.createdAt, takenBackAt: takeBackReceipts.takenBackAt,
+      // Its take-back window too (R1.4 fix round 1): the one server-side timing fact, for a passive timing check.
+      createdAt: takeBackReceipts.createdAt, expiresAt: takeBackReceipts.expiresAt, takenBackAt: takeBackReceipts.takenBackAt,
     })
     .from(takeBackReceipts)
     .where(eq(takeBackReceipts.userId, userId))

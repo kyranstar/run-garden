@@ -122,6 +122,7 @@ describe("the QA account's library (R1.4)", () => {
     // and the take-back's record of its removal (`remove_local`) — none of which reached a provider (above).
     const kinds = new Set((await w.db.select().from(syncIntents).where(eq(syncIntents.userId, userId))).map((i) => i.kind));
     expect([...kinds].every((k) => k === "mirror" || k === "remove_local")).toBe(true);
+    expect(kinds.has("remove_local")).toBe(true);
   });
 
   it("the harness's state names the templates and the receipts; the purge leaves zero rows", async () => {
@@ -134,7 +135,7 @@ describe("the QA account's library (R1.4)", () => {
     expect((state.json.templates as Array<{ name: string }>).map((t) => t.name).sort()).toEqual(QA_TEMPLATES.map((t) => t.name).sort());
     expect((state.json.templates as Array<{ name: string; uses: number }>).find((t) => t.name === "QA Quick reset")!.uses).toBe(1);
     expect(state.json.receipts).toEqual([
-      expect.objectContaining({ id: placed.json.receiptId, source: "place", op: "create", status: "open", workoutId: placed.json.workoutId }),
+      expect.objectContaining({ id: placed.json.receiptId, source: "place", op: "create", status: "open", workoutId: placed.json.workoutId, expiresAt: expect.any(String) }),
     ]);
     // The purge, step by step, to zero.
     let done = false;
@@ -148,5 +149,22 @@ describe("the QA account's library (R1.4)", () => {
     expect(verify.json).toMatchObject({ exists: false, total: 0 });
     expect((verify.json.rows as Record<string, number>).workout_templates).toBe(0);
     expect((verify.json.rows as Record<string, number>).take_back_receipts).toBe(0);
+  });
+
+  // A QA ACCOUNT SEEDED BEFORE R1.4 (the fix round's NIT-1): its seed is refused `already_seeded`, and it had no templates
+  // until a purge. The refused seed now makes them where they are missing, on the QA account only; a second makes none.
+  it("an account seeded before the templates gets them on its next seed, which is still refused; a second makes none", async () => {
+    const { userId } = await qaPhone();
+    await w.db.delete(workoutTemplates).where(eq(workoutTemplates.userId, userId));
+    const before = await tableHashes(w.db, w.userId);
+    const again = await w.call("POST", "/api/qa/seed");
+    expect([again.status, again.json.error]).toEqual([409, "already_seeded"]);
+    const made = await w.db.select().from(workoutTemplates).where(eq(workoutTemplates.userId, userId));
+    expect(made.map((t) => t.name).sort()).toEqual(QA_TEMPLATES.map((t) => t.name).sort());
+    const once = await w.call("POST", "/api/qa/seed");
+    expect(once.status).toBe(409);
+    expect((await w.db.select().from(workoutTemplates).where(eq(workoutTemplates.userId, userId))).map((t) => t.id).sort()).toEqual(made.map((t) => t.id).sort());
+    // The owner's account is untouched.
+    expect(await tableHashes(w.db, w.userId)).toEqual(before);
   });
 });

@@ -251,12 +251,16 @@ export const PLACE_COST = 24;
 /**
  * THE MOST ROWS A PLACE'S COLLISION PASS MAY RE-TIME AND STILL MAKE THE WATCH COPY ITSELF (R1.4). The installed phone
  * (LifeOS `f83daf9f`, `receiptsToRead`) reads a placed receipt ONCE, so a copy left to that read is made there and its push
- * waits for the hourly run or the laptop. So the place's record gives way only where it truly wouldn't fit: measured, an
- * untimed place with its record costs 35 + N statements and fetches for N rows re-timed (2: 37, 8: 43, 10: 45, 12: 47).
- * Eight keeps two spare. (The declared figures, `PLACE_COST` + N + `DEVICE_RECORD_COST`, are upper bounds 8 above that,
- * and gave way from 3 rows: R1.3's O2.) Past it, the copy is the read's, and its push the hourly's.
+ * waits for the hourly run or the laptop. So the place's record gives way only where it truly wouldn't fit. Measured, an
+ * untimed place with its record costs 35–39 + N statements and fetches for N rows re-timed, by path: 35 + N for tomorrow
+ * with a plain template; +1 each for today before its window (the pass runs on today), a template holding a jump (the
+ * day's jumps read), an active condition profile, and the device's hourly stamp landing on the place — 39 + N on that
+ * dearest path (R1.4 fix round 1; the review's MAJOR-1: 6 rows 45, 7 rows 46). So the bound is the budget less the
+ * dearest path: 6. (The declared figures, `PLACE_COST` + N + `DEVICE_RECORD_COST`, are 43 + N, and gave way from 3 rows:
+ * R1.3's O2.) Past it, the copy is the read's, and its push the hourly's or the laptop's.
  */
-export const RECORD_BESIDE_RETIMED_MAX = 8;
+export const PLACE_WITH_RECORD_DEAREST = 39;
+export const RECORD_BESIDE_RETIMED_MAX = REQUEST_BUDGET - PLACE_WITH_RECORD_DEAREST;
 
 /** The template's use, counted in the place's own batch: a resent clientId writes no batch, so it counts once. */
 const useCounted = (c: C, id: string) => (w: { now: string }) => [

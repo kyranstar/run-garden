@@ -25,21 +25,39 @@ import { schema } from "@rg/database";
 import { addDays, newId, nowInstant } from "@rg/domain";
 import { COROS_LOCALE_URL } from "@rg/coros";
 import { encryptSecret } from "../src/auth/crypto.js";
-import { nativeLibraryRoutes } from "../src/routes/native-library.js";
+import { nativeLibraryRoutes, RECORD_BESIDE_RETIMED_MAX } from "../src/routes/native-library.js";
 import { nativeTakeBackRoutes } from "../src/routes/native-take-back.js";
 import { loadPreferences, savePreferences, syncCalendar } from "../src/services/calendar-sync.js";
 import { deviceWatchRecord } from "../src/services/device-watch.js";
 import { mockCorosServer, type MockCorosServer } from "../../../packages/coros/test/mock-coros-server.js";
-import { calmDoc } from "./doc-workout-fixture.js";
+import { activateTmj, calmDoc } from "./doc-workout-fixture.js";
 import { nativeWorld, seedDevice, type Answer, type NativeWorld } from "./native-fixture.js";
 import { connectMock, seedCatalog } from "./watch-push-fixture.js";
 
-const { accountState, corosWriteJobs, plannedWorkouts, providerConnections, workoutTemplates } = schema;
+const { accountState, corosWriteJobs, nativeDevices, plannedWorkouts, providerConnections, workoutTemplates } = schema;
 const LA = "America/Los_Angeles";
 const T = "2026-11-18";
 const at = (d: string, hm: string) => DateTime.fromISO(`${d}T${hm}`, { zone: LA }).toUTC().toISO()!;
 const LOCALE = { T1120: "Warm Up", T1122: "Cool Down", T1123: "Recover", T3001: "Run", sid_run_training: "Run training" };
 const BUDGET = 45;
+
+/** A template holding a jump: a place of it reads the day's jumps (`docJumpsDone`), one statement more. */
+const jumpDoc = () => ({
+  version: 1,
+  title: "Hop and hold",
+  intent: { summary: "Hops, then a bridge.", goals: [], focus: [], effort: "develop" },
+  parts: [
+    {
+      purpose: "main",
+      format: "straight",
+      items: [
+        { kind: "exercise", libraryId: "pogoHop", dose: { sets: 2, reps: 5 } },
+        { kind: "exercise", libraryId: "bridge", dose: { sets: 1, reps: 10, restSec: 30 } },
+      ],
+    },
+  ],
+  source: { kind: "studio" },
+});
 
 let w: NativeWorld;
 let v5: { token: string; id: string };
@@ -299,9 +317,8 @@ describe("the watch follows a phone's place and take-back (R1.2 item 7)", () => 
     expect(google.inserted).toContain(placed.json.workoutId);
   });
 
-  /** `n` sessions at 18:00 tomorrow, unpinned: a day the untimed place's collision pass re-lays. */
-  const crowd = async (n: number) => {
-    const day = addDays(T, 1);
+  /** `n` sessions at 18:00 on `day` (tomorrow unless told), unpinned: a day the untimed place's collision pass re-lays. */
+  const crowd = async (n: number, day = addDays(T, 1)) => {
     for (let i = 0; i < n; i++) {
       await w.db.insert(plannedWorkouts).values({
         id: `crowd-${i}`, userId: w.userId, planId: `studio-${w.userId}`, origin: "studio", sourceWorkoutId: `studio:crowd-${i}`, title: `Crowd ${i}`,
@@ -312,10 +329,49 @@ describe("the watch follows a phone's place and take-back (R1.2 item 7)", () => 
     }
   };
 
+  /** The rows a place's collision pass re-timed: each a row's new time, held to the row as it read it (`guardOrFail`). */
+  const retimedBy = (a: Answer) => a.writes.filter((s) => /^update "planned_workouts" set /.test(s) && /"effective_time" = \?/.test(s) && / = case when /.test(s)).length;
+
+  /**
+   * THE DEAREST PLACE PATH (R1.4 fix round 1; the review's MAJOR-1): today before its window (untimed, so unpinned, and the
+   * collision pass runs on today), a template holding a jump, an active condition profile, and the device's hourly stamp
+   * landing on the place. `n` sessions crowd today.
+   */
+  const dearestPlace = async (n: number) => {
+    await world();
+    vi.setSystemTime(new Date(at(T, "05:30")));
+    await activateTmj(w.db, w.userId);
+    await w.db.insert(workoutTemplates).values({
+      id: "t-jump", userId: w.userId, name: "Hop and hold", doc: JSON.stringify(jumpDoc()), pinned: false, uses: 0, lastUsedAt: null,
+      createdAt: nowInstant(), updatedAt: nowInstant(),
+    });
+    await crowd(n, T);
+    await w.db.update(nativeDevices).set({ lastUsedAt: new Date(Date.now() - 2 * 3_600_000).toISOString() }).where(eq(nativeDevices.id, v5.id));
+    const placed = await phone("POST", "/api/native/templates/t-jump/place", { date: T, clientId: `c-dear-${n}` });
+    return { placed, retimed: retimedBy(placed) };
+  };
+
+  // THE BOUND, ON THE DEAREST PATH (R1.4 fix round 1; the review's MAJOR-1 and MINOR-1): measured 39 + N there, so at
+  // `RECORD_BESIDE_RETIMED_MAX` (6) the place makes the copy within 45, and one row more it gives way, still within 45.
+  // Either side of the bound by one fails one of these.
+  it("at the bound, on the dearest path, the place still makes the copy within 45; one row more, it gives way", async () => {
+    const bound = await dearestPlace(RECORD_BESIDE_RETIMED_MAX + 1); // today's pass keeps one row where it is
+    expect(bound.placed.status, bound.placed.text).toBe(201);
+    expect(bound.retimed).toBe(RECORD_BESIDE_RETIMED_MAX);
+    expect(bound.placed.total, `the place at the bound (${bound.retimed} re-timed), its record included`).toBeLessThanOrEqual(BUDGET);
+    expect((await pushesOf(bound.placed.json.workoutId as string)).map((j) => j.status)).toEqual(["queued"]);
+    const past = await dearestPlace(RECORD_BESIDE_RETIMED_MAX + 2);
+    expect(past.placed.status, past.placed.text).toBe(201);
+    expect(past.retimed).toBe(RECORD_BESIDE_RETIMED_MAX + 1);
+    expect(past.placed.total, "the place past the bound, its record left to the read").toBeLessThanOrEqual(BUDGET);
+    expect(await pushesOf(past.placed.json.workoutId as string)).toEqual([]);
+  });
+
   // THE INSTALLED PHONE READS A PLACED RECEIPT ONCE (R1.4; LifeOS `f83daf9f` `receiptsToRead`: each placed receipt never
   // read, and only a taken-back one while its provider work is pending). R1.3's O2 left the record to that read from 3 rows
   // re-timed, and the read's step makes the copy but no later read comes to send it. Measured, a place with its record
-  // costs 35 + N for N rows re-timed, so the record stays in the place to `RECORD_BESIDE_RETIMED_MAX`: the one read sends it.
+  // costs 35–39 + N for N rows re-timed, so the record stays in the place to `RECORD_BESIDE_RETIMED_MAX`: the one read
+  // sends it.
   it("a busy untimed day still makes the copy in the place, so the phone's one read sends it (R1.4)", async () => {
     await world();
     await crowd(6);
