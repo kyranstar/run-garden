@@ -539,7 +539,7 @@ export async function previewPlacement(
   now: string,
 ): Promise<{ before: string[]; after: string[]; beyond: string[] }> {
   const course = program.kind === "course" ? (config as CourseConfig) : null;
-  const pattern = course ? coursePattern(course) : (config as AdaptiveConfig);
+  const pattern: SlotPattern = course ? coursePattern(course) : (config as AdaptiveConfig);
   const goal = program.status === "active" ? pattern.weeklyGoal : 0;
   const rows = await readSlotRows(db, userId, program.id, today, goal, course !== null);
   const plan = await planWithTouched(db, rows, {

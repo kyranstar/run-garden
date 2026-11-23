@@ -235,13 +235,32 @@ describe("where a new rhythm counts from when nothing says (PATCH /api/plans/:id
     expect(await configOf(p)).toMatchObject({ everyWeeks: 2, cadenceFrom: MON });
   });
 
+  /** A session of the plan done on `date`. */
+  async function doneOn(p: string, date: string) {
+    const id = newId();
+    await db.insert(plannedWorkouts).values({
+      id, userId, planId: p, sourceWorkoutId: id, title: "TRE", category: "yoga", sport: "yoga", originalPlanDate: date, lastVerifiedCorosDate: "",
+      effectiveDate: date, effectiveTime: "19:30", sourceContentFingerprint: "studio", fallbackEstimatedDurationSeconds: 660, calendarBlockDurationSeconds: 900,
+      origin: "studio", contentState: "outline", completionState: "completed", courseSession: 1, createdAt: NOW, updatedAt: NOW,
+    });
+  }
+
+  it("the last done a week before this one: the rhythm counts from its week, not this one", async () => {
+    const p = await seedCourse({ weekdays: [0] });
+    await doneOn(p, day(-1, 0));
+    const tue = day(0, 1);
+    expect((await applyPlanPatch(db, userId, p, { everyWeeks: 2 }, noon(tue), tue)).ok).toBe(true);
+    // Done Mon 16 Nov: the next is Mon 30 Nov, two weeks on — not 7 Dec, as this week's anchor would put it.
+    expect(await configOf(p)).toMatchObject({ everyWeeks: 2, cadenceFrom: day(-1, 0) });
+    await placeSlots(db, userId, p, tue, prefs, noon(tue));
+    expect((await liveDates(p)).filter((d) => d > tue)).toEqual([day(1, 0)]);
+  });
+
   it("the same rhythm keeps its own anchor, whatever was done since: new days, or the rhythm named again", async () => {
     const p = await seedCourse({ weekdays: [0], everyWeeks: 2, cadenceFrom: day(1, 0) });
     await placeSlots(db, userId, p, MON, prefs, NOW);
-    // A session done in another week than the anchor's (filed under the plan by hand: what matters is its day).
-    await db.update(plannedWorkouts).set({ completionState: "completed" }).where(eq(plannedWorkouts.planId, p));
-    const anyDone = (await db.select().from(plannedWorkouts).where(eq(plannedWorkouts.planId, p))).length;
-    expect(anyDone).toBeGreaterThan(0);
+    // Done in a week neither the anchor's nor today's: a recomputed anchor would land on it.
+    await doneOn(p, day(2, 2));
     const wed = day(3, 2);
     expect((await applyPlanPatch(db, userId, p, { weekdays: [0, 3] }, noon(wed), wed)).ok).toBe(true);
     expect(await configOf(p)).toMatchObject({ weekdays: [0, 3], everyWeeks: 2, cadenceFrom: day(1, 0) });
