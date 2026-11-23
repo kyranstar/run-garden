@@ -201,6 +201,28 @@ describe("what still counts toward a course's week (fix round 2, ruling 1)", () 
     expect(await sched(p)).toEqual([day(0, 4), day(1, 4)]);
   });
 
+  it("so does Thursday's, the day before the one kept: the weekday is read Monday-first", async () => {
+    await setup(noon(day(0, 0)));
+    const p = await course(noon(day(0, 0)), day(0, 0), { weekdays: [3, 4], placementWeeksAhead: 1 });
+    await markSkipped(slotId(p, day(0, 3)), day(0, 0));
+    await toFriOnly(p);
+    await placeSlots(db, userId, p, day(0, 0), prefs, noon(day(0, 0)));
+    expect(await sched(p)).toEqual([day(0, 4), day(1, 4)]);
+  });
+
+  it("a skip on a day it still holds keeps counting: with a session of its own done on Wednesday, the week is full", async () => {
+    // Mondays and Fridays; Monday skipped, and a session pointed at the course done on Wednesday (its own id, its number set).
+    // Rule 1 as ever: two of two, so Friday's outline comes off. The skip is never overridden.
+    await setup(noon(day(0, 0)));
+    const p = await course(noon(day(0, 0)), day(0, 0), { weekdays: [0, 4], placementWeeksAhead: 1 });
+    await markSkipped(slotId(p, day(0, 0)), day(0, 0));
+    await rowOn(p, day(0, 2), { completionState: "completed", courseSession: 1 });
+    const thu = day(0, 3);
+    vi.setSystemTime(new Date(noon(thu)));
+    await placeSlots(db, userId, p, thu, prefs, noon(thu));
+    expect((await sched(p)).filter((d) => d <= day(0, 6))).toEqual([]);
+  });
+
   it("a removed slot on a dropped day doesn't either", async () => {
     await setup(noon(day(0, 0)));
     const p = await course(noon(day(0, 0)), day(0, 0), { weekdays: [1, 4], placementWeeksAhead: 1 });
@@ -348,6 +370,18 @@ describe("the default anchor, the same through change_plan and PATCH /api/plans/
     expect(await anchors(p, noon(fri), fri, 2)).toEqual(["2026-11-16", "2026-11-16"]);
   });
 
+  it("(a) nor is yesterday's left unmarked, asked at noon the next day: it counts from the last done", async () => {
+    await setup(MON16);
+    const p = await course(MON16, "2026-11-16", { weekdays: [0, 3] });
+    await markDone(slotId(p, "2026-11-16"));
+    const tue = "2026-11-24";
+    vi.setSystemTime(new Date(noon(tue)));
+    await placeSlots(db, userId, p, tue, prefs, noon(tue));
+    await markSkipped(slotId(p, "2026-11-26"), tue);
+    expect((await live(p)).filter((d) => d.startsWith("2026-11-23"))).toEqual(["2026-11-23:scheduled"]);
+    expect(await anchors(p, noon(tue), tue, 2)).toEqual(["2026-11-16", "2026-11-16"]);
+  });
+
   it("(a) a workout the coach filed under the plan, to come this week, isn't one of its sessions", async () => {
     const wed = "2026-10-07";
     await setup(noon(wed));
@@ -439,6 +473,16 @@ describe("the card says the next two and what comes off", () => {
     expect(preview.after).toEqual([day(2, 0), day(4, 0)]);
     expect(preview.beyond).toEqual([day(6, 0), day(8, 0), day(10, 0)]);
     expect(preview.off).toEqual([]);
+  });
+
+  it("a session the athlete moved onto a day past the window is named once", async () => {
+    // Every 2 weeks from 23 Nov, placed on Tue 24 Nov: 7 Dec. The athlete moves it to Mon 21 Dec, the next on-week's day,
+    // past the window. A new time: next 21 Dec (his), then 4 Jan — not 21 Dec twice.
+    await setup(noon(day(0, 1)));
+    const p = await course(noon(day(0, 1)), day(0, 1), { weekdays: [0], everyWeeks: 2, cadenceFrom: MON });
+    await db.update(plannedWorkouts).set({ effectiveDate: day(4, 0) }).where(eq(plannedWorkouts.id, slotId(p, day(2, 0))));
+    const op = await propose(p, noon(day(0, 1)), { time: "07:30" });
+    expect(op.lines).toEqual(["Time 19:30 → 07:30", "Next TRE Mon 21 Dec, then Mon 4 Jan"]);
   });
 
   it("a day the athlete skipped ahead isn't a next session, past the window too", async () => {
