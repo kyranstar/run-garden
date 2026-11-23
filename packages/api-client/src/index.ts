@@ -1507,6 +1507,9 @@ export interface DesignApproveResponse {
   inFlight?: string[];
   /** A request naming no ops: the ops still open that it left, because only their name approves them. */
   notNamed?: string[];
+  /** R1.7 (m1): plan changes whose card's dates were worked out again and read otherwise now: nothing of them was applied,
+   * and each still waits for the athlete, its card showing these lines. */
+  refreshed?: Array<{ opId: string; lines: string[] }>;
 }
 
 /** `POST /api/workouts`: a document workout for a day (today or later). `time` left out: the athlete's window. */

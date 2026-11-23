@@ -104,6 +104,29 @@ describe("the plan change card", () => {
     expect(button("Not now")).toBeNull();
   });
 
+  it("R1.7 (m1): an approve that found the card's dates read otherwise now shows the new dates and asks once more", async () => {
+    const was = ["Time 19:30 → 07:30", "Next TRE Mon 23 Nov, then Mon 30 Nov"];
+    const now = ["Time 19:30 → 07:30", "Next TRE Mon 30 Nov, then Mon 14 Dec"];
+    let state = { ...read("pending"), planChanges: [line(null, { lines: was })] };
+    const calls = serve({
+      "GET /api/coach/proposals/dp-run-3": () => state,
+      "POST /api/coach/proposals/dp-run-3/approve": () => {
+        state = { ...read("pending"), planChanges: [line(null, { lines: now })] };
+        return answer({ status: "pending", refreshed: [{ opId: OP, lines: now }] });
+      },
+    });
+    await mount(card({ lines: was }));
+    await until(() => !!button("Approve") && !button("Approve")!.disabled, "Approve");
+    await click(button("Approve"), "Approve");
+    await until(() => text().includes(PLAN_CHANGE_WORDS.refreshed!), "asked once more");
+    expect(PLAN_CHANGE_WORDS.refreshed).toBe("These dates were worked out again for today. Check them, then approve again to apply them.");
+    await until(() => [...document.querySelectorAll(".coach-plan-lines li")].map((l) => l.textContent).join("|") === now.join("|"), "the new dates");
+    // Still the athlete's to decide: nothing was applied.
+    expect(text()).not.toContain(`✓ ${PLAN_CHANGE_WORDS.done}`);
+    expect(button("Approve")).not.toBeNull();
+    expect(calls.filter((c) => c.method === "POST")).toHaveLength(1);
+  });
+
   it("Not now declines its own op; the card says it wasn't changed", async () => {
     let state = read("pending");
     const calls = serve({

@@ -535,7 +535,8 @@ describe("PATCH /api/plans/:id", () => {
       });
     };
     writes.length = 0;
-    expect(await applyPlanPatch(rec, u, "p", { purpose: "Hello" }, NOW)).toEqual({ ok: true, changed: ["purpose"] });
+    // R1.7: the answer also carries the plan as the edit left it (`plan`), which PATCH's held-back dates read.
+    expect(await applyPlanPatch(rec, u, "p", { purpose: "Hello" }, NOW)).toMatchObject({ ok: true, changed: ["purpose"], plan: { id: "p", pausedUntil: null } });
     expect(txCalls).toBe(1);
     expect(writes).toEqual([{ inTx: true }, { inTx: true }]);
     expect(await applyPlanPatch(rec, u, "nope", { purpose: "Hello" }, NOW)).toEqual({ ok: false, error: "not_found" });

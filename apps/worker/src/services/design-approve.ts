@@ -140,7 +140,12 @@
  * (`placeAfterPlanChange`, whether or not this approve's write changed
  * anything, so an approve retried after its request died still places, and a pass that has placed writes nothing more). So
  * it costs PLAN_PAUSE_COST: beside anything else that fills the request it waits in `remaining`, and runs first in the next.
- * The card says the pause, which has landed; what the pass couldn't fit is the next hourly pass's. BESIDE A WHOLE PLAN in the same proposal (one card), it follows
+ * The card says the pause, which has landed; what the pass couldn't fit is the next hourly pass's. R1.7 (m1): ONE WHOSE CARD
+ * SAYS WHERE A COURSE'S DATES FALL (a change to its schedule or quiet days) has those lines built again first, from the plan as
+ * it stands and today's clock (`coursePreview`, and the race's name: PLAN_PREVIEW_COST more). Read the same, it is applied.
+ * Read otherwise — a day has passed, a session was done, the race moved — nothing is written: the card takes the new lines
+ * (`refreshed`, its op left open) and the athlete is asked once more; never applied silently. A card stored before R1.7 has
+ * no `preview`: its date lines are told by their words. BESIDE A WHOLE PLAN in the same proposal (one card), it follows
  * that plan: it is applied only once the plan has fully applied; while the plan is being added (`remaining`, or another
  * approve's fresh claim: in flight) it waits with it; a plan refused, declined or replaced refuses it too (PLAN_NOT_ADDED),
  * nothing written — it rewrites the brief or ending for a phase that never came. A plan that applied with its change then
@@ -239,7 +244,8 @@ import { approveTimeOf, clockIn, PastTimeError, pastTime, todayLeadRefusal } fro
 import type { DocWorkoutOp, DocWorkoutTarget } from "./design-tools/propose.js";
 import { RestoreInProgressError } from "./programs.js";
 import { programs } from "@rg/database";
-import { adaptiveConfigSchema } from "@rg/domain";
+import { adaptiveConfigSchema, courseConfigSchema } from "@rg/domain";
+import { COURSE_PREVIEW_STATEMENTS, coursePreview, RACE_NAME_STATEMENTS, readRaceName } from "./course-card.js";
 import {
   changeVerb,
   describeChange,
@@ -256,6 +262,7 @@ import {
   isObjectiveChangeOp,
   pinsCardLinesOf,
   planFieldsOfRow,
+  PREVIEW_FIELDS,
   sameSetting,
   type ImportCorrectionOp,
   type MovePinsOp,
@@ -268,7 +275,7 @@ import {
   type ProgrammeChangeOp,
   type ProgrammeSettings,
 } from "./proposal-kinds.js";
-import { applyPlanPatch } from "./plan-registry.js";
+import { anchorFactColumns, applyPlanPatch, courseConfigWith } from "./plan-registry.js";
 import { PAUSE_PASS_COST, placeAfterPlanChange, PLACING_FIELDS, placeSlotsWithin, RETRACT_COST } from "./program-slots.js";
 import { updateProgram } from "./programs.js";
 import { releaseFitStarts } from "./saves-batches.js";
@@ -672,6 +679,9 @@ export const PLAN_NOT_YET_ADDED = "The new plan isn't added yet: approve it with
 export const PLAN_CHANGE_COST = 1 + 1 + 1 + 1 + 2;
 /** The same when it changes the pause: its pass, at its dearest, runs in the same request. */
 export const PLAN_PAUSE_COST = PLAN_CHANGE_COST + PAUSE_PASS_COST;
+/** R1.7 (m1): a card that says where a course's dates fall has them built again before it is applied: the preview and the
+ * race's name. */
+export const PLAN_PREVIEW_COST = COURSE_PREVIEW_STATEMENTS + RACE_NAME_STATEMENTS;
 
 /** The moves in rotation's own part (Task 18): its claim's write, the account's library with the named moves' pins and
  * the batch (one read), the batch marked fitted in, and — REBASED 2026-11-06 (coach review, phase 3) — the coach's
@@ -1060,6 +1070,9 @@ export interface ApproveAnswer {
   receipts?: Array<{ opId: string; receiptId: string }>;
   /** R1: the proposal's version as this request left it (design-version.ts): what the next round's approve names. */
   version?: string;
+  /** R1.7 (m1): the plan changes whose card's dates read otherwise now, each with the lines the card shows now: nothing of
+   * them was applied, and each is still the athlete's to approve. Present only when there are some. */
+  refreshed?: Array<{ opId: string; lines: string[] }>;
 }
 
 /** The ops `ids` names, in the proposal's order; every id must be one of its ops. */
@@ -1616,6 +1629,8 @@ export async function approveDesignOps(
   // through the route's own function, never claimed — made twice it writes once.
   const planChanges = todo.filter(isPlanChangeOp) as DesignedPlanChangeOp[];
   if (full) remaining.push(...planChanges.map((g) => g.id));
+  // R1.7 (m1): the plan changes whose card's dates read otherwise now: their new lines, written with the outcomes, none applied.
+  const refreshedOps = new Map<string, { lines: string[]; preview: string[] }>();
   // A plan change beside a whole plan (one card, never two) is applied only once that plan has fully applied: it rewrites the
   // brief or ending FOR the new phase. While the plan is still being added it waits for the pass that finishes it; a plan
   // refused, declined or replaced refuses it too, nothing written.
@@ -1639,14 +1654,21 @@ export async function approveDesignOps(
     // A change to the pause or (R1.6) to a course's schedule is placed in this request: whatever this write changed, so a
     // retried approve still places, and a pass that has placed writes nothing more.
     const moves = Object.keys(g.change).filter((k) => k === "time" || (PLACING_FIELDS as readonly string[]).includes(k));
-    if (!first && (moves.length > 0 ? PLAN_PAUSE_COST : PLAN_CHANGE_COST) > left) {
+    // R1.7 (m1): a card that says where a course's dates fall has them built again first.
+    const dated = Object.keys(g.change).some((k) => (PREVIEW_FIELDS as readonly string[]).includes(k));
+    const checkCost = dated ? PLAN_PREVIEW_COST : 0;
+    if (!first && (moves.length > 0 ? PLAN_PAUSE_COST : PLAN_CHANGE_COST) + checkCost > left) {
       remaining.push(...planChanges.slice(i).map((x) => x.id));
       full = true;
       break;
     }
     first = false;
-    left -= PLAN_CHANGE_COST;
-    const res = await applyPlanChange(db, userId, g, ctx);
+    left -= PLAN_CHANGE_COST + checkCost;
+    const res = await applyPlanChange(db, userId, g, ctx, { dated });
+    if (res.status === "refreshed") {
+      refreshedOps.set(g.id, { lines: res.lines, preview: res.preview });
+      continue;
+    }
     if (res.status === "applied") {
       if (moves.length > 0) left -= await placeAfterPlanChange(db, userId, g.planId, moves, ctx.today, ctx.prefs, ctx.now, left);
       outcomes.set(g.id, { status: "applied", at: ctx.now, changed: res.changed });
@@ -1847,15 +1869,16 @@ export async function approveDesignOps(
     ...(goalsChanged.length > 0 ? { objectives: goalsChanged } : {}),
     ...(pinned.length > 0 ? { pinned } : {}),
     ...(inFlight.length > 0 ? { inFlight } : {}),
+    ...(refreshedOps.size > 0 ? { refreshed: [...refreshedOps].map(([opId, r]) => ({ opId, lines: r.lines })) } : {}),
     ...unnamed,
   };
-  if (outcomes.size === 0) {
+  if (outcomes.size === 0 && refreshedOps.size === 0) {
     // A superseded proposal with nothing to repair is no longer the athlete's.
     if (p.status === "superseded") throw new NotOpenError(p.status);
     return { status: p.status as DesignProposalStatus, applied, changed, refused, settled, remaining, ...drain, ...(input.forDevice ? { version: await proposalVersion(current) } : {}) };
   }
 
-  const next = withOutcomes(current.ops, outcomes);
+  const next = withOutcomes(withCardLines(current.ops, refreshedOps), outcomes);
   const status = statusOfOps(allDesignedOps(next));
   await writeOps(db, userId, current, next, status, ctx.now);
 
@@ -1929,10 +1952,20 @@ async function applyPlanChange(
   userId: string,
   g: PlanChangeOp,
   ctx: DocWorkoutCtx,
-): Promise<{ status: "applied"; changed: string[] } | { status: "refused"; error: "stale" | "plan_refused" | "restore_in_progress"; why: string }> {
+  o: { dated?: boolean } = {},
+): Promise<
+  | { status: "applied"; changed: string[] }
+  | { status: "refused"; error: "stale" | "plan_refused" | "restore_in_progress"; why: string }
+  | { status: "refreshed"; lines: string[]; preview: string[] }
+> {
   const gone = { status: "refused", error: "stale", why: "That plan isn't there any more." } as const;
   const [row] = await db
-    .select({ kind: programs.kind, disciplines: programs.disciplines, purpose: programs.purpose, brief: programs.brief, onEnd: programs.onEnd, pausedUntil: programs.pausedUntil, objectiveIds: programs.objectiveIds, config: programs.config, archivedAt: programs.archivedAt })
+    .select({
+      kind: programs.kind, disciplines: programs.disciplines, purpose: programs.purpose, brief: programs.brief, onEnd: programs.onEnd, pausedUntil: programs.pausedUntil,
+      objectiveIds: programs.objectiveIds, config: programs.config, archivedAt: programs.archivedAt,
+      // R1.7 (m1): what the card's dates are built again from, in the same statement.
+      name: programs.name, status: programs.status, ...anchorFactColumns(ctx.today),
+    })
     .from(programs)
     .where(and(eq(programs.id, g.planId), eq(programs.userId, userId)))
     .limit(1);
@@ -1943,11 +1976,56 @@ async function applyPlanChange(
   if (keys.some((k) => !same(now[k], g.base[k]) && !same(now[k], g.change[k]))) {
     return { status: "refused", error: "stale", why: "Its settings changed since this was suggested: ask the coach again." };
   }
+  // R1.7 (m1): the card's dates, built again as the approve would leave them; read otherwise, the card takes them, nothing applied.
+  if (o.dated && row.kind === "course") {
+    const fresh = await cardDatesNow(db, userId, { ...row, id: g.planId }, g, ctx);
+    const shown = g.preview ?? g.lines.filter(isDateLine);
+    if (fresh && !same(fresh, shown)) {
+      const settingLines = g.preview ? g.lines.slice(0, g.lines.length - g.preview.length) : g.lines.filter((l) => !isDateLine(l));
+      return { status: "refreshed", lines: [...settingLines, ...fresh], preview: fresh };
+    }
+  }
   const res = await applyPlanPatch(db, userId, g.planId, g.change, ctx.now, ctx.today);
   if (res.ok) return { status: "applied", changed: res.changed };
   if (res.error === "not_found") return gone;
   if (res.error === "restore_in_progress") return { status: "refused", error: "restore_in_progress", why: "The athlete's account is being restored right now — try again once it is done." };
   return { status: "refused", error: "plan_refused", why: res.issues[0]?.message ?? "The plan refused it." };
+}
+
+/**
+ * A card's line about a course's dates, by its words (R1.7, m1): for a card stored before R1.7, which kept no `preview` — its
+ * Next line (never "Next session eased"), a held-back line, a count of more, its Comes off (R1.6's words) or Taken off line.
+ */
+const isDateLine = (l: string): boolean => (/^Next /.test(l) && !/^Next session (not )?eased$/.test(l)) || /^(Not |Comes off: |Taken off: )/.test(l) || /^\+\d+ more$/.test(l);
+
+/**
+ * A course plan change's card dates as they would read now (R1.7, m1): the plan's settings as it stands with the change applied
+ * (`courseConfigWith`, the approve's own merge, so a rhythm counts from where the approve would count it), placement's preview
+ * and the race's name; null when the settings don't merge (the approve's own write then says why).
+ */
+async function cardDatesNow(
+  db: Db,
+  userId: string,
+  row: { id: string; name: string; status: string; disciplines: unknown; pausedUntil: string | null; config: unknown; lastDone: string | null; toCome: number },
+  g: PlanChangeOp,
+  ctx: DocWorkoutCtx,
+): Promise<string[] | null> {
+  const merged = courseConfigWith(row.config, g.change as Parameters<typeof courseConfigWith>[1], ctx.today, { lastDone: row.lastDone, toCome: Number(row.toCome) === 1 });
+  const config = merged.ok ? courseConfigSchema.safeParse(merged.config) : null;
+  if (!config?.success) return null;
+  const disciplines = Array.isArray(row.disciplines) ? row.disciplines.filter((d): d is string => typeof d === "string") : [];
+  const pausedUntil = g.change.pausedUntil === undefined ? row.pausedUntil : g.change.pausedUntil;
+  const raceName = await readRaceName(db, userId);
+  return (await coursePreview(db, userId, { id: row.id, name: row.name, status: row.status, disciplines, pausedUntil }, config.data, { today: ctx.today, prefs: ctx.prefs, now: ctx.now, raceName })).lines;
+}
+
+/** The ops with each refreshed plan change's card lines put in (R1.7, m1): its lines and its preview, nothing else. */
+function withCardLines(ops: unknown, refreshed: ReadonlyMap<string, { lines: string[]; preview: string[] }>): unknown {
+  if (refreshed.size === 0) return ops;
+  return (Array.isArray(ops) ? ops : []).map((o) => {
+    const r = isPlanChangeOp(o) ? refreshed.get(o.id) : undefined;
+    return r ? { ...(o as PlanChangeOp), lines: r.lines, preview: r.preview } : o;
+  });
 }
 
 /** "2 moves in your programme's pool, 1 taken out": the pins done, for the answer and the receipt — counted. A pin puts a

@@ -277,7 +277,7 @@ describe("change_plan: one change to a plan's purpose, brief, ending or pause", 
   });
 
   it("the words, unit by unit: a line a field, the title by the fields, nothing for what is the same", () => {
-    const from: PlanChangeFields = { purpose: "Get fitter", brief: null, onEnd: "ask", pausedUntil: "2026-10-20", objectiveIds: ["a"], easeNext: false, weekdays: [], time: null, everyWeeks: 1, cadenceFrom: null };
+    const from: PlanChangeFields = { purpose: "Get fitter", brief: null, onEnd: "ask", pausedUntil: "2026-10-20", objectiveIds: ["a"], easeNext: false, weekdays: [], time: null, everyWeeks: 1, cadenceFrom: null, quietDaysBeforeRace: null };
     expect(planSettingLines(from, { ...from, purpose: null, brief: "Slow build", pausedUntil: null, objectiveIds: ["a", "b"], easeNext: true })).toEqual([
       "Purpose cleared",
       "Brief: Slow build",

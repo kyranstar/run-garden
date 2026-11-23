@@ -135,7 +135,8 @@ describe("through PATCH /api/plans/:id", () => {
     expect(res.json.plan.pausedUntil).toBe(addDays(MON, 3));
     expect(await row(id)).toMatchObject({ archivedAt: NOW, archiveReason: "program_replaced" });
     expect((await unpushOf(id)).find((j) => j.id === `unpush:${recordId}`)).toMatchObject({ status: "queued" });
-    expect(res.total).toBe(36);
+    // R1.7: 36 and the answer's held-back dates — the race's name and the preview's read (PLAN_PATCH_FIXED counts them).
+    expect(res.total).toBe(38);
   });
 
   it("clearing a pause brings its outlines back within the request", async () => {
@@ -146,8 +147,9 @@ describe("through PATCH /api/plans/:id", () => {
     expect(res.status).toBe(200);
     expect(await live(p)).toEqual([MON, day(0, 4), day(1, 0), day(1, 4)]);
     expect(await row(id)).toMatchObject({ archivedAt: null, origin: "program", workoutDoc: null, courseSession: null });
-    // The one slot brought back clears its overrides as well as its suppression (REVIVE_COST).
-    expect(res.total).toBe(22);
+    // The one slot brought back clears its overrides as well as its suppression (REVIVE_COST). R1.7: 22 and the answer's
+    // held-back dates (the race's name, the preview's read).
+    expect(res.total).toBe(24);
   });
 
   it("a long pause stays inside the budget with today's taken first, and what's left goes with the next hourly pass", async () => {
@@ -155,7 +157,9 @@ describe("through PATCH /api/plans/:id", () => {
     expect((await live(p)).length).toBeGreaterThan(4);
     const res = await patch(p, { pausedUntil: day(4, 0) });
     expect(res.status).toBe(200);
-    expect(res.total).toBe(35);
+    // R1.7: 35 and the answer's held-back dates: the race's name, the preview's read and, with outlines still to take off,
+    // its touched lookup — within the budget, which sets PLAN_PATCH_FIXED's three aside.
+    expect(res.total).toBe(38);
     expect((await row(id)).archivedAt).toBe(NOW);
     expect((await live(p)).length).toBeGreaterThan(0);
 

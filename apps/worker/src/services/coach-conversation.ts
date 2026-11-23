@@ -571,6 +571,17 @@ const PINS_BRIEF_FULL_CHARS = 4_800;
 /** A line's words in the block, at most. */
 const PIN_TEXT_BRIEF = 100;
 const WHY_BRIEF = 300;
+/** A plan change card's lines in a later turn, at most (R1.7): its dates and their reasons, as the athlete saw them. */
+const PLAN_CHANGE_LINES_BRIEF = 600;
+
+/** A plan change card's lines for the block (R1.7): what it said of the plan's dates — Next, the dates held back and why,
+ * Taken off — so a follow-up ("put it back on 7 Dec") reads the card's reason instead of guessing one. Marked: they hold the
+ * plan's and the race's names. */
+function planChangeBrief(g: OpBrief | undefined): string[] {
+  const lines = (typeof g?.lines === "string" ? parsed(g.lines) : g?.lines) as unknown;
+  const text = Array.isArray(lines) ? lines.filter((l): l is string => typeof l === "string").join("; ") : "";
+  return text ? [`    The card's lines: ${markUntrusted("main coach", clipProse(text, PLAN_CHANGE_LINES_BRIEF))}`] : [];
+}
 
 /** A line's move and its first post, as the app names them (audit fixes, E1): "(move myX, post p1:0)" — what a later turn
  * reads the move's evidence (read_saves' moveIds) or corrects it by. Empty for a general line. */
@@ -660,6 +671,7 @@ function turnLines(row: TurnRow, today: string, clock: Intl.DateTimeFormat, line
       const g = p!.ops.find((o) => o.kind === "plan_change" && o.opId === card.opId);
       const how = standing(card.status, g?.outcome, g?.reason);
       out.push(`  Suggested a plan change (id ${card.proposalId}): ${title} · ${clipProse(card.summary, TITLE_MAX)} — ${how}`);
+      out.push(...planChangeBrief(g));
     } else if (card.kind === "pins") {
       // The moves in rotation (Task 18): its title and line are the coach's words; how it stands is its op's.
       const g = p!.ops.find((o) => o.kind === "move_pins" && o.opId === card.opId);

@@ -6,7 +6,7 @@
  *                        (plan-drafts.ts `planDraftsOn`), a coach plan's draft is read with its row, no read more, and its
  *                        prompt says where the draft stands (and `note`, when it came to nothing).
  *   PATCH  /:id          {purpose?, brief?, onEnd?, objectiveIds?, pausedUntil?, easeNext?, weekdays?, time?, everyWeeks?,
- *                        cadenceFrom?} → {plan}
+ *                        cadenceFrom?, quietDaysBeforeRace?} → {plan, heldBack?, heldBackMore?}
  *   POST   /courses      {course, weekdays, time} → {plan, more, waiting?}: start a course (`course-plans.ts`)
  *   POST   /:id/stop     → {more, waiting?}: stop a plan
  *
@@ -17,6 +17,11 @@
  * A change to the pause, set or cleared, or (R1.6) to a course's days or rhythm, runs the plan's placement pass in this
  * request, and a course's new time re-times its outlines ahead (`placeAfterPlanChange`), in what the request has left: today's
  * session comes off at once, or the outlines come back, and what doesn't fit is the next hourly pass's.
+ *
+ * R1.7: a course's quiet days before a race change here too (0 to 21; refused on a course a race doesn't hold back, whose
+ * sessions carry no training load). After a change to a course's schedule, quiet days or pause, the answer says which dates
+ * of its rhythm a rule holds back, each with its reason code and the card's words (`heldBack`: course-card.ts), so a client
+ * or the coach reads why a date is missing rather than guessing.
  *
  * A START is idempotent per course, since a course has one plan. An unknown course or days and a time `courseConfigSchema`
  * refuses are 422, and other days, another time or another rhythm on a course already running are 409 `course_running`,
@@ -42,7 +47,7 @@
 import { Hono } from "hono";
 import { and, asc, eq } from "drizzle-orm";
 import { coachPlans, programs } from "@rg/database";
-import { courseConfigFields, nowInstant, planEnded, todayInZone } from "@rg/domain";
+import { courseConfigFields, courseConfigSchema, nowInstant, planEnded, todayInZone, type UserPreferences } from "@rg/domain";
 import type { AppContext } from "../auth/middleware.js";
 import { requireUser } from "../auth/middleware.js";
 import { restoreInProgress } from "../services/account-state.js";
@@ -50,17 +55,21 @@ import { loadPreferences } from "../services/calendar-sync.js";
 import { COURSE_RUNNING_WHY, startCourse, stopCourse } from "../services/course-plans.js";
 import { REQUEST_BUDGET } from "../services/design-approve.js";
 import { planDraftsOn } from "../services/plan-drafts.js";
-import { applyPlanPatch, listPlans } from "../services/plan-registry.js";
+import { applyPlanPatch, listPlans, type PlanPatchResult } from "../services/plan-registry.js";
+import type { Db } from "../services/db.js";
 import { planStoppedIfNoBlockLeft } from "../services/plan-status.js";
 import { isPlanKind } from "../services/plan-summaries.js";
 import { placeAfterPlanChange } from "../services/program-slots.js";
+import { COURSE_PREVIEW_STATEMENTS, coursePreview, RACE_NAME_STATEMENTS, readRaceName } from "../services/course-card.js";
+import { PREVIEW_FIELDS } from "../services/proposal-kinds.js";
 import { RestoreInProgressError, updateProgram } from "../services/programs.js";
 import { receipt } from "./coach.js";
 import { placeAndBook } from "./programs.js";
 import { stopBlocks } from "./thread-structural.js";
 
-/** What a patch spends beside its pass, at its most: the session and the user, the preferences, the patch's five, the list. */
-const PLAN_PATCH_FIXED = 12;
+/** What a patch spends beside its pass, at its most: the session and the user, the preferences, the patch's five, the list,
+ * and (R1.7) a course's held-back dates: its preview and the race's name. */
+const PLAN_PATCH_FIXED = 12 + COURSE_PREVIEW_STATEMENTS + RACE_NAME_STATEMENTS;
 
 /**
  * What a start spends beside its step, at its most: the session, the look for a restore (the middleware's and its own), the
@@ -101,9 +110,21 @@ planRoutes.patch("/:id", async (c) => {
     return c.json({ error: "invalid_plan", issues: result.issues }, 422);
   }
   await placeAfterPlanChange(db, userId, id, result.changed, today, prefs, now, REQUEST_BUDGET - PLAN_PATCH_FIXED);
+  const held = await heldBackAfter(db, userId, result, today, prefs, now);
   const plan = (await listPlans(db, userId, today, { drafts: planDraftsOn(c.env) })).find((p) => p.id === id);
-  return c.json({ plan });
+  return c.json({ plan, ...held });
 });
+
+/** R1.7: after a change to a course's schedule, quiet days or pause, the dates of its rhythm a rule holds back (none: nothing). */
+async function heldBackAfter(db: Db, userId: string, result: Extract<PlanPatchResult, { ok: true }>, today: string, prefs: UserPreferences, now: string) {
+  const p = result.plan;
+  const moved = result.changed.some((k) => k === "pausedUntil" || (PREVIEW_FIELDS as readonly string[]).includes(k));
+  const config = p?.kind === "course" && moved ? courseConfigSchema.safeParse(p.config) : null;
+  if (!p || !config?.success) return {};
+  const raceName = await readRaceName(db, userId);
+  const preview = await coursePreview(db, userId, p, config.data, { today, prefs, now, raceName });
+  return preview.heldBack.length > 0 ? { heldBack: preview.heldBack, ...(preview.heldBackMore ? { heldBackMore: preview.heldBackMore } : {}) } : {};
+}
 
 planRoutes.post("/courses", async (c) => {
   const db = c.get("db");

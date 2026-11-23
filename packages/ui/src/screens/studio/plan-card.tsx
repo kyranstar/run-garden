@@ -96,6 +96,8 @@ export interface PlanCardWords {
   refused: string;
   /** Done: where to see it ("See it on Plan"); null when nothing of it is on a screen of its own. */
   link: { to: string; label: string } | null;
+  /** R1.7 (m1): an approve found the card's dates read otherwise now, applied nothing and showed them anew; a plan change's. */
+  refreshed?: string;
 }
 
 const SEE_PLAN = { to: "/plan", label: "See it on Plan" };
@@ -337,7 +339,9 @@ export function PlanCard({ card, closed = false }: { card: PlanCardInput; closed
     networkMode: "always",
     mutationFn: () => approvePlanUntilDone((body) => api.coachDesignApprove(card.proposalId, body), reread, opIds),
     onSuccess: (answers) => {
-      setBusyLine(answers.some((a) => (a.inFlight ?? []).length > 0) ? w.inFlight : null);
+      // R1.7 (m1): the card's dates were worked out again and nothing was applied: say so, and the card asks once more.
+      const refreshed = w.refreshed && answers.some((a) => (a.refreshed ?? []).some((r) => opIds.includes(r.opId)));
+      setBusyLine(refreshed ? w.refreshed! : answers.some((a) => (a.inFlight ?? []).length > 0) ? w.inFlight : null);
       // The watch follows what it changed (the watch mirrors the plan §3.3; M1).
       followApproved(answers, () => qc.fetchQuery({ queryKey: ["today"], queryFn: api.today, staleTime: 0 }));
     },
@@ -363,9 +367,16 @@ export function PlanCard({ card, closed = false }: { card: PlanCardInput; closed
   const outcome = planOutcomeLine(status, plan, w);
   const started = plan?.outcome?.status === "applying";
   const decidable = outcome === null && (status === "pending" || status === "partially_approved");
-  // The card's own lines — the moves in rotation's as drawn, each with its move's name — else the suggestion's read.
+  // The card's own lines — the moves in rotation's as drawn, each with its move's name — else the suggestion's read. A plan
+  // change's read first (R1.7, m1): an approve may have worked its dates out again, and the read has them as they are now.
   const lines: DrawnLine[] =
-    card.pinLines && card.pinLines.length > 0 ? card.pinLines : card.lines && card.lines.length > 0 ? card.lines.map(drawn) : (plan?.lines ?? []).map(drawn);
+    planChange && plan?.lines && plan.lines.length > 0
+      ? plan.lines.map(drawn)
+      : card.pinLines && card.pinLines.length > 0
+        ? card.pinLines
+        : card.lines && card.lines.length > 0
+          ? card.lines.map(drawn)
+          : (plan?.lines ?? []).map(drawn);
   // The coach's review (import trail phase 3, §3.3): lines that say in or out, with their evidence — drawn grouped, each
   // one tap from its evidence; a card stored before draws as it always did.
   const reviewLines: DesignPinsCardLineDto[] = pins

@@ -158,7 +158,7 @@ describe("the owner's clean-up, approved on Sun 22 Nov (fix round 2, ruling 1)",
     const p = await ownerState();
     const op = await propose(p, SUN22, { days: ["Mon"], everyWeeks: 2 });
     expect(op.change).toEqual({ weekdays: [0], everyWeeks: 2, cadenceFrom: "2026-11-16" });
-    expect(op.lines).toEqual(["Days Mon · Fri → Mon", "Every week → Every 2 weeks", "Next TRE Mon 14 Dec, then Mon 28 Dec", "Comes off: Mon 23 Nov"]);
+    expect(op.lines).toEqual(["Days Mon · Fri → Mon", "Every week → Every 2 weeks", "Next TRE Mon 14 Dec, then Mon 28 Dec", "Taken off: Mon 23 Nov"]);
   });
 
   it("the same with no from on Monday 23 Nov before the session: 23 Nov, then 7 Dec", async () => {
@@ -180,7 +180,7 @@ describe("the owner's clean-up, approved on Sun 22 Nov (fix round 2, ruling 1)",
     await placeSlots(db, userId, p, "2026-11-22", prefs, SUN22);
     for (const d of ["2026-11-30", "2026-12-04"]) await markSkipped(slotId(p, d), "2026-11-22");
     const op = await propose(p, SUN22, { days: ["Mon"], everyWeeks: 2, from: "2026-11-23" });
-    expect(op.lines).toContain("Comes off: Fri 27 Nov");
+    expect(op.lines).toContain("Taken off: Fri 27 Nov");
     await approve(op, SUN22, "2026-11-22");
     expect((await liveRows(p)).filter((r) => r.completionState === "scheduled" && r.effectiveDate >= "2026-11-22").map((r) => r.effectiveDate)).toEqual(["2026-11-23"]);
   });
@@ -263,13 +263,57 @@ describe("what still counts toward a course's week (fix round 2, ruling 1)", () 
     expect(await sched(id)).toEqual([day(0, 3)]);
   });
 
-  it("a slot moved off a dropped day still counts, skipped since or not: the athlete chose that day", async () => {
+  it("a slot moved off a dropped day and still to come counts: the athlete chose that day, and it will happen", async () => {
+    await setup(noon(day(0, 0)));
+    const p = await course(noon(day(0, 0)), day(0, 0), { weekdays: [1, 4], placementWeeksAhead: 1 });
+    await db.update(plannedWorkouts).set({ effectiveDate: day(0, 2) }).where(eq(plannedWorkouts.id, slotId(p, day(0, 1))));
+    await toFriOnly(p);
+    await placeSlots(db, userId, p, day(0, 0), prefs, noon(day(0, 0)));
+    expect(await sched(p)).toEqual([day(0, 2), day(1, 4)]);
+  });
+
+  // R1.7 (r1-6/FOLLOWUPS.md 2, RECHECK2 m3): "moved" in ruling 1 meant "will happen". A slot moved and then skipped is a skip.
+  it("m3: a slot moved off a dropped day and then skipped counts as skipped: Friday's session stays on", async () => {
     await setup(noon(day(0, 0)));
     const p = await course(noon(day(0, 0)), day(0, 0), { weekdays: [1, 4], placementWeeksAhead: 1 });
     await db.update(plannedWorkouts).set({ effectiveDate: day(0, 2), completionState: "skipped", resolutionDate: day(0, 0) }).where(eq(plannedWorkouts.id, slotId(p, day(0, 1))));
     await toFriOnly(p);
     await placeSlots(db, userId, p, day(0, 0), prefs, noon(day(0, 0)));
+    expect(await sched(p)).toEqual([day(0, 4), day(1, 4)]);
+  });
+
+  it("m3, RECHECK2's case: Fri 27 Nov moved to Sat 28 Nov and skipped, the clean-up from 23 Nov keeps Mon 23 Nov", async () => {
+    await setup(MON16);
+    const p = await course(MON16, "2026-11-16");
+    await markDone(slotId(p, "2026-11-16"));
+    vi.setSystemTime(new Date(SUN22));
+    await placeSlots(db, userId, p, "2026-11-22", prefs, SUN22);
+    await db.update(plannedWorkouts).set({ effectiveDate: "2026-11-28", completionState: "skipped", resolutionDate: "2026-11-22" }).where(eq(plannedWorkouts.id, slotId(p, "2026-11-27")));
+    for (const d of ["2026-11-30", "2026-12-04"]) await markSkipped(slotId(p, d), "2026-11-22");
+    const op = await propose(p, SUN22, { days: ["Mon"], everyWeeks: 2, from: "2026-11-23" });
+    expect(op.lines.some((l) => l.startsWith("Taken off:"))).toBe(false);
+    await approve(op, SUN22, "2026-11-22");
+    expect((await liveRows(p)).filter((r) => r.completionState === "scheduled" && r.effectiveDate >= "2026-11-22").map((r) => r.effectiveDate)).toEqual(["2026-11-23"]);
+  });
+
+  it("a moved slot done on a dropped day still counts: the athlete did this week's", async () => {
+    await setup(noon(day(0, 3)));
+    const p = await course(noon(day(0, 0)), day(0, 0), { weekdays: [1, 4], placementWeeksAhead: 1 });
+    await db.update(plannedWorkouts).set({ effectiveDate: day(0, 2), completionState: "completed", origin: "studio", courseSession: 1 }).where(eq(plannedWorkouts.id, slotId(p, day(0, 1))));
+    await toFriOnly(p);
+    await placeSlots(db, userId, p, day(0, 3), prefs, noon(day(0, 3)));
     expect(await sched(p)).toEqual([day(1, 4)]);
+  });
+
+  // R1.7 (r1-6/FOLLOWUPS.md 3, RECHECK2 m5): BUILD's "missed is read as skipped" had no test, and a mutant that counted a
+  // missed or unresolved slot again survived. Neither counts on a day the course no longer holds.
+  it.each(["missed", "unresolved"])("m5: a %s slot on a dropped day doesn't fill the week: Friday's session stays on", async (state) => {
+    await setup(noon(day(0, 2)));
+    const p = await course(noon(day(0, 0)), day(0, 0), { weekdays: [1, 4], placementWeeksAhead: 1 });
+    await db.update(plannedWorkouts).set({ completionState: state }).where(eq(plannedWorkouts.id, slotId(p, day(0, 1))));
+    await toFriOnly(p);
+    await placeSlots(db, userId, p, day(0, 2), prefs, noon(day(0, 2)));
+    expect(await sched(p)).toEqual([day(0, 4), day(1, 4)]);
   });
 });
 
@@ -306,7 +350,7 @@ describe("the default anchor, through change_plan and its approve", () => {
     const p = await course(SUN22, "2026-11-22", { weekdays: [0] });
     const op = await propose(p, SUN22, { everyWeeks: 2 });
     expect(op.change).toEqual({ everyWeeks: 2, cadenceFrom: "2026-11-23" });
-    expect(op.lines).toEqual(["Every week → Every 2 weeks", "Next TRE Mon 23 Nov, then Mon 7 Dec", "Comes off: Mon 30 Nov"]);
+    expect(op.lines).toEqual(["Every week → Every 2 weeks", "Next TRE Mon 23 Nov, then Mon 7 Dec", "Taken off: Mon 30 Nov"]);
     await approve(op, SUN22, "2026-11-22");
     expect((await live(p)).filter((d) => d >= "2026-11-22")).toEqual(["2026-11-23:scheduled"]);
   });
@@ -450,7 +494,7 @@ describe("the card says the next two and what comes off", () => {
     await setup(noon(MON));
     const p = await course(noon(MON), MON, { weekdays: [0, 2, 4] });
     const op = await propose(p, noon(MON), { days: ["Mon"], everyWeeks: 2 });
-    expect(op.lines).toContain(`Comes off: Wed 25 Nov · Fri 27 Nov · Mon 30 Nov +4 more`);
+    expect(op.lines).toContain(`Taken off: Wed 25 Nov · Fri 27 Nov · Mon 30 Nov +4 more`);
   });
 
   it("the next two are in date order, a far outline kept from a wider window among them", async () => {
@@ -493,7 +537,7 @@ describe("the card says the next two and what comes off", () => {
     await markSkipped(slotId(p, day(4, 0)), day(0, 1));
     await db.update(programs).set({ config: courseConfigSchema.parse({ course: INTRO_COURSE.id, weekdays: [0], time: "19:30" }) }).where(eq(programs.id, p));
     const op = await propose(p, noon(day(0, 1)), { everyWeeks: 2, from: MON });
-    expect(op.lines).toEqual(["Every week → Every 2 weeks", "Next TRE Mon 7 Dec, then Mon 4 Jan", "Comes off: Mon 30 Nov · Mon 14 Dec"]);
+    expect(op.lines).toEqual(["Every week → Every 2 weeks", "Next TRE Mon 7 Dec, then Mon 4 Jan", "Taken off: Mon 30 Nov · Mon 14 Dec"]);
   });
 
   it("a day placement took off itself is free again, past the window too", async () => {
@@ -506,7 +550,7 @@ describe("the card says the next two and what comes off", () => {
     expect((await live(p)).filter((d) => d > day(0, 1))).toEqual([`${day(2, 0)}:scheduled`, `${day(4, 0)}:scheduled`]);
     await db.update(programs).set({ config: courseConfigSchema.parse({ course: INTRO_COURSE.id, weekdays: [0], time: "19:30", everyWeeks: 2, cadenceFrom: MON }) }).where(eq(programs.id, p));
     const op = await propose(p, noon(day(0, 1)), { everyWeeks: 2, from: day(1, 0) });
-    expect(op.lines).toEqual(["Every 2 weeks, counted from Mon 30 Nov", "Next TRE Mon 30 Nov, then Mon 14 Dec", "Comes off: Mon 7 Dec · Mon 21 Dec"]);
+    expect(op.lines).toEqual(["Every 2 weeks, counted from Mon 30 Nov", "Next TRE Mon 30 Nov, then Mon 14 Dec", "Taken off: Mon 7 Dec · Mon 21 Dec"]);
   });
 });
 
@@ -516,10 +560,10 @@ describe("the card's lines, as words", () => {
     expect(courseNextLine("TRE", ["2026-11-23"])).toBe("Next TRE Mon 23 Nov");
     expect(courseNextLine("TRE", [])).toBeNull();
   });
-  it("Comes off: three by name, the rest counted; none, no line", () => {
-    expect(comesOffLine(["2026-11-30"])).toBe("Comes off: Mon 30 Nov");
-    expect(comesOffLine(["2026-11-25", "2026-11-27", "2026-11-30"])).toBe("Comes off: Wed 25 Nov · Fri 27 Nov · Mon 30 Nov");
-    expect(comesOffLine(["2026-11-25", "2026-11-27", "2026-11-30", "2026-12-02"])).toBe("Comes off: Wed 25 Nov · Fri 27 Nov · Mon 30 Nov +1 more");
+  it("Taken off: three by name, the rest counted; none, no line", () => {
+    expect(comesOffLine(["2026-11-30"])).toBe("Taken off: Mon 30 Nov");
+    expect(comesOffLine(["2026-11-25", "2026-11-27", "2026-11-30"])).toBe("Taken off: Wed 25 Nov · Fri 27 Nov · Mon 30 Nov");
+    expect(comesOffLine(["2026-11-25", "2026-11-27", "2026-11-30", "2026-12-02"])).toBe("Taken off: Wed 25 Nov · Fri 27 Nov · Mon 30 Nov +1 more");
     expect(comesOffLine([])).toBeNull();
   });
 });

@@ -462,6 +462,16 @@ describe("callMessages — failures", () => {
     expect(result).toMatchObject({ ok: false, kind: "rejected", reason: `gateway_${status}`, status });
   });
 
+  // R1.7 (r1-6/FOLLOWUPS.md 5, r1-5/F8.md): a pinned call whose one provider can't serve gets the gateway's `only` filter 400.
+  // Nothing was served, and while Anthropic is down it may clear: the AI service didn't answer, never "refused".
+  it("the gateway's `only` filter 400 is retryable: the AI service didn't answer", async () => {
+    const message = "No available providers match the 'only' filter: anthropic. Available providers are: google, vertex";
+    const { fetchImpl, calls } = scriptedFetch([{ status: 400, json: { type: "error", error: { type: "invalid_request_error", message } } }]);
+    const result = await callMessages(makeEnv(), request(), fetchImpl);
+    expect(result).toMatchObject({ ok: false, kind: "retryable", reason: "gateway_only_filter", status: 400 });
+    expect(calls).toHaveLength(1);
+  });
+
   it("a 200 that is not a message is retryable, not an empty answer", async () => {
     const { fetchImpl } = scriptedFetch([
       { text: "<html>gateway hiccup</html>" },

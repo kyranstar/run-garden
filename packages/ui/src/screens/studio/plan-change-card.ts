@@ -29,6 +29,7 @@ export const PLAN_CHANGE_WORDS: PlanCardWords = {
   superseded: "Replaced by a newer change",
   refused: "It couldn't be changed.",
   link: { to: "/plan", label: "See it on Plan" },
+  refreshed: "These dates were worked out again for today. Check them, then approve again to apply them.",
 };
 
 /**

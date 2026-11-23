@@ -22,9 +22,10 @@
  *     makes placement safe to run every hour: anything the athlete did to a slot is never undone or re-placed.
  *     The one exception is a slot this file retracted itself (`program_replaced`): it is not the athlete's, and
  *     a later edit that wants that day again brings the same row back. A course has one more (R1.6 fix round 2): a slot
- *     skipped, missed or removed where it was planned, on a day the course no longer holds, is no session of its week — a
- *     dropped day takes its skips with it, so a Friday skip agreed ahead doesn't fill a week that is Monday's alone. Done,
- *     moved or still on the plan, it counts as ever: the athlete did it, or chose that day.
+ *     skipped, missed or removed, planned on a day the course no longer holds, is no session of its week — a dropped day
+ *     takes its skips with it, so a Friday skip agreed ahead doesn't fill a week that is Monday's alone. Moved first or not
+ *     (R1.7, m3: a slot moved and then skipped is a skip; "moved" meant "will happen"). Done, or still to come where it was
+ *     moved or planned, it counts as ever: the athlete did it, or chose that day.
  *  2. THE WEEK'S GOAL goes on `preferredDays` in order, then the week's other days Monday → Sunday, never before
  *     today, one slot of this program per date. Two limits on a NEW slot (ruling 2a-R11): none on today once
  *     today's window has passed in the athlete's zone, and in THIS week only on the days a full week would use
@@ -42,7 +43,9 @@
  *     live slots from today on (`refreshSlotContent`); history keeps what it said.
  *  6. A DAY HELD BACK IS PASSED OVER, and a flexible slot on it goes as in rule 4: any day up to and including the
  *     program's `paused_until` (spec §4.4, either kind; it ends by itself on its date), and a course's quiet days, from
- *     `quietDaysBeforeRace` before `prefs.raceDate` through race day. A week a pause reaches holds only the days a full
+ *     `quietDaysBeforeRace` before `prefs.raceDate` through race day — none for a course whose sessions carry no training
+ *     load (R1.7: its definition's `holdForRace: false`, `quietDaysOf`), which only race day holds back. A preview names
+ *     each date of a course's rhythm held back this way, and which rule holds it (`heldBackWhy`). A week a pause reaches holds only the days a full
  *     week would use, as this week does, so nothing piles up behind it. A pause also takes today's untouched outline,
  *     since someone pausing for illness doesn't want it waiting; a built, started or touched one stays, and the quiet
  *     days leave today's alone. So does it take a course's session written today and not yet touched, built, started or
@@ -228,12 +231,13 @@ function retracted(r: WorkoutRow): boolean {
 }
 
 /**
- * Rule 1's exception for a course (R1.6 fix round 2, FIX2-RULINGS 1): skipped, missed or removed where it was planned, on a
- * weekday the course no longer holds (`days`, 0 = Monday). Done, moved, or still on the plan, it isn't.
+ * Rule 1's exception for a course (R1.6 fix round 2, FIX2-RULINGS 1): skipped, missed, unresolved or removed, planned on a
+ * weekday the course no longer holds (`days`, 0 = Monday) — moved first or not (R1.7, m3: a slot moved and then skipped is a
+ * skip). Done, or still on the plan where it sits, it isn't.
  */
 function offDroppedDay(r: WorkoutRow, days: readonly number[]): boolean {
   const off = r.archivedAt !== null || r.completionState !== "scheduled";
-  return off && r.completionState !== "completed" && r.effectiveDate === r.originalPlanDate && !days.includes(isoWeekday(r.originalPlanDate) - 1);
+  return off && r.completionState !== "completed" && !days.includes(isoWeekday(r.originalPlanDate) - 1);
 }
 
 /** Whether a plan's pause (`programs.paused_until`, its last day) covers this date. */
@@ -451,6 +455,31 @@ function heldBackDays({ pausedUntil, quietDays, prefs }: Pick<PlanInputs, "pause
   return (date) => pausedOn(pausedUntil, date) || (quiet !== null && date >= quiet.from && date <= quiet.to);
 }
 
+/**
+ * The days before a race a course keeps clear (R1.7): its own `quietDaysBeforeRace`, unless its definition says a race doesn't
+ * hold it back (`holdForRace: false`: its sessions carry no training load) — then none (null), and only race day is. Read from
+ * the definition, so the stored setting stays as it was written. A course whose definition is gone keeps its own.
+ */
+export const quietDaysOf = (config: Pick<CourseConfig, "course" | "quietDaysBeforeRace">): number | null =>
+  courseDefinition(config.course)?.holdForRace === false ? null : config.quietDaysBeforeRace;
+
+/** Why a date a course's rhythm would use is held back (R1.7): its pause, race day, or the race's quiet days. */
+export type HeldBackReason = "paused" | "race_day" | "race_quiet";
+/** A date of a course's rhythm a rule holds back, with the rule. */
+export interface HeldBackDate {
+  date: string;
+  reason: HeldBackReason;
+}
+
+/**
+ * Rule 6 and rule 2's race day, as the reason a date is held back, or null (R1.7): the pause first (the athlete's own), then race
+ * day, then the race's quiet days. The same days `heldBackDays` and race day hold, nothing more.
+ */
+export function heldBackWhy(o: Pick<PlanInputs, "pausedUntil" | "quietDays" | "prefs">): (date: string) => HeldBackReason | null {
+  const held = heldBackDays(o);
+  return (date) => (pausedOn(o.pausedUntil, date) ? "paused" : date === o.prefs.raceDate ? "race_day" : held(date) ? "race_quiet" : null);
+}
+
 /** Rules 1–4 and 6 over the rows as read: the slots to retract, to bring back and to place — `flexibleIds` the ones that may go. */
 function planSlots(rows: readonly WorkoutRow[], o: PlanInputs, flexibleIds: ReadonlySet<string>) {
   const { programId, config, goal, today, prefs, now, discipline } = o;
@@ -553,17 +582,18 @@ export async function previewPlacement(
   today: string,
   prefs: UserPreferences,
   now: string,
-): Promise<{ before: string[]; after: string[]; beyond: string[]; off: string[] }> {
+): Promise<{ before: string[]; after: string[]; beyond: string[]; off: string[]; heldBack: HeldBackDate[] }> {
   const course = program.kind === "course" ? (config as CourseConfig) : null;
   const pattern: SlotPattern = course ? coursePattern(course) : (config as AdaptiveConfig);
   const goal = program.status === "active" ? pattern.weeklyGoal : 0;
+  const quietDays = course ? quietDaysOf(course) : null;
   const rows = await readSlotRows(db, userId, program.id, today, goal, course !== null);
   const plan = await planWithTouched(db, rows, {
     programId: program.id,
     config: pattern,
     goal,
     time: course?.time ?? null,
-    quietDays: course?.quietDaysBeforeRace ?? null,
+    quietDays,
     isCourse: course !== null,
     pausedUntil: program.pausedUntil,
     today,
@@ -577,28 +607,45 @@ export async function previewPlacement(
   const after = [...live.filter((r) => !gone.has(r.id)).map((r) => r.effectiveDate), ...plan.toInsert, ...plan.toRevive.map((r) => r.originalPlanDate)]
     .filter((d) => d >= today)
     .sort();
-  // A placed session the change takes off (fix round 2, the card's "Comes off"); a skipped one was off already.
+  // A placed session the change takes off (fix round 2, the card's "Taken off"); a skipped one was off already.
   const off = live.filter((r) => gone.has(r.id)).map((r) => r.effectiveDate).sort();
-  if (!course || goal === 0) return { before, after, beyond: [], off };
+  if (!course || goal === 0) return { before, after, beyond: [], off, heldBack: [] };
   // Past the window, the course's own days in the weeks its rhythm uses, the days held back left out: what the card's "Next"
   // line reads on, so a rhythm of a few weeks shows as one.
-  const heldBack = heldBackDays({ pausedUntil: program.pausedUntil, quietDays: course.quietDaysBeforeRace, prefs });
+  const why = heldBackWhy({ pausedUntil: program.pausedUntil, quietDays, prefs });
   const beyond: string[] = [];
+  // R1.7: each date of its rhythm a rule holds back, from today, in the window and past it as far as the scan goes — never a
+  // date a session stays on, nor one the athlete skipped, moved or removed (theirs, not the rule's).
+  const heldBack: HeldBackDate[] = [];
   const { lastSunday } = windowOf(today, pattern);
   const kept = new Set(after);
   const byId = new Map(rows.map((r) => [r.id, r]));
+  const days = [...pattern.preferredDays].sort((a, b) => a - b);
+  const theirs = (date: string) => {
+    const holder = byId.get(slotId(program.id, date));
+    return holder !== undefined && !retracted(holder) && !gone.has(holder.id);
+  };
+  for (let monday = startOfIsoWeek(today); monday <= lastSunday; monday = addDays(monday, 7)) {
+    if (!onWeek(monday, pattern)) continue;
+    for (const d of days) {
+      const date = addDays(monday, d);
+      const reason = date >= today && !kept.has(date) && !theirs(date) ? why(date) : null;
+      if (reason) heldBack.push({ date, reason });
+    }
+  }
   for (let monday = addDays(lastSunday, 1), weeks = 0; beyond.length < BEYOND_SHOWN && weeks < 4 * EVERY_WEEKS_MAX; monday = addDays(monday, 7), weeks++) {
     if (!onWeek(monday, pattern)) continue;
-    for (const d of [...pattern.preferredDays].sort((a, b) => a - b)) {
-      const date = addDays(monday, d);
+    for (const date of days.map((d) => addDays(monday, d))) {
       // An outline a wider window placed there already is `after`'s; a day the athlete skipped, moved or removed ahead is
       // spoken for (fix round 2), as rule 2 holds it.
       const holder = byId.get(slotId(program.id, date));
-      if (heldBack(date) || date === prefs.raceDate || kept.has(date) || (holder && !retracted(holder))) continue;
-      beyond.push(date);
+      if (kept.has(date) || (holder && !retracted(holder))) continue;
+      const reason = why(date);
+      if (reason) heldBack.push({ date, reason });
+      else beyond.push(date);
     }
   }
-  return { before, after, beyond: beyond.slice(0, BEYOND_SHOWN), off };
+  return { before, after, beyond: beyond.slice(0, BEYOND_SHOWN), off, heldBack };
 }
 
 /** A course's dates past the window a preview names (`beyond`). */
@@ -657,8 +704,9 @@ export async function placeAfterPauseChange(db: Db, userId: string, planId: stri
   }
 }
 
-/** The fields whose change places a plan again in its own request: its pause (R23, R25) and, R1.6, a course's days and rhythm. */
-export const PLACING_FIELDS = ["pausedUntil", "weekdays", "everyWeeks", "cadenceFrom"] as const;
+/** The fields whose change places a plan again in its own request: its pause (R23, R25) and, R1.6, a course's days and rhythm;
+ * R1.7 its quiet days before a race. */
+export const PLACING_FIELDS = ["pausedUntil", "weekdays", "everyWeeks", "cadenceFrom", "quietDaysBeforeRace"] as const;
 
 /** What a re-time declares beside its collision pass: the restore's look, the plan, the one write and the days' sessions. */
 export const RETIME_FIXED = 4;
@@ -769,7 +817,7 @@ async function placementOf(db: Db, program: ProgramRow, spend: (n: number) => vo
     config: coursePattern(config),
     title: program.name,
     time: config.time,
-    quietDays: config.quietDaysBeforeRace,
+    quietDays: quietDaysOf(config),
     isCourse: true,
   };
   // A stopped course places nothing, so whether it would place kept off is no matter.

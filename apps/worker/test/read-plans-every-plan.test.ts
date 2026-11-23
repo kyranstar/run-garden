@@ -230,7 +230,8 @@ describe("a course's settings, and what changes them", () => {
     await course(TRE, "TRE", { weekdays: [0], everyWeeks: 2, cadenceFrom: "2026-05-11" });
     const r = ok((await read()).res);
     const tre = r.data.plans.find((p) => p.id === TRE)!;
-    expect(tre.settings).toEqual({ days: ["Mon"], time: "19:30", everyWeeks: 2, from: "2026-05-11" });
+    // R1.7: and its quiet days before a race, a course a race holds back (this one's definition isn't found, so it is one).
+    expect(tre.settings).toEqual({ days: ["Mon"], time: "19:30", everyWeeks: 2, from: "2026-05-11", quietDaysBeforeRace: 7 });
     expect(tre.why).toBe(
       "a course: a fixed sequence, each session written on its day. Change its days, time or rhythm (everyWeeks: its days every 1 to 4 weeks), ease its next session or pause it with change_plan (its planId); skip or move one session with adjust_plan",
     );

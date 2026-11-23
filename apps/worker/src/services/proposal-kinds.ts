@@ -155,10 +155,12 @@ export interface ProgrammeChangeOp {
 }
 
 /** The fields a plan change sets (plans with a purpose, Stage 1): the plan's own, as `PATCH /api/plans/:id` takes them; R1.6
- * a course's schedule too: its days, its time and its rhythm. */
-export const PLAN_CHANGE_FIELDS = ["purpose", "brief", "onEnd", "pausedUntil", "objectiveIds", "easeNext", "weekdays", "time", "everyWeeks", "cadenceFrom"] as const;
+ * a course's schedule too: its days, its time and its rhythm; R1.7 its quiet days before a race. */
+export const PLAN_CHANGE_FIELDS = ["purpose", "brief", "onEnd", "pausedUntil", "objectiveIds", "easeNext", "weekdays", "time", "everyWeeks", "cadenceFrom", "quietDaysBeforeRace"] as const;
 /** The fields of a course's schedule (R1.6): a change to any of them is placed again in its own request. */
 export const SCHEDULE_FIELDS = ["weekdays", "time", "everyWeeks", "cadenceFrom"] as const;
+/** The fields whose change moves a course's dates, so its card says where they fall (R1.7): its schedule and its quiet days. */
+export const PREVIEW_FIELDS = [...SCHEDULE_FIELDS, "quietDaysBeforeRace"] as const;
 export interface PlanChangeFields {
   purpose: string | null;
   brief: string | null;
@@ -176,6 +178,9 @@ export interface PlanChangeFields {
   everyWeeks: number;
   /** The Monday a course's rhythm counts from; null every week. */
   cadenceFrom: string | null;
+  /** A course's quiet days before a race as its settings store them (R1.7), 0 to 21; null for any other plan. A course a race
+   * doesn't hold back (`quietDaysOf`) keeps what it stores, unread. */
+  quietDaysBeforeRace: number | null;
 }
 
 /** A plan's editable fields as its `programs` row holds them: a missing ending is its kind's own (`defaultOnEnd`), a
@@ -206,6 +211,7 @@ export function planFieldsOfRow(row: {
     time: course?.time ?? null,
     everyWeeks: cadence.everyWeeks,
     cadenceFrom: cadence.from,
+    quietDaysBeforeRace: course?.quietDaysBeforeRace ?? null,
   };
 }
 
@@ -236,6 +242,11 @@ export interface PlanChangeOp {
   summary: string;
   /** What changes, a line each. */
   lines: string[];
+  /**
+   * R1.7: the card's computed lines about its dates (Next, the dates held back and why, Taken off), the last of `lines` —
+   * what an approve builds again and compares (m1). Absent on a card that says nothing of dates, and on one stored before R1.7.
+   */
+  preview?: string[];
   /** The day it was proposed for: today. */
   date: string;
   toolUseId: string;

@@ -192,7 +192,7 @@ describe('"Can we change TRE to be like every two weeks please", replayed', () =
       "Days Mon · Fri → Mon",
       "Every week → Every 2 weeks",
       "Next TRE Mon 25 May, then Mon 8 Jun",
-      "Comes off: Fri 15 May · Mon 18 May · Fri 22 May +1 more",
+      "Taken off: Fri 15 May · Mon 18 May · Fri 22 May +1 more",
     ]);
 
     const prefs = await loadPreferences(db, userId);

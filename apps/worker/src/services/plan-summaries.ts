@@ -80,6 +80,8 @@ export const planPatchSchema = z
       .refine(isLocalDate, { message: "must be a YYYY-MM-DD calendar date" })
       .nullable()
       .optional(),
+    /** A course's quiet days before a race (R1.7), 0 to 21: only a course a race holds back takes them (`quietDaysOf`). */
+    quietDaysBeforeRace: z.number().int().min(0).max(21).optional(),
   })
   .strict();
 export type PlanPatch = z.infer<typeof planPatchSchema>;

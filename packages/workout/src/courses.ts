@@ -30,6 +30,13 @@ export interface CourseDefinition {
    * still put one on. Absent, they go as any session does.
    */
   watch?: false;
+  /**
+   * False (R1.7): a race doesn't hold its sessions back. Quiet days before a race protect a taper from training load, and a
+   * calming practice (TRE, yoga, mobility, breath, posture) carries none, so its plan places on its days as ever, and its
+   * quiet days are none. Race day itself stays clear, as it does for every plan. Absent, the plan's `quietDaysBeforeRace`
+   * before the race are kept clear.
+   */
+  holdForRace?: false;
 }
 
 const TRE: CourseDefinition = {
@@ -44,6 +51,8 @@ const TRE: CourseDefinition = {
     "A fixed sequence: keep the order. The whole sequence for the first 10 sessions, then the floor alone is often enough. " +
     "Up to 3 sessions a week. If you still feel worse after 48 hours, above 6 out of 10, halve the next tremor.",
   disciplines: ["yoga"],
+  // A floor practice that lets the legs tremor: no training load for a race to protect a taper from.
+  holdForRace: false,
 };
 
 const POSTURE_NECK: CourseDefinition = {
@@ -61,6 +70,8 @@ const POSTURE_NECK: CourseDefinition = {
     "On a day the jaw or neck is up, ease the next session: it plays the short one.",
   disciplines: ["yoga"],
   watch: false,
+  // A few minutes of neck and posture work and breathing: no training load either.
+  holdForRace: false,
 };
 
 export const COURSES: Readonly<Record<string, CourseDefinition>> = { [TRE.id]: TRE, [POSTURE_NECK.id]: POSTURE_NECK };

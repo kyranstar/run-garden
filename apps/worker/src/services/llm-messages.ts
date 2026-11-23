@@ -257,9 +257,18 @@ export type MessagesResult = MessagesOk | MessagesFailure;
 const retryable = (reason: string, status?: number): MessagesFailure =>
   status === undefined ? { ok: false, kind: "retryable", reason } : { ok: false, kind: "retryable", reason, status };
 
-function failureForStatus(status: number): MessagesFailure {
+/**
+ * The gateway's words for a pinned call whose one provider can't serve it (R1.5's `only`; live, r1-5/F8.md): "No available
+ * providers match the 'only' filter: anthropic. …". Nothing was served and no provider tried.
+ */
+const ONLY_FILTER = /no available providers match the 'only' filter/i;
+
+function failureForStatus(status: number, detail = ""): MessagesFailure {
   if (status === 402) return { ok: false, kind: "out_of_credits", reason: OUT_OF_CREDITS_REASON, status: 402 };
   if (status === 408 || status === 429 || status >= 500) return retryable(`gateway_${status}`, status);
+  // R1.7 (F8): the `only` filter's 400 is the AI service not answering, not a request it refused: while Anthropic is unhealthy
+  // the gateway may drop it before routing, and a later step may find it back. The run says "didn't answer", and tries again.
+  if (status === 400 && ONLY_FILTER.test(detail)) return retryable("gateway_only_filter", status);
   return { ok: false, kind: "rejected", reason: `gateway_${status}`, status };
 }
 
@@ -366,7 +375,7 @@ async function post(
           detail: detail.slice(0, 600),
         }),
       );
-      return failureForStatus(response.status);
+      return failureForStatus(response.status, detail);
     }
 
     const contentType = response.headers.get("content-type") ?? "";

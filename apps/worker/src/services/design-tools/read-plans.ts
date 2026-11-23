@@ -46,6 +46,12 @@
  * days and goal, anything else's dates), a block a line already names by its id alone (fix round 1: so ten of every kind still
  * fit) — and `planId` reads any one plan in full. Courses come before programmes in the full list too, so they go short last.
  * Counted (`morePlans`) only past even that, the watch's plans first and a course's last, and past the per-kind cap of 20.
+ *
+ * WHY A COURSE'S DATE IS MISSING (R1.7: on 23 Nov a coach that couldn't see the race's quiet days told the owner 7 Dec was
+ * scheduled). While a race is near (HELD_BACK_DAYS), a course says which days before it it keeps clear (`raceQuiet`: from, to;
+ * "none" for one whose sessions carry no training load), said once beside the plans (`raceQuietNote`); and any course lists
+ * the dates of its rhythm a rule holds back — its pause, race day, the race's quiet days — each with the rule's code and the
+ * card's own words (`heldBack`). A course a race holds back lists its quiet days among its settings (change_plan's).
  */
 import { sql, type SQL } from "drizzle-orm";
 import { z } from "zod";
@@ -64,6 +70,7 @@ import {
   type PlanOnEnd,
   type ProgramKind,
   type TrainingLine,
+  type UserPreferences,
 } from "@rg/domain";
 import { lastPhaseOf, lineBlockOf, LOOSE_PLAN_ID_PREFIX, studioPlanEntryOf, studioPlanOnWatch } from "../coach-plans.js";
 import { STUDIO_PLAN_RETIRED } from "../studio-push.js";
@@ -73,6 +80,8 @@ import { answer, dayWords, isErr, parseInput, parsedArray, parsedJson, plural, R
 import { listRevisable, nullOriginWords, ORIGIN_WORDS } from "./read-plan.js";
 import { DAY_SHORT, daysWords } from "./change-programme.js";
 import { scheduleWords } from "./change-plan.js";
+import { HELD_BACK_DAYS, heldBackForModel, raceNameSql, rhythmHeldBack } from "../course-card.js";
+import { quietDaysOf } from "../program-slots.js";
 import { DISCIPLINE_WORD as PLAN_DISCIPLINE_WORD } from "../plan-summaries.js";
 
 /** A block that ended this many days ago or less is still listed. */
@@ -88,6 +97,19 @@ const SHAPE_WEEKS_MAX = 12;
 const KEY_SESSIONS_MAX = 4;
 
 const input = z.object({ planId: z.string().min(1).max(200).optional() }).strict();
+
+/** Held-back dates a course lists in full, at most; the rest are counted (`heldBackMore`). */
+const READ_HELD_BACK = 3;
+/** Said once beside the plans while a race is near and a course is listed (R1.7). */
+export const RACE_QUIET_NOTE =
+  "A race is near. A course's raceQuiet days before it are kept clear of its sessions; none: its sessions carry no training load, so none is held back for the race (race day itself is always kept clear). heldBack is each date held back by a rule, in the card's words: say that, never that the date is on.";
+
+/** The race as a read weighs it (R1.7): the preferences' race day, its name, and whether it is near enough to say. */
+interface RaceNear {
+  prefs: UserPreferences;
+  name: string | null;
+  near: boolean;
+}
 
 /** What a read says of the plans it lists in short (`otherPlans`). */
 export const OTHER_PLANS_NOTE =
@@ -258,7 +280,7 @@ interface Caring {
 }
 
 /** One plan as the model reads it, within `room`. */
-function planOf(r: Row, today: string, room: Room, caring: readonly Caring[], lineOf: ReadonlyMap<string, TrainingLine>): Record<string, unknown> {
+function planOf(r: Row, today: string, room: Room, caring: readonly Caring[], lineOf: ReadonlyMap<string, TrainingLine>, race: RaceNear): Record<string, unknown> {
   const out: Record<string, unknown> = { id: r.id, kind: KIND_WORDS[r.kind], name: nameIn(r.name, room) };
   if (r.discipline) out.discipline = r.discipline;
   out.status = r.status;
@@ -288,7 +310,25 @@ function planOf(r: Row, today: string, room: Room, caring: readonly Caring[], li
     const c = courseConfigSchema.safeParse(parsedJson(r.config) ?? {});
     if (c.success) {
       const { everyWeeks, from } = cadenceOf(c.data);
-      out.settings = { days: [...c.data.weekdays].sort((a, b) => a - b).map((d) => DAY_SHORT[d]), time: c.data.time, everyWeeks, ...(from ? { from } : {}) };
+      // R1.7: its quiet days before a race, only when a race holds it back (`quietDaysOf`).
+      const quiet = quietDaysOf(c.data);
+      out.settings = {
+        days: [...c.data.weekdays].sort((a, b) => a - b).map((d) => DAY_SHORT[d]),
+        time: c.data.time,
+        everyWeeks,
+        ...(from ? { from } : {}),
+        ...(quiet !== null ? { quietDaysBeforeRace: c.data.quietDaysBeforeRace } : {}),
+      };
+      const raceDate = race.prefs.raceDate;
+      if (race.near && raceDate) out.raceQuiet = quiet === null ? "none" : { from: addDays(raceDate, -quiet), to: raceDate };
+      // The dates of its rhythm a rule holds back, but one a session stays on (its next ones, as read).
+      const kept = new Set((parsedArray(r.next) as Array<{ date?: unknown }>).flatMap((n) => (typeof n.date === "string" ? [n.date] : [])));
+      const held = rhythmHeldBack(c.data, { today, pausedUntil: fields.pausedUntil, prefs: race.prefs, kept });
+      if (held.length > 0) {
+        const told = heldBackForModel(r.name, held, { pausedUntil: fields.pausedUntil, quietDays: quiet, raceName: race.name }).heldBack;
+        out.heldBack = told.slice(0, READ_HELD_BACK).map((h) => ({ ...h, line: untrusted(h.line) }));
+        if (held.length > READ_HELD_BACK) out.heldBackMore = held.length - READ_HELD_BACK;
+      }
     }
   }
   if (r.kind === "block") {
@@ -409,8 +449,16 @@ export const readPlans: DesignTool = {
           (select count(*) from ${programs} where ${programs.userId} = ${ctx.userId} and ${programs.kind} = 'adaptive' and ${programs.status} = 'active'),
           (select count(*) from ${programs} where ${programs.userId} = ${ctx.userId} and ${programs.kind} = 'course' and ${programs.status} = 'active' and ${programs.archivedAt} is null),
           (select count(*) from ${trainingPlans} where ${trainingPlans.userId} = ${ctx.userId} and ${trainingPlans.status} = 'active' and ${trainingPlans.archivedAt} is null))`,
+      // R1.7: the race's name, for a course's held-back words (course-card.ts).
+      raceName: raceNameSql(ctx.userId),
     });
     const today = athlete.today;
+    const raceDay = athlete.prefs.raceDate;
+    const race: RaceNear = {
+      prefs: athlete.prefs,
+      name: typeof extra.raceName === "string" ? extra.raceName : null,
+      near: raceDay !== null && raceDay >= today && raceDay <= addDays(today, HELD_BACK_DAYS),
+    };
     const caring = athlete.profiles.flatMap((p) => (p.care ? [{ profileId: p.id, care: p.care.block.label }] : []));
     const blocks = parsedArray(extra.blocks) as Row[];
     const studio = studioRowOf(extra.studio, today);
@@ -472,7 +520,7 @@ export const readPlans: DesignTool = {
     let plans: Array<Record<string, unknown>> = [];
     let linesData = linesFor(rooms[0]!);
     for (const room of rooms) {
-      plans = ordered.map((r) => planOf(r, today, room, caring, lineOf));
+      plans = ordered.map((r) => planOf(r, today, room, caring, lineOf, race));
       linesData = linesFor(room);
       if (sizeOf({ plans, ...linesData }) <= RESULT_BUDGET_BYTES) break;
     }
@@ -480,10 +528,13 @@ export const readPlans: DesignTool = {
     const inLines = new Set(shownLines.flatMap((l) => l.phases.map((ph) => ph.id)));
     let short: Row[] = [];
     let left = asked === undefined ? pastCap : 0;
+    // Said once while a race is near and a course is listed (R1.7).
+    const raceNote = race.near && ordered.some((r) => r.kind === "course") ? { raceQuietNote: RACE_QUIET_NOTE } : {};
     const dataOf = () => ({
       plans,
       ...(short.length > 0 ? { otherPlans: shortGroups(short, inLines), otherPlansNote: OTHER_PLANS_NOTE } : {}),
       ...(left > 0 ? { morePlans: left } : {}),
+      ...raceNote,
       ...linesData,
     });
     while (plans.length > 0 && sizeOf(dataOf()) > RESULT_BUDGET_BYTES) {

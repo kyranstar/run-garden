@@ -249,7 +249,7 @@ describe("through the coach's change_plan, and its approve", () => {
     expect(op.base).toEqual({ weekdays: [0, 4], everyWeeks: 1, cadenceFrom: null });
     expect(op.title).toBe("TRE: new days and rhythm");
     // The next two (fix round 2), and every placed session it takes off: Friday's, and next week's two.
-    expect(op.lines).toEqual(["Days Mon · Fri → Mon", "Every week → Every 2 weeks", "Next TRE Mon 5 Oct, then Mon 19 Oct", "Comes off: Fri 9 Oct · Mon 12 Oct · Fri 16 Oct"]);
+    expect(op.lines).toEqual(["Days Mon · Fri → Mon", "Every week → Every 2 weeks", "Next TRE Mon 5 Oct, then Mon 19 Oct", "Taken off: Fri 9 Oct · Mon 12 Oct · Fri 16 Oct"]);
     expect(op.summary).toBe("Mon · every 2 weeks · 18:15 · Ending: Continue");
     expect((res.data as { lines: string[] }).lines).toEqual(op.lines);
     // Nothing is written until the athlete approves.

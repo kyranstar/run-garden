@@ -160,6 +160,19 @@ describe("TRE's words and videos", () => {
   });
 });
 
+describe("which courses a race holds back (R1.7)", () => {
+  // Quiet days before a race protect a taper from training load. A calming practice carries none, so a race holds none of
+  // its sessions back: the definition says so in its own flag, never by its name.
+  it("TRE and Posture & neck carry no training load: a race doesn't hold them back", () => {
+    expect(courseDefinition("tre")!.holdForRace).toBe(false);
+    expect(courseDefinition("posture-neck")!.holdForRace).toBe(false);
+  });
+
+  it("the flag is false or absent, never true: absent, a race's quiet days hold the course back", () => {
+    for (const course of COURSE_LIST) expect([false, undefined]).toContain(course.holdForRace);
+  });
+});
+
 describe.each(COURSE_LIST.map((c) => [c.id, c] as const))("every course: %s", (_id, course) => {
   it.each(SESSIONS)("session %i judges clean under the condition profile, eased or not", (n) => {
     for (const ease of [false, true]) {

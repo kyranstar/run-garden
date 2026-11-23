@@ -144,7 +144,11 @@ const BEFORE = { tools: 34_935, shared: 20_450, main: 4_586 };
  * from, change_programme's everyWeeks and from, read_plans' planId and description (tools 48,279 → 49,087); the main block's
  * three sentences — a course's schedule and a rhythm's words, no promise no tool keeps, today's session first (8,423 →
  * 9,120); shared unchanged (30,037) — grown 26,745 → 28,273; held with 187 characters (~53 tokens) of headroom. */
-const GROWTH_MAX_CHARS = 28_460;
+/* REBASED R1.7 (why a course's date is held back; calm courses; a course's quiet days): change_plan's quietDaysBeforeRace and
+ * its description's "or quiet days before a race" (tools 49,068 → 49,287); the main block's two sentences — the card's computed
+ * lines are the truth about dates, and say who makes a change (9,108 → 9,481); shared unchanged (30,037) — grown 28,242 →
+ * 28,834; held with 186 characters (~53 tokens) of headroom. */
+const GROWTH_MAX_CHARS = 29_020;
 
 const toolsSent = () => JSON.stringify(allTools().map((t) => ({ name: t.name, description: t.description, input_schema: t.inputSchema })));
 

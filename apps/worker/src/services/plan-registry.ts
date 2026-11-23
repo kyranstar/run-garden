@@ -25,6 +25,7 @@ import { runAtomically, type Db } from "./db.js";
 import { blockDisciplinesSql, planDraftsSql, planLastDaySql, PROMPT_KIND_LIST } from "./plan-ending.js";
 import { planStoppedIfNoBlockLeft } from "./plan-status.js";
 import { planFieldsOfRow, SCHEDULE_FIELDS } from "./proposal-kinds.js";
+import { quietDaysOf } from "./program-slots.js";
 import { studioPlanRetired } from "./studio-push.js";
 import { DISCIPLINE_WORD, draftFactsOf, endingRowOf, isPlanKind, lineKeysByPlan, planPatchSchema, planSummaryOf, plansSuperseded, PLAN_KINDS, type PlanPatch, type PlanSummaryDto } from "./plan-summaries.js";
 
@@ -331,8 +332,19 @@ export async function listPlans(db: Db, userId: string, today: string, o: { draf
   return shaped.map((r) => planSummaryOf(r, keys, today, superseded));
 }
 
+/** A plan as an edit left it (R1.7): what PATCH's answer reads a course's held-back dates from, with no read more. */
+export interface PatchedPlan {
+  id: string;
+  name: string;
+  kind: string;
+  status: string;
+  disciplines: string[];
+  pausedUntil: string | null;
+  config: unknown;
+}
+
 export type PlanPatchResult =
-  | { ok: true; changed: string[] }
+  | { ok: true; changed: string[]; plan?: PatchedPlan }
   | { ok: false; error: "not_found" }
   | { ok: false; error: "restore_in_progress" }
   | { ok: false; error: "invalid"; issues: Array<{ path: Array<string | number>; message: string }> };
@@ -340,11 +352,14 @@ export type PlanPatchResult =
 /** Why a programme's days or rhythm are refused here, and anything else's (R1.6): a course's alone change on its plan. */
 export const NOT_A_COURSE_PROGRAMME = "a programme's days are its own settings (PATCH /api/programs/:id), and a programme runs every week: only a course's days, time and rhythm change here";
 export const NOT_A_COURSE = "only a course's days, time and rhythm change here";
+/** R1.7: quiet days before a race are a course's, and only one a race holds back takes them. */
+export const QUIET_NOT_A_COURSE = "quiet days before a race are set on a course alone";
+export const QUIET_CALM_COURSE = "this course isn't held back before a race: its sessions carry no training load";
 
 /** A course's editable settings as they read (easing and schedule): the change's own terms. */
 function courseFields(raw: unknown) {
   const f = planFieldsOfRow({ kind: "course", disciplines: [], purpose: null, brief: null, onEnd: null, pausedUntil: null, objectiveIds: [], config: raw });
-  return { easeNext: f.easeNext, weekdays: f.weekdays, time: f.time, everyWeeks: f.everyWeeks, cadenceFrom: f.cadenceFrom };
+  return { easeNext: f.easeNext, weekdays: f.weekdays, time: f.time, everyWeeks: f.everyWeeks, cadenceFrom: f.cadenceFrom, quietDaysBeforeRace: f.quietDaysBeforeRace };
 }
 
 /**
@@ -352,9 +367,9 @@ function courseFields(raw: unknown) {
  * rhythm of every week writes neither of its keys (`withCadence`); a longer one counts from `cadenceFrom`'s Monday; else the
  * same rhythm keeps the anchor it has; else (fix round 2) a new one counts from `cadenceAnchor`'s week: this week while a
  * session of the plan is still to come in it (`toCome`), else the week of its latest done session (`lastDone`), else the week
- * of its next day. Null asks for that anew.
+ * of its next day. Null asks for that anew. R1.7: an approve builds a card's dates again from it (design-approve.ts, m1).
  */
-function courseConfigWith(
+export function courseConfigWith(
   raw: unknown,
   p: PlanPatch,
   today: string,
@@ -366,6 +381,11 @@ function courseConfigWith(
   if (p.easeNext !== undefined) c.easeNext = p.easeNext;
   if (p.weekdays !== undefined) c.weekdays = [...p.weekdays].sort((a, b) => a - b);
   if (p.time !== undefined) c.time = p.time;
+  if (p.quietDaysBeforeRace !== undefined) {
+    // R1.7: a course a race doesn't hold back has no quiet days to set (`quietDaysOf`).
+    if (quietDaysOf(stored.data) === null) return { ok: false, path: "quietDaysBeforeRace", message: QUIET_CALM_COURSE };
+    c.quietDaysBeforeRace = p.quietDaysBeforeRace;
+  }
   if (p.everyWeeks !== undefined || p.cadenceFrom !== undefined) {
     const was = cadenceOf(stored.data);
     const n = p.everyWeeks ?? was.everyWeeks;
@@ -380,6 +400,20 @@ function courseConfigWith(
     return { ok: false, path: String(issue?.path[0] ?? "config"), message: issue?.message ?? "the course's settings don't read" };
   }
   return { ok: true, config: merged.data };
+}
+
+/**
+ * What a new rhythm's default anchor reads beside a plan's row (fix round 2), as columns of the statement that reads it: the day
+ * of its latest done session of its own (`lastDone`), and whether this week still holds one of its sessions to come (`toCome`).
+ */
+export function anchorFactColumns(today: string) {
+  const sunday = addDays(startOfIsoWeek(today), 6);
+  return {
+    lastDone: sql<string | null>`(select max(d.effective_date) from planned_workouts d where d.user_id = programs.user_id and d.plan_id = programs.id and d.course_session is not null and d.completion_state = 'completed')`,
+    toCome: sql<number>`exists (select 1 from planned_workouts d where d.user_id = programs.user_id and d.plan_id = programs.id
+        and (d.origin = 'program' or d.course_session is not null) and d.archived_at is null and d.completion_state = 'scheduled'
+        and d.effective_date >= ${today} and d.effective_date <= ${sunday})`,
+  };
 }
 
 /**
@@ -398,15 +432,8 @@ export async function applyPlanPatch(db: Db, userId: string, id: string, patch: 
   if (await restoreInProgress(db, userId)) return { ok: false, error: "restore_in_progress" };
   // Where a new rhythm counts from (fix round 2), in the same statement: whether this week still holds one of its own sessions
   // to come, and the day of its latest done one, both as `courseSessionsDone` reads its own.
-  const sunday = addDays(startOfIsoWeek(today), 6);
   const [found] = await db
-    .select({
-      ...getTableColumns(programs),
-      lastDone: sql<string | null>`(select max(d.effective_date) from planned_workouts d where d.user_id = programs.user_id and d.plan_id = programs.id and d.course_session is not null and d.completion_state = 'completed')`,
-      toCome: sql<number>`exists (select 1 from planned_workouts d where d.user_id = programs.user_id and d.plan_id = programs.id
-        and (d.origin = 'program' or d.course_session is not null) and d.archived_at is null and d.completion_state = 'scheduled'
-        and d.effective_date >= ${today} and d.effective_date <= ${sunday})`,
-    })
+    .select({ ...getTableColumns(programs), ...anchorFactColumns(today) })
     .from(programs)
     .where(and(eq(programs.id, id), eq(programs.userId, userId)))
     .limit(1);
@@ -420,9 +447,10 @@ export async function applyPlanPatch(db: Db, userId: string, id: string, patch: 
 
   let config = row.config;
   const scheduleGiven = SCHEDULE_FIELDS.filter((k) => p[k] !== undefined);
-  if (p.easeNext !== undefined || scheduleGiven.length > 0) {
+  if (p.easeNext !== undefined || scheduleGiven.length > 0 || p.quietDaysBeforeRace !== undefined) {
     if (kind !== "course") {
       if (p.easeNext !== undefined) return invalid("easeNext", "only a course can ease its next session");
+      if (scheduleGiven.length === 0) return invalid("quietDaysBeforeRace", QUIET_NOT_A_COURSE);
       return invalid(scheduleGiven[0]!, kind === "adaptive" ? NOT_A_COURSE_PROGRAMME : NOT_A_COURSE);
     }
     const merged = courseConfigWith(row.config, p, today, { lastDone, toCome: Number(toCome) === 1 });
@@ -446,9 +474,10 @@ export async function applyPlanPatch(db: Db, userId: string, id: string, patch: 
   if (config !== row.config) {
     const was = courseFields(row.config);
     const is = courseFields(config);
-    for (const k of ["easeNext", ...SCHEDULE_FIELDS] as const) if (JSON.stringify(was[k]) !== JSON.stringify(is[k])) changed.push(k);
+    for (const k of ["easeNext", ...SCHEDULE_FIELDS, "quietDaysBeforeRace"] as const) if (JSON.stringify(was[k]) !== JSON.stringify(is[k])) changed.push(k);
   }
-  if (changed.length === 0) return { ok: true, changed };
+  const plan: PatchedPlan = { id: row.id, name: row.name, kind: row.kind, status: row.status, disciplines: row.disciplines, pausedUntil: next.pausedUntil, config: next.config };
+  if (changed.length === 0) return { ok: true, changed, plan };
 
   await runAtomically(db, [
     db
@@ -457,7 +486,7 @@ export async function applyPlanPatch(db: Db, userId: string, id: string, patch: 
       .where(and(eq(programs.id, id), eq(programs.userId, userId))),
     (await planVersionInsert(db, id, next, changed, now)).insert,
   ]);
-  return { ok: true, changed };
+  return { ok: true, changed, plan };
 }
 
 /**
