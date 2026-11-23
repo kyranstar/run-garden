@@ -113,19 +113,34 @@ describe("withCadence: the keys written only when they say something", () => {
   });
 });
 
-// Fix round 1 (the review's MAJOR 2): the rhythm runs from the last session done, so "every 2 weeks" asked the day after one
-// puts the next two weeks after it, not one.
+// Fix round 2 (FIX2-RULINGS 2): (a) this week while it still holds one of the plan's sessions to come; else (b) the week of
+// its latest done session; else (c) the week of its next day from today.
 describe("cadenceAnchor: the week the rhythm counts from when nothing says", () => {
-  it("the week of the plan's latest done session", () => {
-    // Done Monday 23 Nov, asked Tuesday: that week, so every 2 weeks next falls on 7 Dec.
-    expect(cadenceAnchor("2026-11-24", "2026-11-23")).toBe("2026-11-23");
-    // Done Monday 7 Dec, asked Wednesday 9 Dec: every 3 weeks from that week.
-    expect(cadenceAnchor("2026-12-09", "2026-12-07")).toBe("2026-12-07");
-    // Done on a Friday: its week's Monday.
-    expect(cadenceAnchor("2026-11-24", "2026-11-20")).toBe("2026-11-16");
+  const MON = [0];
+  it("(a) this week, while a session of the plan is still to come in it", () => {
+    // Mon 23 Nov 08:00, today's still to do, last done 16 Nov: this week, so every 2 weeks is 23 Nov, then 7 Dec.
+    expect(cadenceAnchor({ today: "2026-11-23", days: MON, toCome: true, lastDone: "2026-11-16" })).toBe("2026-11-23");
+    // Asked on a Sunday with Sunday's to come, nothing done.
+    expect(cadenceAnchor({ today: "2026-11-29", days: [6], toCome: true, lastDone: null })).toBe("2026-11-23");
   });
-  it("none done: the current week", () => {
-    expect(cadenceAnchor("2026-11-22", null)).toBe("2026-11-16");
-    expect(cadenceAnchor("2026-11-25", null)).toBe("2026-11-23");
+  it("(b) else the week of the plan's latest done session", () => {
+    // Done Monday 23 Nov, asked Tuesday: that week, so every 2 weeks next falls on 7 Dec.
+    expect(cadenceAnchor({ today: "2026-11-24", days: MON, toCome: false, lastDone: "2026-11-23" })).toBe("2026-11-23");
+    // Done Monday 7 Dec, asked Wednesday 9 Dec: every 3 weeks from that week.
+    expect(cadenceAnchor({ today: "2026-12-09", days: MON, toCome: false, lastDone: "2026-12-07" })).toBe("2026-12-07");
+    // Done on a Friday: its week's Monday.
+    expect(cadenceAnchor({ today: "2026-11-24", days: [0, 4], toCome: false, lastDone: "2026-11-20" })).toBe("2026-11-16");
+  });
+  it("(c) none done and none to come: the week of its next day from today, today included", () => {
+    // Sunday 22 Nov, Mondays: tomorrow's week.
+    expect(cadenceAnchor({ today: "2026-11-22", days: MON, toCome: false, lastDone: null })).toBe("2026-11-23");
+    // Wednesday 25 Nov, Fridays: this week's Friday.
+    expect(cadenceAnchor({ today: "2026-11-25", days: [4], toCome: false, lastDone: null })).toBe("2026-11-23");
+    // Wednesday 25 Nov, Mondays and Tuesdays: next week's Monday.
+    expect(cadenceAnchor({ today: "2026-11-25", days: [0, 1], toCome: false, lastDone: null })).toBe("2026-11-30");
+    // Monday 23 Nov, Mondays: today's own week.
+    expect(cadenceAnchor({ today: "2026-11-23", days: MON, toCome: false, lastDone: null })).toBe("2026-11-23");
+    // Sunday 22 Nov, Sundays: today.
+    expect(cadenceAnchor({ today: "2026-11-22", days: [6], toCome: false, lastDone: null })).toBe("2026-11-16");
   });
 });

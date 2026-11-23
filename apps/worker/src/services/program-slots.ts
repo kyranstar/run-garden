@@ -21,7 +21,10 @@
  *     athlete moved to next week still counts for this one; skipped, done and removed slots count. That is what
  *     makes placement safe to run every hour: anything the athlete did to a slot is never undone or re-placed.
  *     The one exception is a slot this file retracted itself (`program_replaced`): it is not the athlete's, and
- *     a later edit that wants that day again brings the same row back.
+ *     a later edit that wants that day again brings the same row back. A course has one more (R1.6 fix round 2): a slot
+ *     skipped, missed or removed where it was planned, on a day the course no longer holds, is no session of its week — a
+ *     dropped day takes its skips with it, so a Friday skip agreed ahead doesn't fill a week that is Monday's alone. Done,
+ *     moved or still on the plan, it counts as ever: the athlete did it, or chose that day.
  *  2. THE WEEK'S GOAL goes on `preferredDays` in order, then the week's other days Monday → Sunday, never before
  *     today, one slot of this program per date. Two limits on a NEW slot (ruling 2a-R11): none on today once
  *     today's window has passed in the athlete's zone, and in THIS week only on the days a full week would use
@@ -90,6 +93,7 @@ import {
   cadenceOf,
   courseConfigSchema,
   EVERY_WEEKS_MAX,
+  isoWeekday,
   nowInstant,
   onWeek,
   startOfIsoWeek,
@@ -221,6 +225,15 @@ export function defaultDiscipline(program: Pick<ProgramRow, "disciplines">): "st
 /** A slot this file itself retracted — not something the athlete did, so it does not hold its week's place. */
 function retracted(r: WorkoutRow): boolean {
   return r.archivedAt !== null && r.archiveReason === "program_replaced";
+}
+
+/**
+ * Rule 1's exception for a course (R1.6 fix round 2, FIX2-RULINGS 1): skipped, missed or removed where it was planned, on a
+ * weekday the course no longer holds (`days`, 0 = Monday). Done, moved, or still on the plan, it isn't.
+ */
+function offDroppedDay(r: WorkoutRow, days: readonly number[]): boolean {
+  const off = r.archivedAt !== null || r.completionState !== "scheduled";
+  return off && r.completionState !== "completed" && r.effectiveDate === r.originalPlanDate && !days.includes(isoWeekday(r.originalPlanDate) - 1);
 }
 
 /** Whether a plan's pause (`programs.paused_until`, its last day) covers this date. */
@@ -461,7 +474,9 @@ function planSlots(rows: readonly WorkoutRow[], o: PlanInputs, flexibleIds: Read
     const beyond = week > placedWeeks;
     // A week its rhythm doesn't use (R1.6) wants none: its flexible slots go as a lowered goal's do (rules 3 and 4).
     const weekGoal = onWeek(monday, config) ? goal : 0;
-    const counted = rows.filter((r) => r.originalPlanDate >= monday && r.originalPlanDate <= sunday && !retracted(r));
+    const counted = rows.filter(
+      (r) => r.originalPlanDate >= monday && r.originalPlanDate <= sunday && !retracted(r) && !(o.isCourse && offDroppedDay(r, config.preferredDays)),
+    );
     const movable = new Map(counted.filter((r) => flexibleIds.has(r.id)).map((r) => [r.effectiveDate, r]));
     const need = Math.max(0, weekGoal - (counted.length - movable.size));
     const ranked = rankedDays(monday, config.preferredDays, o.isCourse);
@@ -527,7 +542,8 @@ export const PREVIEW_STATEMENTS = 2;
  * sessions move to …"): the dates of its live, scheduled sessions from today on, before and after. Rules 1–4 exactly
  * as a pass runs them, a pause included; the content refresh (rule 5) moves no session. An adaptive program's (change_programme)
  * or, R1.6, a course's (change_plan's days, time and rhythm: `kind` says which `config` is), by the rules `placementOf` gives it.
- * A course's also says its next few dates past the window (`beyond`, written nowhere either), by its days and rhythm alone.
+ * A course's also says its next few dates past the window (`beyond`, written nowhere either), by its days and rhythm, a day
+ * the athlete skipped, moved or removed ahead left out. `off` (fix round 2): the live, scheduled sessions the pass would take off.
  */
 export async function previewPlacement(
   db: Db,
@@ -537,7 +553,7 @@ export async function previewPlacement(
   today: string,
   prefs: UserPreferences,
   now: string,
-): Promise<{ before: string[]; after: string[]; beyond: string[] }> {
+): Promise<{ before: string[]; after: string[]; beyond: string[]; off: string[] }> {
   const course = program.kind === "course" ? (config as CourseConfig) : null;
   const pattern: SlotPattern = course ? coursePattern(course) : (config as AdaptiveConfig);
   const goal = program.status === "active" ? pattern.weeklyGoal : 0;
@@ -561,22 +577,28 @@ export async function previewPlacement(
   const after = [...live.filter((r) => !gone.has(r.id)).map((r) => r.effectiveDate), ...plan.toInsert, ...plan.toRevive.map((r) => r.originalPlanDate)]
     .filter((d) => d >= today)
     .sort();
-  if (!course || goal === 0) return { before, after, beyond: [] };
+  // A placed session the change takes off (fix round 2, the card's "Comes off"); a skipped one was off already.
+  const off = live.filter((r) => gone.has(r.id)).map((r) => r.effectiveDate).sort();
+  if (!course || goal === 0) return { before, after, beyond: [], off };
   // Past the window, the course's own days in the weeks its rhythm uses, the days held back left out: what the card's "Next"
   // line reads on, so a rhythm of a few weeks shows as one.
   const heldBack = heldBackDays({ pausedUntil: program.pausedUntil, quietDays: course.quietDaysBeforeRace, prefs });
   const beyond: string[] = [];
   const { lastSunday } = windowOf(today, pattern);
   const kept = new Set(after);
+  const byId = new Map(rows.map((r) => [r.id, r]));
   for (let monday = addDays(lastSunday, 1), weeks = 0; beyond.length < BEYOND_SHOWN && weeks < 4 * EVERY_WEEKS_MAX; monday = addDays(monday, 7), weeks++) {
     if (!onWeek(monday, pattern)) continue;
     for (const d of [...pattern.preferredDays].sort((a, b) => a - b)) {
       const date = addDays(monday, d);
-      // An outline a wider window placed there already is `after`'s.
-      if (!heldBack(date) && date !== prefs.raceDate && !kept.has(date)) beyond.push(date);
+      // An outline a wider window placed there already is `after`'s; a day the athlete skipped, moved or removed ahead is
+      // spoken for (fix round 2), as rule 2 holds it.
+      const holder = byId.get(slotId(program.id, date));
+      if (heldBack(date) || date === prefs.raceDate || kept.has(date) || (holder && !retracted(holder))) continue;
+      beyond.push(date);
     }
   }
-  return { before, after, beyond: beyond.slice(0, BEYOND_SHOWN) };
+  return { before, after, beyond: beyond.slice(0, BEYOND_SHOWN), off };
 }
 
 /** A course's dates past the window a preview names (`beyond`). */

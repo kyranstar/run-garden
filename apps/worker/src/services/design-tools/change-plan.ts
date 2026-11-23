@@ -5,11 +5,12 @@
  * (`pausedUntil`, its last day; null lifts it) and, for a course, whether its next session is eased.
  *
  * A COURSE'S SCHEDULE (R1.6): its days (`days`, by name), its time (`time`) and its rhythm (`everyWeeks`, 1 to 4, from the week
- * of `from`; else the same rhythm's own anchor; else, a new rhythm, the week of the plan's latest done session, or this week with
- * none — fix round 1, so the next falls a rhythm after the last). The card says each ("Days Mon · Fri → Mon",
- * "Time 19:30 → 07:30", "Every week → Every 2 weeks") and where the next sessions fall ("Next Evening practice Mon 23 Nov · Mon 7
- * Dec · Mon 21 Dec": placement's preview, written nowhere, then the rhythm past its window). Approved, the plan is placed again in the same
- * request. A programme's days and rhythm are change_programme's, and a refusal says so.
+ * of `from`; else the same rhythm's own anchor; else, a new rhythm, `cadenceAnchor`'s week — fix round 2: this week while a
+ * session of the plan is still to come in it, else the week of its latest done session, else the week of its next day). The
+ * card says each ("Days Mon · Fri → Mon", "Time 19:30 → 07:30", "Every week → Every 2 weeks"), where the next two sessions fall
+ * ("Next Evening practice Mon 23 Nov, then Mon 7 Dec": placement's preview, written nowhere, then the rhythm past its window)
+ * and each placed session it takes off ("Comes off: Mon 30 Nov"). Approved, the plan is placed again in the same request. A
+ * programme's days and rhythm are change_programme's, and a refusal says so.
  *
  * A SIBLING OF change_programme, NOT A KIND OF IT: change_programme edits an adaptive programme's days, goal and minutes
  * (the settings sheet's own fields, placed again); this edits what any plan says of itself, as `PATCH /api/plans/:id`
@@ -40,6 +41,7 @@ import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { accountState, coachPlans, coachProposals, objectives, plannedWorkouts, programs } from "@rg/database";
 import {
+  addDays,
   cadenceAnchor,
   clipWords,
   courseConfigSchema,
@@ -181,13 +183,21 @@ function namedWords(keys: readonly (keyof PlanChangeFields)[]): string {
   return words.length <= 1 ? (words[0] ?? "") : `${words.slice(0, -1).join(", ")} and ${words.at(-1)}`;
 }
 
-/** The card's "Next" line (R1.6): where a course's next sessions fall once its schedule changes — "Next Evening practice Mon
- * 23 Nov · Mon 7 Dec · Mon 21 Dec" — or null when they fall as they did. */
-const NEXT_SHOWN = 3;
-export function courseNextLine(name: string, before: readonly string[], ahead: readonly string[]): string | null {
+/** The card's "Next" line (R1.6; fix round 2, the next two, said whenever its schedule changes, as they fall after it):
+ * "Next Evening practice Mon 23 Nov, then Mon 7 Dec"; null with none ahead. */
+const NEXT_SHOWN = 2;
+export function courseNextLine(name: string, ahead: readonly string[]): string | null {
   const next = ahead.slice(0, NEXT_SHOWN);
-  if (next.length === 0 || sameValue(before.slice(0, NEXT_SHOWN), next)) return null;
-  return `Next ${name} ${next.map(dayLabel).join(" · ")}`;
+  return next.length === 0 ? null : `Next ${name} ${next.map(dayLabel).join(", then ")}`;
+}
+
+/** The card's "Comes off" line (fix round 2): each placed session the change takes off — "Comes off: Mon 30 Nov" — the first
+ * three by date and the rest counted ("… +4 more"); null when none does. A skipped one isn't placed: it was off already. */
+const OFF_SHOWN = 3;
+export function comesOffLine(off: readonly string[]): string | null {
+  if (off.length === 0) return null;
+  const more = off.length - OFF_SHOWN;
+  return `Comes off: ${off.slice(0, OFF_SHOWN).map(dayLabel).join(" · ")}${more > 0 ? ` +${more} more` : ""}`;
 }
 
 /** What a stored change answers. */
@@ -225,8 +235,10 @@ interface PlanRow {
   objectiveIds: unknown;
   config: unknown;
   archivedAt: string | null;
-  /** The day of its latest done session, or null: where a new rhythm counts from (fix round 1). */
+  /** The day of its latest done session of its own (`courseSessionsDone`'s), or null: where a new rhythm counts from. */
   lastDone: string | null;
+  /** The days its own sessions still to come sit on, about this week (fix round 2): whether this week holds one. */
+  toCome: unknown;
 }
 
 const idList = (xs: readonly string[]) => (xs.length ? sql.join(xs.map((x) => sql`${x}`), sql`, `) : sql`null`);
@@ -248,7 +260,11 @@ export const changePlan: DesignTool = {
       days: { type: "array", items: { type: "string" }, description: 'A course\'s days from now on: ["Mon", "Thu"].' },
       time: { type: "string", description: 'A course\'s time from now on, 24-hour "HH:MM".' },
       everyWeeks: { type: "integer", description: `A course's rhythm: its days every 1 to ${EVERY_WEEKS_MAX} weeks.` },
-      from: { type: "string", description: "YYYY-MM-DD in the first week of the rhythm; left out, the week of its next day." },
+      from: {
+        type: "string",
+        description:
+          "YYYY-MM-DD in the rhythm's first week. Left out, it counts from this week while a session of the plan is still to come in it, else from the week of the last one done, else from the week of its next day. Pass it when the athlete names a start, or wants a session already on the calendar to stay.",
+      },
       why: { type: "string", description: `Why, in one plain line the athlete reads on the card: ${capInWords(WHY_MAX)}.` },
     },
     required: ["planId", "why"],
@@ -278,11 +294,16 @@ export const changePlan: DesignTool = {
 
     const proposalId = designProposalId(mainRunId);
     const wantedIds = parsed.objectiveIds ?? [];
+    // The athlete's day is read in the same statement, so the sessions to come are read about it: a day either side.
+    const utcDay = ctx.now.toISOString().slice(0, 10);
     const { athlete, extra } = await readAthlete(ctx.db, ctx.userId, ctx.now, {
       plan: sql`(select json_object('id', pr.id, 'name', pr.name, 'kind', pr.kind, 'status', pr.status, 'disciplines', json(pr.disciplines), 'purpose', pr.purpose, 'brief', pr.brief,
           'onEnd', pr.on_end, 'pausedUntil', pr.paused_until, 'objectiveIds', json(case when json_valid(pr.objective_ids) then pr.objective_ids end),
           'config', json(pr.config), 'archivedAt', pr.archived_at,
-          'lastDone', (select max(d.effective_date) from ${plannedWorkouts} d where d.user_id = pr.user_id and d.plan_id = pr.id and d.completion_state = 'completed'))
+          'lastDone', (select max(d.effective_date) from ${plannedWorkouts} d where d.user_id = pr.user_id and d.plan_id = pr.id and d.course_session is not null and d.completion_state = 'completed'),
+          'toCome', json((select json_group_array(d.effective_date) from ${plannedWorkouts} d where d.user_id = pr.user_id and d.plan_id = pr.id
+            and (d.origin = 'program' or d.course_session is not null) and d.archived_at is null and d.completion_state = 'scheduled'
+            and d.effective_date between ${addDays(utcDay, -1)} and ${addDays(utcDay, 7)})))
         from ${programs} pr where pr.user_id = ${ctx.userId} and (pr.id = ${parsed.planId}
           or (json_valid(pr.source) and json_extract(pr.source, '$.studioPlanId') = ${parsed.planId})
           or pr.id = (select cp.program_id from ${coachPlans} cp where cp.id = ${parsed.planId} and cp.user_id = ${ctx.userId}))
@@ -350,8 +371,11 @@ export const changePlan: DesignTool = {
     if (parsed.from !== undefined && everyWeeks === 1) {
       return refuse("invalid_input", "from: every week counts from no day", "Give everyWeeks 2 to 4 with from, or leave from out.");
     }
-    // A rhythm counts from the week `from` names; else the same rhythm keeps the anchor it has; else (fix round 1) a new one
-    // counts from the week of the plan's latest done session, so the next falls a rhythm after it — this week, with none done.
+    // A rhythm counts from the week `from` names; else the same rhythm keeps the anchor it has; else (fix round 2) a new one
+    // counts from this week while a session of the plan is still to come in it, else the week of its latest done session, else
+    // the week of its next day.
+    const sunday = addDays(startOfIsoWeek(athlete.today), 6);
+    const toCome = parsedArray(plan.toCome).some((d) => typeof d === "string" && d >= athlete.today && d <= sunday);
     const cadenceFrom =
       everyWeeks === 1
         ? null
@@ -359,7 +383,7 @@ export const changePlan: DesignTool = {
           ? startOfIsoWeek(parsed.from)
           : everyWeeks === from.everyWeeks && from.cadenceFrom !== null
             ? from.cadenceFrom
-            : cadenceAnchor(athlete.today, plan.lastDone);
+            : cadenceAnchor({ today: athlete.today, days: weekdays, toCome, lastDone: plan.lastDone });
     const wanted: PlanChangeFields = {
       purpose: parsed.purpose === undefined ? from.purpose : parsed.purpose,
       brief: parsed.brief === undefined ? from.brief : parsed.brief,
@@ -382,7 +406,7 @@ export const changePlan: DesignTool = {
 
     // A course's new schedule: where its sessions would fall, by placement's own rules, written nowhere.
     const movesSchedule = changed.some((k) => (SCHEDULE_FIELDS as readonly string[]).includes(k));
-    let nextLine: string | null = null;
+    let nextLines: string[] = [];
     if (movesSchedule) {
       const stored = courseConfigSchema.safeParse(parsedJson(plan.config) ?? plan.config);
       const next = stored.success ? courseConfigSchema.safeParse(withCadence({ ...stored.data, weekdays, time: wanted.time ?? stored.data.time }, everyWeeks, cadenceFrom)) : null;
@@ -397,7 +421,7 @@ export const changePlan: DesignTool = {
           athlete.prefs,
           ctx.now.toISOString(),
         );
-        nextLine = courseNextLine(plan.name, preview.before, [...preview.after, ...preview.beyond].sort());
+        nextLines = [courseNextLine(plan.name, [...preview.after, ...preview.beyond].sort()), comesOffLine(preview.off)].filter((l): l is string => l !== null);
       }
     }
 
@@ -413,7 +437,7 @@ export const changePlan: DesignTool = {
       issues: [],
       title: planChangeTitle(plan.name, changed),
       summary: planChangeSummary(wanted, { schedule: movesSchedule }),
-      lines: [...planSettingLines(from, wanted), ...(nextLine ? [nextLine] : [])],
+      lines: [...planSettingLines(from, wanted), ...nextLines],
       date: athlete.today,
       toolUseId,
       ...(held ? { replaces: [...(held.replaces ?? []), held.toolUseId] } : {}),

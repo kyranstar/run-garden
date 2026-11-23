@@ -185,10 +185,15 @@ describe('"Can we change TRE to be like every two weeks please", replayed', () =
     expect(ops.filter((o) => o.kind === "plan_adjust")).toEqual([]);
     const op = ops[0] as PlanChangeOp;
     expect(op.planId).toBe(tre);
-    // Counted from the week of the last session done (Mon 11 May), so the next is two weeks after it.
+    // Counted from this week, the week of the last session done (Mon 11 May), so the next is two weeks after it.
     expect(op.change).toEqual({ weekdays: [0], everyWeeks: 2, cadenceFrom: "2026-05-11" });
-    // Then every other Monday; Mon 22 Jun is past the race's quiet days (13–20 Jun).
-    expect(op.lines).toEqual(["Days Mon · Fri → Mon", "Every week → Every 2 weeks", "Next TRE Mon 25 May · Mon 8 Jun · Mon 22 Jun"]);
+    // Then every other Monday (fix round 2: the next two), and what comes off: the Fridays, and the Monday between.
+    expect(op.lines).toEqual([
+      "Days Mon · Fri → Mon",
+      "Every week → Every 2 weeks",
+      "Next TRE Mon 25 May, then Mon 8 Jun",
+      "Comes off: Fri 15 May · Mon 18 May · Fri 22 May +1 more",
+    ]);
 
     const prefs = await loadPreferences(db, userId);
     const res = await approveDesignOps(db, userId, p! as never, { opIds: [op.id] }, { today: TODAY, now: NOW.toISOString(), prefs }, Number.POSITIVE_INFINITY);

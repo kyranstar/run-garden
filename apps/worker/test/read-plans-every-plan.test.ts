@@ -166,6 +166,47 @@ describe("read_plans with more plans than fit", () => {
     expect(r.data.morePlans).toBe(2);
   });
 
+  // RECHECK X8 and X9 (fix round 2): the order holds in full as in short, and past even the short form a course is the last
+  // kind counted away.
+  it("in full too, a course comes before a programme", async () => {
+    await course(TRE, "TRE", { weekdays: [0, 4] });
+    const r = ok((await read()).res);
+    const ids = r.data.plans.map((p) => p.id as string);
+    expect(ids).toContain(TRE);
+    expect(ids).toContain(programmeId);
+    expect(ids.indexOf(TRE)).toBeLessThan(ids.indexOf(programmeId));
+  });
+
+  it("past even the short form, the watch's plans are counted away first and every course is still named", async () => {
+    const long = (s: string) => `${s} ${"with a very long name ".repeat(3)}`.trim();
+    const pad = (n: number, c: string) => `${String(n).padStart(2, "0")}-${c.repeat(24)}`;
+    const courses: string[] = [];
+    for (let n = 0; n < 20; n++) {
+      const c = `course-many-${pad(n, "x")}`;
+      await course(c, long(`Course ${n}`), { weekdays: [0, 2, 4] });
+      courses.push(c);
+      await db.insert(schema.trainingPlans).values({
+        id: `tp-many-${pad(n, "y")}`, userId, sourcePlanId: `src-many-${n}`, name: long(`Watch plan ${n}`), startDate: day(30), endDate: "2026-12-31",
+        status: "active", createdAt: at(day(30)), updatedAt: at(day(30)),
+      });
+      // Nineteen beside the fixture's own: twenty, the read's cap for a kind.
+      if (n < 19) {
+        await db.insert(schema.programs).values({
+          id: `pg-many-${pad(n, "z")}`, userId, kind: "adaptive", name: long(`Programme ${n}`), status: "active", disciplines: ["strength"], onEnd: "continue",
+          config: adaptiveConfigSchema.parse({}), createdAt: at(day(60)), updatedAt: at(day(60)),
+        });
+      }
+    }
+    const r = ok((await read()).res);
+    expect(bytes(r)).toBeLessThanOrEqual(RESULT_BUDGET_BYTES);
+    expect(r.data.morePlans).toBeGreaterThan(0);
+    const named = new Set(namedIds(r));
+    expect(courses.filter((c) => !named.has(c))).toEqual([]);
+    // The watch's go first: none of them is named while a programme is counted away.
+    const watchNamed = [...named].filter((id) => id.startsWith("tp-many-")).length;
+    if (watchNamed > 0) expect([...named].filter((id) => id.startsWith("pg-many-")).length).toBe(19);
+  });
+
   it("read_plans {planId} gives that plan in full, whatever else there is", async () => {
     await crowded();
     const { res, count } = await read({ planId: TRE });

@@ -248,7 +248,8 @@ describe("through the coach's change_plan, and its approve", () => {
     expect(op.change).toEqual({ weekdays: [0], everyWeeks: 2, cadenceFrom: MON });
     expect(op.base).toEqual({ weekdays: [0, 4], everyWeeks: 1, cadenceFrom: null });
     expect(op.title).toBe("TRE: new days and rhythm");
-    expect(op.lines).toEqual(["Days Mon · Fri → Mon", "Every week → Every 2 weeks", "Next TRE Mon 5 Oct · Mon 19 Oct · Mon 2 Nov"]);
+    // The next two (fix round 2), and every placed session it takes off: Friday's, and next week's two.
+    expect(op.lines).toEqual(["Days Mon · Fri → Mon", "Every week → Every 2 weeks", "Next TRE Mon 5 Oct, then Mon 19 Oct", "Comes off: Fri 9 Oct · Mon 12 Oct · Fri 16 Oct"]);
     expect(op.summary).toBe("Mon · every 2 weeks · 18:15 · Ending: Continue");
     expect((res.data as { lines: string[] }).lines).toEqual(op.lines);
     // Nothing is written until the athlete approves.
@@ -281,7 +282,8 @@ describe("through the coach's change_plan, and its approve", () => {
     const p = await course();
     const ctx = await mainRun();
     ok(await changePlan.run(ctx, { planId: p, time: "07:30", why: "Mornings suit you better." }));
-    expect((await opOf(ctx)).lines).toEqual(["Time 18:15 → 07:30"]);
+    // A schedule change says the next two (fix round 2), however it moves them; nothing comes off.
+    expect((await opOf(ctx)).lines).toEqual(["Time 18:15 → 07:30", "Next TRE Mon 5 Oct, then Fri 9 Oct"]);
     const id = designProposalId(ctx.run.id);
     await db.update(coachProposals).set({ status: "pending" }).where(eq(coachProposals.id, id));
     await approveAll(id);
@@ -311,15 +313,20 @@ describe("through the coach's change_plan, and its approve", () => {
     });
   }
 
-  // Fix round 1 (the review's MAJOR 2): a new rhythm counts from the week of the latest done session; the same rhythm keeps its
-  // own anchor.
-  it("a new rhythm with no from counts from the week of the plan's latest done session", async () => {
+  // Fix round 1 (the review's MAJOR 2), ordered in fix round 2: a new rhythm counts from this week while a session is still to
+  // come in it, else from the week of the latest done session; the same rhythm keeps its own anchor.
+  it("a new rhythm with no from: this week while a session is to come in it, else the week of the plan's latest done session", async () => {
     const p = await course();
     await doneOn(p, day(-1, 4));
     await doneOn(p, day(-2, 0));
     const ctx = await mainRun();
     ok(await changePlan.run(ctx, { planId: p, days: ["Mon"], everyWeeks: 2, why: "Every two weeks." }));
-    expect((await opOf(ctx)).change).toEqual({ weekdays: [0], everyWeeks: 2, cadenceFrom: day(-1, 0) });
+    expect((await opOf(ctx)).change).toEqual({ weekdays: [0], everyWeeks: 2, cadenceFrom: MON });
+    // This week's two skipped: none is to come in it, so the last done's week.
+    for (const d of [MON, day(0, 4)]) await db.update(plannedWorkouts).set({ completionState: "skipped", resolutionDate: MON }).where(eq(plannedWorkouts.id, slotId(p, d)));
+    const again = await mainRun();
+    ok(await changePlan.run(again, { planId: p, days: ["Mon"], everyWeeks: 2, why: "Every two weeks." }));
+    expect((await opOf(again)).change).toEqual({ weekdays: [0], everyWeeks: 2, cadenceFrom: day(-1, 0) });
   });
 
   it("the same rhythm keeps its anchor: new days alone, or the rhythm named again with them", async () => {

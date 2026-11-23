@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { daysBetween, isLocalDate, isoWeekday, startOfIsoWeek } from "./time.js";
+import { addDays, daysBetween, isLocalDate, isoWeekday, startOfIsoWeek } from "./time.js";
 
 // Programs: the one registry of plans (one-workout-system spec §8.1, Phase 1 spec §6). `programs.config` and
 // `program_blocks.intent` are JSON columns; these are what they hold.
@@ -126,12 +126,18 @@ export function withCadence<T extends object>(config: T, everyWeeks: number, fro
 }
 
 /**
- * The Monday a new rhythm counts from when nothing says (fix round 1, the review's MAJOR 2): the week of the plan's latest done
- * session, so the next one falls a rhythm after it ("every 2 weeks" the day after Monday's session: the Monday two weeks on);
- * none done, the current week.
+ * The Monday a new rhythm counts from when nothing says (fix round 2, FIX2-RULINGS 2), in this order:
+ *  (a) this week, while it still holds one of the plan's sessions to come (`toCome`: today or later, neither done nor
+ *      skipped), so asking on a session's own morning keeps it and the next falls a rhythm on;
+ *  (b) else the week of the plan's latest done session of its own (`lastDone`, as `courseSessionsDone` counts them), so the
+ *      next falls a rhythm after the last ("every 2 weeks" the day after Monday's session: the Monday two weeks on);
+ *  (c) else, none done, the week of its next day (`days`, 0 = Monday) from today, today included.
  */
-export function cadenceAnchor(today: string, lastDone: string | null): string {
-  return startOfIsoWeek(lastDone ?? today);
+export function cadenceAnchor(a: { today: string; days: readonly number[]; toCome: boolean; lastDone: string | null }): string {
+  if (a.toCome) return startOfIsoWeek(a.today);
+  if (a.lastDone !== null) return startOfIsoWeek(a.lastDone);
+  const ahead = [0, 1, 2, 3, 4, 5, 6].find((i) => a.days.includes(isoWeekday(addDays(a.today, i)) - 1)) ?? 0;
+  return startOfIsoWeek(addDays(a.today, ahead));
 }
 
 /**

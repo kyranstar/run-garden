@@ -199,11 +199,14 @@ describe("the window reaches the next session", () => {
   });
 });
 
-// Fix round 1 (the review's MAJOR 2): with no `from`, a new rhythm counts from the week of the plan's latest done session, so
-// the next falls a rhythm after it; none done, the current week. The same rhythm keeps its own anchor. The review's two probes.
+// Fix round 1 (the review's MAJOR 2), ordered in fix round 2: with no `from`, a new rhythm counts from this week while a session
+// of the plan is still to come in it, else the week of its latest done session, so the next falls a rhythm after it, else the
+// week of its next day. The same rhythm keeps its own anchor. The review's two probes. More in course-cadence-owner.test.ts.
 describe("where a new rhythm counts from when nothing says (PATCH /api/plans/:id's applyPlanPatch)", () => {
   const noon = (d: string) => `${d}T20:00:00.000Z`;
-  const done = (id: string) => db.update(plannedWorkouts).set({ completionState: "completed", resolutionDate: MON }).where(eq(plannedWorkouts.id, id));
+  /** A slot done: written as its course session on its day (`course-sessions.ts`), then completed. */
+  const done = (id: string) =>
+    db.update(plannedWorkouts).set({ completionState: "completed", resolutionDate: MON, origin: "studio", courseSession: 1 }).where(eq(plannedWorkouts.id, id));
 
   it("Monday's session done, every 2 weeks asked on Tuesday: the next is two weeks after it, not one", async () => {
     const p = await seedCourse({ weekdays: [0] });
@@ -228,11 +231,14 @@ describe("where a new rhythm counts from when nothing says (PATCH /api/plans/:id
     expect((await liveDates(p)).filter((d) => d > dec9)).toEqual([day(5, 0)]);
   });
 
-  it("none done: the current week", async () => {
+  it("none done and none placed: the week of its next day (Friday's, this week; Monday's, the next)", async () => {
     const p = await seedCourse({ weekdays: [0, 4] });
     const wed = day(0, 2);
     expect((await applyPlanPatch(db, userId, p, { everyWeeks: 2 }, noon(wed), wed)).ok).toBe(true);
     expect(await configOf(p)).toMatchObject({ everyWeeks: 2, cadenceFrom: MON });
+    const q = await seedCourse({ weekdays: [0] });
+    expect((await applyPlanPatch(db, userId, q, { everyWeeks: 2 }, noon(wed), wed)).ok).toBe(true);
+    expect(await configOf(q)).toMatchObject({ everyWeeks: 2, cadenceFrom: day(1, 0) });
   });
 
   /** A session of the plan done on `date`. */

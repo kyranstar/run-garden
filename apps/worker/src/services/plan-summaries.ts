@@ -72,7 +72,9 @@ export const planPatchSchema = z
     time: courseConfigFields.shape.time.optional(),
     /** A course's rhythm: its days every 1 to 4 weeks. */
     everyWeeks: z.number().int().min(1).max(EVERY_WEEKS_MAX).optional(),
-    /** The day its rhythm counts from, put on that week's Monday; null or left out with a new rhythm: the week of its next day. */
+    /** The day its rhythm counts from, put on that week's Monday. Null, or left out with a new rhythm: this week while a session
+     * of the plan is still to come in it, else the week of the last one done, else the week of its next day (`cadenceAnchor`).
+     * Pass it when the athlete names a start, or wants a session already on the calendar to stay. */
     cadenceFrom: z
       .string()
       .refine(isLocalDate, { message: "must be a YYYY-MM-DD calendar date" })
