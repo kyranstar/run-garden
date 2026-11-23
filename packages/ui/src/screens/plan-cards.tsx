@@ -4,7 +4,7 @@ import { phaseWeekOf, planEnded } from "@rg/domain";
 import { formatShortDate, type Units } from "../components.js";
 import { ProgramSettingsSheet } from "../components/program-settings-sheet.js";
 import { CourseSheet } from "./plan-sheet.js";
-import { courseRowState } from "./plan-words.js";
+import { courseRowState, courseScheduleWords } from "./plan-words.js";
 import { useCoach } from "./studio/coach-ask.js";
 
 const KM_PER_MI = 1.609344;
@@ -229,6 +229,8 @@ export function YourPlans({
           <span className="plan-row-name">{name}</span>
           <span className="plan-row-state">{says}</span>
           {goal && !isPast ? <span className="plan-row-state plan-row-goal">{goal}</span> : null}
+          {/* A course's days, rhythm and time (R1.6), the server's, under its state. */}
+          {e.kind === "course" && courseScheduleWords(e.plan) ? <span className="plan-row-state plan-row-schedule">{courseScheduleWords(e.plan)}</span> : null}
         </button>
         {prompt ? (
           <button type="button" className="plan-row-prompt" onClick={() => (prompt.kind === "draft_ready" ? coach?.open() : coach?.open({ request: prompt.request }))}>

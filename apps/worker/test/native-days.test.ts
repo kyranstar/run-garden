@@ -498,6 +498,26 @@ describe("parity: /days' trimmed fields are the plan read's, byte for byte", () 
   });
 });
 
+// ── A course every few weeks (R1.6): LifeOS reads the slot rows, so it needs no change ───────────────────────────
+
+describe("a course every 2 weeks, as LifeOS reads it (R1.6)", () => {
+  it("/days and the plan read hold its sessions on the weeks its rhythm uses, and none between", async () => {
+    const p = await course(w.db, w.userId, { weekdays: [0], everyWeeks: 2, cadenceFrom: T, placementWeeksAhead: 2 });
+    const to = addDays(T, 13);
+    const body = await ok(T, to);
+    const courseDays = (ds: Array<Record<string, any>>) => ds.filter((d) => d.sessions.some((s: { id: string }) => s.id.startsWith(`slot-${p}-`))).map((d) => d.date);
+    // This Monday and the Monday two weeks on; next Monday, the week between, holds none.
+    expect(courseDays(body.days)).toEqual([T]);
+    expect(sessionOf(body, slotId(p, addDays(T, 7)))).toBeUndefined();
+    const plan = await w.call("GET", `/api/lifeos/plan?from=${T}&to=${to}`, { bearer: PLAN_TOKEN, cookie: false });
+    expect(plan.status, plan.text).toBe(200);
+    expect(courseDays((plan.json as { days: Array<Record<string, any>> }).days)).toEqual([T]);
+    // The next on week, the horizon's last day, is placed all the same.
+    const later = await ok(addDays(T, 14), addDays(T, 14));
+    expect(courseDays(later.days)).toEqual([addDays(T, 14)]);
+  });
+});
+
 // ── The gate, the restore, the switch ───────────────────────────────────────────────────────────────────────────
 
 describe("the gate", () => {

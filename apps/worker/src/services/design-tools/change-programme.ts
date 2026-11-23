@@ -19,9 +19,14 @@
  *
  * REFUSED, each teachable, nothing written: a role other than the main coach's (`not_for_role`); no setting given, or
  * one the sheet would not take — a day that isn't one, a goal past 1–7, minutes past 10–90, a block past 4–6 weeks, no
- * mode, a care that isn't a switched-on condition's (`invalid_input`); a programme that isn't the athlete's adaptive
- * one (`not_your_programme`) or is retired (`not_running`); settings it already has (`no_change`); a proposal already
- * with the athlete (`proposal_pending`) or closed; a restore under way.
+ * mode, a care that isn't a switched-on condition's, a rhythm past 1–4 weeks (`invalid_input`); a plan of the athlete's that
+ * is no programme, a course above all, said for what it is with the tool that changes it (`not_a_programme`: R1.6, after a
+ * course's refusal read as "not one of the athlete's"); an id that isn't the athlete's (`not_your_programme`) or is retired
+ * (`not_running`); settings it already has (`no_change`); a proposal already with the athlete (`proposal_pending`) or
+ * closed; a restore under way.
+ *
+ * ITS RHYTHM (R1.6, the twin of a course's): `everyWeeks` 1 to 4 from the week of `from` (else its anchor, else the week of
+ * its next day): its weekly goal in the weeks the rhythm uses, none between ("Every week → Every 2 weeks").
  *
  * Statements: the athlete with the programme, the proposal and the restore marker (one read); the preview's (the
  * programme's slots, and its touched lookup); the proposal's guarded upsert.
@@ -29,13 +34,14 @@
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { accountState, coachProposals, programs } from "@rg/database";
-import { adaptiveConfigSchema, dayLabel, SESSION_MODES, type AdaptiveConfig } from "@rg/domain";
+import { adaptiveConfigSchema, cadenceAnchor, dayLabel, EVERY_WEEKS_MAX, isLocalDate, SESSION_MODES, startOfIsoWeek, withCadence } from "@rg/domain";
 import { OPEN_PROPOSAL_STATUSES } from "../design-review.js";
 import { clipProse } from "../design-prose.js";
 import { PREVIEW_STATEMENTS, previewPlacement } from "../program-slots.js";
 import {
   isProgrammeChangeOp,
   programmeChangeId,
+  programmeSettingsOf,
   PROGRAMME_SETTINGS,
   sameSetting,
   type ProgrammeChangeOp,
@@ -54,6 +60,8 @@ const DAY_FULL = ["monday", "tuesday", "wednesday", "thursday", "friday", "satur
 export const MODE_WORDS: Record<(typeof SESSION_MODES)[number], string> = { recovery: "Recovery", consistent: "Consistent", build: "Build" };
 /** The next sessions the card names. */
 const NEXT_SHOWN = 3;
+/** A plan of another kind, as the refusal names it. */
+const KIND_WORDS: Record<string, string> = { coach: "a coach plan", coros_import: "a watch plan", studio: "the Studio's plan" };
 
 const input = z
   .object({
@@ -64,9 +72,14 @@ const input = z
     blockWeeks: z.number().int().optional(),
     modes: z.array(z.string().max(20)).max(3).optional(),
     care: z.record(z.string().max(80), z.boolean()).optional(),
+    everyWeeks: z.number().int().optional(),
+    from: z.string().max(20).optional(),
     why: prose(WHY_MAX),
   })
   .strict();
+
+/** A rhythm in words: "Every week", "Every 2 weeks" (R1.6; a course's card says it too). */
+export const everyWords = (n: number): string => (n <= 1 ? "Every week" : `Every ${n} weeks`);
 
 /** A day's index from its name — "Tue", "tuesday", "Tues", "Weds", "th" — Monday 0; null for what isn't one day. */
 export function dayIndex(name: string): number | null {
@@ -97,6 +110,8 @@ export function settingLines(from: ProgrammeSettings, to: ProgrammeSettings, car
     const is = to.careProfiles.includes(id);
     if (was !== is) out.push(`${careLabel(id)} ${was ? "on" : "off"} → ${is ? "on" : "off"}`);
   }
+  if (from.everyWeeks !== to.everyWeeks) out.push(`${everyWords(from.everyWeeks)} → ${everyWords(to.everyWeeks)}`);
+  else if (from.cadenceFrom !== to.cadenceFrom && to.cadenceFrom !== null) out.push(`${everyWords(to.everyWeeks)}, counted from ${dayLabel(to.cadenceFrom)}`);
   return out;
 }
 
@@ -110,23 +125,19 @@ export function nextLine(before: readonly string[], after: readonly string[]): s
 
 /** The card's title: "Mobility: new days", "Mobility: new days and goal", "Mobility: new settings" (three or more). */
 export function programmeTitle(name: string, changed: readonly (keyof ProgrammeSettings)[]): string {
-  const WORD: Record<keyof ProgrammeSettings, string> = { preferredDays: "days", weeklyGoal: "goal", defaultMinutes: "length", blockWeeks: "block length", modes: "modes", careProfiles: "care" };
-  const order = PROGRAMME_SETTINGS.filter((k) => changed.includes(k)).map((k) => WORD[k]);
+  const WORD: Record<keyof ProgrammeSettings, string> = {
+    preferredDays: "days", weeklyGoal: "goal", defaultMinutes: "length", blockWeeks: "block length", modes: "modes", careProfiles: "care", everyWeeks: "rhythm", cadenceFrom: "rhythm",
+  };
+  const order = [...new Set(PROGRAMME_SETTINGS.filter((k) => changed.includes(k)).map((k) => WORD[k]))];
   const what = order.length === 1 ? order[0] : order.length === 2 ? `${order[0]} and ${order[1]}` : "settings";
   return `${name}: new ${what}`;
 }
 
-/** The new pattern in one line: "Tue · Thu · 2 a week · 30 min". */
-export const programmeSummary = (c: ProgrammeSettings): string => `${daysWords(c.preferredDays)} · ${c.weeklyGoal} a week · ${c.defaultMinutes} min`;
+/** The new pattern in one line: "Tue · Thu · 2 a week · 30 min"; R1.6 "Mon · Wed · 2 a week, every 2 weeks · 30 min". */
+export const programmeSummary = (c: ProgrammeSettings): string =>
+  `${daysWords(c.preferredDays)} · ${c.weeklyGoal} a week${c.everyWeeks > 1 ? `, every ${c.everyWeeks} weeks` : ""} · ${c.defaultMinutes} min`;
 
-const settingsOf = (c: AdaptiveConfig): ProgrammeSettings => ({
-  weeklyGoal: c.weeklyGoal,
-  preferredDays: c.preferredDays,
-  defaultMinutes: c.defaultMinutes,
-  blockWeeks: c.blockWeeks,
-  modes: c.modes,
-  careProfiles: c.careProfiles,
-});
+const settingsOf = programmeSettingsOf;
 
 /** What a stored change answers. */
 function storedAnswer(proposalId: string, op: ProgrammeChangeOp, o: { replaced?: boolean } = {}): ToolOk {
@@ -162,7 +173,8 @@ interface ProgrammeRow {
 
 export const changeProgramme: DesignTool = {
   name: "change_programme",
-  description: "The main coach: one change to a programme's settings (read_plans) — days, weekly goal, minutes, block length, modes, care — as one card. A second call for it replaces it.",
+  description:
+    "The main coach: one change to a programme's settings (read_plans) — days, weekly goal, rhythm (every 1 to 4 weeks), minutes, block length, modes, care — as one card. A second call for it replaces it.",
   inputSchema: {
     type: "object",
     properties: {
@@ -173,6 +185,8 @@ export const changeProgramme: DesignTool = {
       blockWeeks: { type: "integer", description: "4 to 6." },
       modes: { type: "array", items: { enum: [...SESSION_MODES] } },
       care: { type: "object", additionalProperties: { type: "boolean" }, description: '{ "<profileId>": false } turns a condition\'s care off.' },
+      everyWeeks: { type: "integer", description: `Its weekly goal every 1 to ${EVERY_WEEKS_MAX} weeks.` },
+      from: { type: "string", description: "YYYY-MM-DD in the first week of the rhythm; left out, the week of its next day." },
       why: { type: "string", description: `Why, in one plain line the athlete reads on the card: ${capInWords(WHY_MAX)}.` },
     },
     required: ["programmeId", "why"],
@@ -182,12 +196,12 @@ export const changeProgramme: DesignTool = {
   cpuWeight: 0.5,
   roles: ["main"],
   async run(ctx, raw) {
-    const parsed = parseAct(input, raw, "programmeId, the settings to change (days, weeklyGoal, minutes, blockWeeks, modes, care) and why");
+    const parsed = parseAct(input, raw, "programmeId, the settings to change (days, weeklyGoal, minutes, blockWeeks, modes, care, everyWeeks, from) and why");
     if (isErr(parsed)) return parsed;
     const mainRunId = mainRunIdOf(ctx);
     if (ctx.run.role !== "main" || !mainRunId) return refuse("not_for_role", "Only the main coach changes a programme.", "Say in your finish line what you would change.");
-    const given = (["days", "weeklyGoal", "minutes", "blockWeeks", "modes", "care"] as const).filter((k) => parsed[k] !== undefined);
-    if (given.length === 0) return refuse("invalid_input", "No setting to change.", "Name what changes: days, weeklyGoal, minutes, blockWeeks, modes or care.");
+    const given = (["days", "weeklyGoal", "minutes", "blockWeeks", "modes", "care", "everyWeeks", "from"] as const).filter((k) => parsed[k] !== undefined);
+    if (given.length === 0) return refuse("invalid_input", "No setting to change.", "Name what changes: days, weeklyGoal, minutes, blockWeeks, modes, care or everyWeeks.");
     // The sheet's own limits, said in its words, before anything is read.
     const wrong: string[] = [];
     const days = (parsed.days ?? []).map((d) => ({ d, i: dayIndex(d) }));
@@ -199,6 +213,8 @@ export const changeProgramme: DesignTool = {
     const modes = parsed.modes ?? [];
     for (const m of modes) if (!(SESSION_MODES as readonly string[]).includes(m)) wrong.push(`modes: ${JSON.stringify(m)} isn't a mode (${SESSION_MODES.join(", ")})`);
     if (parsed.modes !== undefined && modes.length === 0) wrong.push("modes: at least one");
+    if (parsed.everyWeeks !== undefined && (parsed.everyWeeks < 1 || parsed.everyWeeks > EVERY_WEEKS_MAX)) wrong.push(`everyWeeks: every 1 to ${EVERY_WEEKS_MAX} weeks`);
+    if (parsed.from !== undefined && !isLocalDate(parsed.from)) wrong.push(`from: ${JSON.stringify(parsed.from)} isn't a YYYY-MM-DD date`);
     if (wrong.length > 0) return refuse("invalid_input", wrong.join("; "), "Call it again with settings the programme's settings take.");
 
     const proposalId = designProposalId(mainRunId);
@@ -228,7 +244,22 @@ export const changeProgramme: DesignTool = {
       return refuse("restoring", "The athlete's account is being restored right now.", "Finish, and say the change can be asked for again once the restore is done.");
     }
     const programme = parsedJson(extra.programme) as ProgrammeRow | null;
-    if (!programme || programme.kind !== "adaptive") {
+    // The athlete's plan of another kind is theirs all the same: said so, with the lever that does change it (R1.6).
+    if (programme && programme.kind === "course") {
+      return refuse(
+        "not_a_programme",
+        `${JSON.stringify(programme.name)} is a course, not a programme.`,
+        `Change its days, time or rhythm (everyWeeks) with change_plan (planId ${JSON.stringify(programme.id)}); skip or move one session with adjust_plan.`,
+      );
+    }
+    if (programme && programme.kind !== "adaptive") {
+      return refuse(
+        "not_a_programme",
+        `${JSON.stringify(programme.name)} is ${KIND_WORDS[programme.kind] ?? "a plan"}, not a programme.`,
+        "Its words, ending or pause are change_plan's; its structure propose_plan's (a coach block); skip or move one session with adjust_plan.",
+      );
+    }
+    if (!programme) {
       return refuse("not_your_programme", `${JSON.stringify(parsed.programmeId)} isn't one of the athlete's programmes.`, "Use a programme id from read_plans (kind programme) — a block of yours is propose_plan's.");
     }
     if (programme.status !== "active") return refuse("not_running", `${programme.name} is ${programme.status}.`, "Say so in your finish line; the athlete starts a programme in Plan.");
@@ -243,22 +274,30 @@ export const changeProgramme: DesignTool = {
     const careProfiles = parsed.care
       ? [...current.careProfiles.filter((id) => parsed.care![id] !== false), ...Object.entries(parsed.care).filter(([id, on]) => on && !current.careProfiles.includes(id)).map(([id]) => id)]
       : current.careProfiles;
+    const from = settingsOf(current);
+    const preferredDays = parsed.days ? days.map((x) => x.i!).sort((a, b) => a - b) : current.preferredDays;
+    // Its rhythm (R1.6): from the week `from` names, else the anchor it has, else the week of its next day.
+    const everyWeeks = parsed.everyWeeks ?? from.everyWeeks;
+    if (parsed.from !== undefined && everyWeeks === 1) return refuse("invalid_input", "from: every week counts from no day", "Give everyWeeks 2 to 4 with from, or leave from out.");
+    const cadenceFrom = everyWeeks === 1 ? null : parsed.from !== undefined ? startOfIsoWeek(parsed.from) : (from.cadenceFrom ?? cadenceAnchor(athlete.today, preferredDays));
     const wanted: ProgrammeSettings = {
       weeklyGoal: parsed.weeklyGoal ?? current.weeklyGoal,
       // In week order, as the sheet saves them (placement fills them in that order).
-      preferredDays: parsed.days ? days.map((x) => x.i!).sort((a, b) => a - b) : current.preferredDays,
+      preferredDays,
       defaultMinutes: parsed.minutes ?? current.defaultMinutes,
       blockWeeks: parsed.blockWeeks ?? current.blockWeeks,
       // In the engine's order, whatever order they were named in.
       modes: parsed.modes ? SESSION_MODES.filter((m) => modes.includes(m)) : current.modes,
       careProfiles,
+      everyWeeks,
+      cadenceFrom,
     };
-    const from = settingsOf(current);
     const changed = PROGRAMME_SETTINGS.filter((k) => !sameSetting(k, from[k], wanted[k]));
     if (changed.length === 0) {
       return refuse("no_change", `${programme.name} already has ${programmeSummary(from)}${parsed.blockWeeks !== undefined ? `, ${from.blockWeeks}-week blocks` : ""}.`, "Change something it doesn't have — or, for one session, adjust_plan.");
     }
-    const next = adaptiveConfigSchema.safeParse({ ...current, ...wanted });
+    const { everyWeeks: _n, cadenceFrom: _f, ...plain } = wanted;
+    const next = adaptiveConfigSchema.safeParse(withCadence({ ...current, ...plain }, everyWeeks, cadenceFrom));
     if (!next.success) {
       return refuse("invalid_input", next.error.issues.slice(0, 3).map((i) => `${i.path.join(".")}: ${i.message}`).join("; "), "Call it again with settings the programme's settings take.");
     }

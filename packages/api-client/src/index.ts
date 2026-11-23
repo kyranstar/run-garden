@@ -2274,6 +2274,8 @@ export interface PlanSummaryDto {
   listedAs: string | null;
   /** A course's: where it has got to while it counts sessions, then its own words for what comes after; null otherwise. */
   course: { session: number; of: number } | { after: string } | null;
+  /** A course's days, time and rhythm (R1.6); absent for any other kind, and from an older server. */
+  schedule?: CourseScheduleDto;
   /**
    * What the plan asks today (the rule the "needs you" chip reads too): a line to show on its row. `whats_next`: a tap writes
    * its `request` in the coach's box. `draft_ready` (plans with a purpose §4.2: its next stretch waits for the athlete): a tap
@@ -2283,11 +2285,22 @@ export interface PlanSummaryDto {
   prompt: { kind: "whats_next" | "draft_ready"; label: string; request: string; note?: string } | null;
 }
 
+/** A course's schedule (R1.6): its days (0 = Monday, in week order), its 24-hour time, its days every `everyWeeks` weeks and, every
+ * 2 weeks or more, the Monday that rhythm counts from. */
+export interface CourseScheduleDto {
+  days: number[];
+  time: string;
+  everyWeeks: number;
+  from: string | null;
+}
+
 export interface PlansResponse {
   plans: PlanSummaryDto[];
 }
 
-/** `PATCH /api/plans/:id`: only what is sent changes; `null` clears a text or a pause; `easeNext` is a course's alone. */
+/** `PATCH /api/plans/:id`: only what is sent changes; `null` clears a text or a pause; `easeNext`, the days, the time and the
+ * rhythm are a course's alone (`cadenceFrom`: a day in the rhythm's first week; null or left out with a new rhythm, the week of
+ * its next day). */
 export interface PlanPatch {
   purpose?: string | null;
   brief?: string | null;
@@ -2295,6 +2308,10 @@ export interface PlanPatch {
   objectiveIds?: string[];
   pausedUntil?: string | null;
   easeNext?: boolean;
+  weekdays?: number[];
+  time?: string;
+  everyWeeks?: number;
+  cadenceFrom?: string | null;
 }
 
 export interface PlanSaveResponse {

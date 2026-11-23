@@ -1,7 +1,7 @@
 /** The words a plan's sheet says of it (plans with a purpose §4.3): pure shaping from a plan summary. Synthetic data. */
 import { describe, expect, it, vi } from "vitest";
 import type { PlanSummaryDto } from "@rg/api-client";
-import { changePlanRequest, courseRowState, planSheetWords, STOP_SENDS_MAX, stopInTurns, stopOutcomeWords } from "../src/screens/plan-words.js";
+import { changePlanRequest, courseRowState, courseScheduleWords, planSheetWords, STOP_SENDS_MAX, stopInTurns, stopOutcomeWords } from "../src/screens/plan-words.js";
 
 const plan = (over: Partial<PlanSummaryDto> = {}): PlanSummaryDto => ({
   id: "p1",
@@ -68,6 +68,25 @@ describe("courseRowState: where a course has got to, in the server's numbers and
   });
   it("one the server can't place says nothing: a definition gone", () => {
     expect(courseRowState(course({ course: null }))).toBe("");
+  });
+});
+
+describe("courseScheduleWords: a course's days, rhythm and time in a line (R1.6)", () => {
+  const course = (over: Partial<PlanSummaryDto>): PlanSummaryDto => plan({ kind: "course", ...over });
+  it("every 2 weeks: its days, the rhythm, its time", () => {
+    expect(courseScheduleWords(course({ schedule: { days: [0], time: "19:30", everyWeeks: 2, from: "2026-11-23" } }))).toBe("Mon · every 2 weeks · 19:30");
+    expect(courseScheduleWords(course({ schedule: { days: [1, 3], time: "07:00", everyWeeks: 4, from: "2026-11-23" } }))).toBe("Tue · Thu · every 4 weeks · 07:00");
+  });
+  it("every week says no rhythm: its days and its time", () => {
+    expect(courseScheduleWords(course({ schedule: { days: [0, 4], time: "19:30", everyWeeks: 1, from: null } }))).toBe("Mon · Fri · 19:30");
+  });
+  it("in week order, whatever order the server sent", () => {
+    expect(courseScheduleWords(course({ schedule: { days: [4, 0], time: "19:30", everyWeeks: 1, from: null } }))).toBe("Mon · Fri · 19:30");
+  });
+  it("nothing for a stopped course, for one with no schedule (an older server), or for any other plan", () => {
+    expect(courseScheduleWords(course({ status: "retired", schedule: { days: [0], time: "19:30", everyWeeks: 2, from: "2026-11-23" } }))).toBe("");
+    expect(courseScheduleWords(course({}))).toBe("");
+    expect(courseScheduleWords(plan({ schedule: { days: [0], time: "19:30", everyWeeks: 1, from: null } }))).toBe("");
   });
 });
 

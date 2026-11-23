@@ -39,6 +39,20 @@ export function courseRowState(plan: Pick<PlanSummaryDto, "status" | "course">):
   return "after" in c ? c.after : `Session ${c.session} of ${c.of}`;
 }
 
+const DAY_SHORT = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"] as const;
+
+/**
+ * A course's schedule in a line, on its row and its sheet (R1.6): its days in week order, its rhythm when it's longer than a
+ * week, and its time — "Mon · every 2 weeks · 19:30", "Mon · Fri · 19:30". The server's numbers, said here. Nothing for a
+ * stopped course (it has no schedule ahead of it), one an older server sent without one, or any other plan.
+ */
+export function courseScheduleWords(plan: Pick<PlanSummaryDto, "kind" | "status" | "schedule">): string {
+  const s = plan.schedule;
+  if (plan.kind !== "course" || plan.status === "retired" || !s) return "";
+  const days = [...s.days].sort((a, b) => a - b).map((d) => DAY_SHORT[d] ?? "");
+  return [...days, ...(s.everyWeeks > 1 ? [`every ${s.everyWeeks} weeks`] : []), s.time].filter(Boolean).join(" · ");
+}
+
 /**
  * The most sends one stop makes. A stop takes off one written session a request and its outlines a few at a time, so this leaves
  * room for a course's sessions ahead, and past it the hourly pass finishes the job (`course-plans.ts`).

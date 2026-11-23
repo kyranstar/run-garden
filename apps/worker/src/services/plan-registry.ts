@@ -1,12 +1,29 @@
 import { and, desc, eq, getTableColumns, inArray, isNull, sql } from "drizzle-orm";
 import { coachPlans, programs, programVersions, studioPlanPushes, trainingPlans } from "@rg/database";
-import { addDays, courseConfigSchema, defaultOnEnd, LINE_GAP_DAYS, PLAN_PROMPT_KINDS, linesOf, newId, nowInstant, onEndAllowed, type LineBlock, type ProgramKind } from "@rg/domain";
+import {
+  addDays,
+  cadenceAnchor,
+  cadenceOf,
+  courseConfigSchema,
+  defaultOnEnd,
+  LINE_GAP_DAYS,
+  PLAN_PROMPT_KINDS,
+  linesOf,
+  newId,
+  nowInstant,
+  onEndAllowed,
+  withCadence,
+  type CourseConfig,
+  type LineBlock,
+  type ProgramKind,
+} from "@rg/domain";
 import { sha256Hex } from "../auth/crypto.js";
 import { restoreInProgress } from "./account-state.js";
 import { isLoosePlan, lineBlockOf, loadNonCoachPlanEntries } from "./coach-plans.js";
 import { runAtomically, type Db } from "./db.js";
 import { blockDisciplinesSql, planDraftsSql, planLastDaySql, PROMPT_KIND_LIST } from "./plan-ending.js";
 import { planStoppedIfNoBlockLeft } from "./plan-status.js";
+import { planFieldsOfRow, SCHEDULE_FIELDS } from "./proposal-kinds.js";
 import { studioPlanRetired } from "./studio-push.js";
 import { DISCIPLINE_WORD, draftFactsOf, endingRowOf, isPlanKind, lineKeysByPlan, planPatchSchema, planSummaryOf, plansSuperseded, PLAN_KINDS, type PlanPatch, type PlanSummaryDto } from "./plan-summaries.js";
 
@@ -319,9 +336,47 @@ export type PlanPatchResult =
   | { ok: false; error: "restore_in_progress" }
   | { ok: false; error: "invalid"; issues: Array<{ path: Array<string | number>; message: string }> };
 
+/** Why a programme's days or rhythm are refused here, and anything else's (R1.6): a course's alone change on its plan. */
+export const NOT_A_COURSE_PROGRAMME = "a programme's days and rhythm are its own settings (PATCH /api/programs/:id): only a course's change here";
+export const NOT_A_COURSE = "only a course's days, time and rhythm change here";
+
+/** A course's editable settings as they read (easing and schedule): the change's own terms. */
+function courseFields(raw: unknown) {
+  const f = planFieldsOfRow({ kind: "course", disciplines: [], purpose: null, brief: null, onEnd: null, pausedUntil: null, objectiveIds: [], config: raw });
+  return { easeNext: f.easeNext, weekdays: f.weekdays, time: f.time, everyWeeks: f.everyWeeks, cadenceFrom: f.cadenceFrom };
+}
+
+/**
+ * A course's settings with a patch's easing and schedule (R1.6), checked whole by its schema. Days are kept in week order. A
+ * rhythm of every week writes neither of its keys (`withCadence`); a longer one counts from `cadenceFrom`'s Monday, else from
+ * the one it already had, else from the week of the next of its days (`cadenceAnchor`); null asks for that week afresh.
+ */
+function courseConfigWith(raw: unknown, p: PlanPatch, today: string): { ok: true; config: CourseConfig } | { ok: false; path: string; message: string } {
+  const stored = courseConfigSchema.safeParse(raw);
+  if (!stored.success) return { ok: false, path: "config", message: "the course's settings are not complete" };
+  let c: CourseConfig = { ...stored.data };
+  if (p.easeNext !== undefined) c.easeNext = p.easeNext;
+  if (p.weekdays !== undefined) c.weekdays = [...p.weekdays].sort((a, b) => a - b);
+  if (p.time !== undefined) c.time = p.time;
+  if (p.everyWeeks !== undefined || p.cadenceFrom !== undefined) {
+    const was = cadenceOf(stored.data);
+    const n = p.everyWeeks ?? was.everyWeeks;
+    if (n === 1 && typeof p.cadenceFrom === "string") return { ok: false, path: "cadenceFrom", message: "every week counts from no day: give everyWeeks 2 to 4 with it" };
+    const from = n === 1 ? null : p.cadenceFrom === undefined && was.from !== null ? was.from : (p.cadenceFrom ?? cadenceAnchor(today, c.weekdays));
+    c = withCadence(c, n, from);
+  }
+  const merged = courseConfigSchema.safeParse(c);
+  if (!merged.success) {
+    const issue = merged.error.issues[0];
+    return { ok: false, path: String(issue?.path[0] ?? "config"), message: issue?.message ?? "the course's settings don't read" };
+  }
+  return { ok: true, config: merged.data };
+}
+
 /**
  * Edit a plan. `today` is the account's day (a pause may not end before it); it defaults to `now`'s UTC day. Answers
- * what changed; an edit that changes nothing writes nothing and records no version.
+ * what changed; an edit that changes nothing writes nothing and records no version. A course's days, time and rhythm
+ * (R1.6) change here too, as its easing does; the caller places the plan again (`placeAfterPlanChange`).
  */
 export async function applyPlanPatch(db: Db, userId: string, id: string, patch: unknown, now: string, today = now.slice(0, 10)): Promise<PlanPatchResult> {
   const invalid = (path: string, message: string): PlanPatchResult => ({ ok: false, error: "invalid", issues: [{ path: [path], message }] });
@@ -341,11 +396,15 @@ export async function applyPlanPatch(db: Db, userId: string, id: string, patch: 
   if (typeof p.pausedUntil === "string" && p.pausedUntil < today) return invalid("pausedUntil", "a pause cannot end before today");
 
   let config = row.config;
-  if (p.easeNext !== undefined) {
-    if (kind !== "course") return invalid("easeNext", "only a course can ease its next session");
-    const merged = courseConfigSchema.safeParse({ ...row.config, easeNext: p.easeNext });
-    if (!merged.success) return invalid("easeNext", "the course's settings are not complete");
-    config = merged.data;
+  const scheduleGiven = SCHEDULE_FIELDS.filter((k) => p[k] !== undefined);
+  if (p.easeNext !== undefined || scheduleGiven.length > 0) {
+    if (kind !== "course") {
+      if (p.easeNext !== undefined) return invalid("easeNext", "only a course can ease its next session");
+      return invalid(scheduleGiven[0]!, kind === "adaptive" ? NOT_A_COURSE_PROGRAMME : NOT_A_COURSE);
+    }
+    const merged = courseConfigWith(row.config, p, today);
+    if (!merged.ok) return invalid(merged.path, merged.message);
+    config = merged.config;
   }
 
   const next = {
@@ -360,7 +419,12 @@ export async function applyPlanPatch(db: Db, userId: string, id: string, patch: 
   for (const k of ["purpose", "brief", "onEnd", "pausedUntil", "objectiveIds"] as const) {
     if (JSON.stringify(next[k]) !== JSON.stringify(row[k])) changed.push(k);
   }
-  if (JSON.stringify(next.config) !== JSON.stringify(row.config)) changed.push("easeNext");
+  // A course's settings, field by field: what they say, not how the JSON reads.
+  if (config !== row.config) {
+    const was = courseFields(row.config);
+    const is = courseFields(config);
+    for (const k of ["easeNext", ...SCHEDULE_FIELDS] as const) if (JSON.stringify(was[k]) !== JSON.stringify(is[k])) changed.push(k);
+  }
   if (changed.length === 0) return { ok: true, changed };
 
   await runAtomically(db, [

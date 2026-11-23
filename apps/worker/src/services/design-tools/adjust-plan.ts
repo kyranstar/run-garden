@@ -48,7 +48,9 @@
  * SANCTIONED REST. A skip is the thread coach's agreed rest, held to its rule: the first sanctioned skip in a rolling
  * week counts as a rest day for the garden, further ones are merely neutral (coach-wake.ts's SKIP TREATMENT; the
  * dossier's "sanctioned rest used n of 1"; garden-sync.ts's mercy day). A skip that takes the week past it carries the
- * thread coach's advisory note, and every result counts it (`sanctionedRest`).
+ * thread coach's advisory note, and every result counts it (`sanctionedRest`). The week is the skip's own (R1.6): the seven
+ * days ending on its session's day, holding the agreed rest that lands in them as the garden lands it and this proposal's
+ * skips on those days, never a skip a week away.
  *
  * The change's words reach the model marked: a session's name is an import's, a skip's reason the model's own.
  *
@@ -615,10 +617,12 @@ export const adjustPlan: DesignTool = {
       threshold: thresholdSql(ctx.userId),
       // The running around the session's day after a change that can add load (S4): the validator's rules read it.
       ...(LOADS.has(p.change.kind) ? { load: runLoadAtSql(ctx.userId, p.workoutId, p.change.kind === "move" ? p.change.toDate : null) } : {}),
-      // The thread coach's agreed rest resolved lately, its days (the athlete's today is known only after this read:
-      // the UTC day's week and a day more either side hold it); counted below as the dossier counts it.
-      sanctioned: sql`(select json_group_array(${pw.resolutionDate}) from ${pw} where ${pw.userId} = ${ctx.userId}
-        and ${pw.sanctionedBy} = 'coach' and ${pw.completionState} in ('skipped', 'missed') and ${pw.resolutionDate} >= ${addDays(ctx.now.toISOString().slice(0, 10), -8)})`,
+      // The thread coach's agreed rest, the days it lands on as the garden lands it (garden-sync.ts: its own day, or the day it
+      // was resolved when that is later), from a week before the UTC day on — ahead too, for a skip ahead's own week (R1.6).
+      // The athlete's today is known only after this read: a day more holds it. Counted below, a skip's own rolling week each.
+      sanctioned: sql`(select json_group_array(max(${pw.effectiveDate}, coalesce(${pw.resolutionDate}, ${pw.effectiveDate}))) from ${pw} where ${pw.userId} = ${ctx.userId}
+        and ${pw.sanctionedBy} = 'coach' and ${pw.completionState} in ('skipped', 'missed')
+        and max(${pw.effectiveDate}, coalesce(${pw.resolutionDate}, ${pw.effectiveDate})) >= ${addDays(ctx.now.toISOString().slice(0, 10), -8)})`,
       // A change a revisable workout never takes: whether the session is one (`revisability`) reads its document's
       // discipline, derived in the account's library — read here, in the same statement, for a session with a document.
       ...(REVISED_NOT.has(p.change.kind)
@@ -692,11 +696,14 @@ export const adjustPlan: DesignTool = {
     const toolUseId = ctx.toolUseId ?? `call-${at}`;
     const id = planAdjustId(p.workoutId);
     const before = changes.find((c) => c.id === id);
-    // The rolling week's sanctioned rest (the thread coach's rule): the skips resolved in the week to today, and this
-    // proposal's own skips once this change is in it.
-    const weekFrom = addDays(athlete.today, -6);
-    const usedThisWeek = (parsedArray(extra.sanctioned) as unknown[]).filter((d): d is string => typeof d === "string" && d >= weekFrom).length;
-    const inProposal = changes.filter((c) => c.id !== id && c.op.kind === "skip").length + (op.kind === "skip" ? 1 : 0);
+    // The rolling week's sanctioned rest (the thread coach's rule), by date (R1.6): the week that ends on this session's day
+    // (today's, for one already behind), as the garden counts a skip's — the agreed rest landing in it, and this proposal's own
+    // skips on its days once this change is in it. A skip a week or more away is another week's.
+    const weekTo = snapshot.date > athlete.today ? snapshot.date : athlete.today;
+    const weekFrom = addDays(weekTo, -6);
+    const inWeek = (d: unknown): d is string => typeof d === "string" && d >= weekFrom && d <= weekTo;
+    const usedThisWeek = (parsedArray(extra.sanctioned) as unknown[]).filter(inWeek).length;
+    const inProposal = changes.filter((c) => c.id !== id && c.op.kind === "skip" && inWeek(c.date > athlete.today ? c.date : athlete.today)).length + (op.kind === "skip" ? 1 : 0);
     const sanctionedRest: SanctionedRest = { usedThisWeek, inProposal, allowance: SANCTIONED_REST_PER_ROLLING_WEEK };
     const restNote =
       op.kind === "skip" && usedThisWeek + inProposal > SANCTIONED_REST_PER_ROLLING_WEEK

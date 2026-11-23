@@ -1,8 +1,14 @@
 /**
- * change_plan(planId, purpose?, brief?, onEnd?, objectiveIds?, pausedUntil?, easeNext?, why) — the main coach proposes
- * ONE change to a plan's own words and ending (plans with a purpose, Stage 1): what the plan is for (`purpose`), the
- * longer account (`brief`), how it ends (`onEnd`: ask, continue or finish), the objectives it serves, a pause (`pausedUntil`,
- * its last day; null lifts it) and, for a course, whether its next session is eased.
+ * change_plan(planId, purpose?, brief?, onEnd?, objectiveIds?, pausedUntil?, easeNext?, days?, time?, everyWeeks?, from?, why) —
+ * the main coach proposes ONE change to a plan's own words and ending (plans with a purpose, Stage 1): what the plan is for
+ * (`purpose`), the longer account (`brief`), how it ends (`onEnd`: ask, continue or finish), the objectives it serves, a pause
+ * (`pausedUntil`, its last day; null lifts it) and, for a course, whether its next session is eased.
+ *
+ * A COURSE'S SCHEDULE (R1.6): its days (`days`, by name), its time (`time`) and its rhythm (`everyWeeks`, 1 to 4, from the week
+ * of `from`, else the rhythm's own anchor, else the week of the next of its days). The card says each ("Days Mon · Fri → Mon",
+ * "Time 19:30 → 07:30", "Every week → Every 2 weeks") and where the next sessions fall ("Next TRE Mon 23 Nov · Mon 7 Dec · Mon
+ * 21 Dec": placement's preview, written nowhere, then the rhythm past its window). Approved, the plan is placed again in the same
+ * request. A programme's days and rhythm are change_programme's, and a refusal says so.
  *
  * A SIBLING OF change_programme, NOT A KIND OF IT: change_programme edits an adaptive programme's days, goal and minutes
  * (the settings sheet's own fields, placed again); this edits what any plan says of itself, as `PATCH /api/plans/:id`
@@ -26,26 +32,43 @@
  * (`invalid_input`); a plan that isn't the athlete's, or is archived (`not_your_plan`); fields it already has
  * (`no_change`); a proposal already with the athlete (`proposal_pending`) or closed; a restore under way.
  *
- * Statements: the athlete with the plan, the objectives named, the proposal and the restore marker (one read); the
- * proposal's guarded upsert.
+ * Statements: the athlete with the plan, the objectives named, the proposal and the restore marker (one read); a course's new
+ * schedule, the preview's (PREVIEW_STATEMENTS); the proposal's guarded upsert.
  */
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { accountState, coachPlans, coachProposals, objectives, programs } from "@rg/database";
-import { clipWords, dayLabel, isLocalDate, onEndAllowed, PLAN_ON_END, planOnEndSchema, type PlanOnEnd, type ProgramKind } from "@rg/domain";
+import {
+  cadenceAnchor,
+  clipWords,
+  courseConfigSchema,
+  dayLabel,
+  EVERY_WEEKS_MAX,
+  isLocalDate,
+  onEndAllowed,
+  PLAN_ON_END,
+  planOnEndSchema,
+  startOfIsoWeek,
+  withCadence,
+  type PlanOnEnd,
+  type ProgramKind,
+} from "@rg/domain";
 import { OPEN_PROPOSAL_STATUSES } from "../design-review.js";
 import { clipProse } from "../design-prose.js";
 import { LIVE_OBJECTIVE } from "../objective-changes.js";
 import { BRIEF_MAX, isPlanKind, OBJECTIVES_MAX, PURPOSE_MAX } from "../plan-summaries.js";
+import { PREVIEW_STATEMENTS, previewPlacement } from "../program-slots.js";
 import {
   isPlanChangeOp,
   PLAN_CHANGE_FIELDS,
   planChangeId,
   planFieldsOfRow,
+  SCHEDULE_FIELDS,
   type PlanChangeFields,
   type PlanChangeOp,
 } from "../proposal-kinds.js";
 import { capInWords, isErr, mainRunIdOf, parseAct, prose } from "./act-common.js";
+import { dayIndex, daysWords, everyWords } from "./change-programme.js";
 import { designProposalId, upsertProposal } from "./propose.js";
 import { parsedArray, parsedJson, plural, readAthlete, refuse, untrusted } from "./read-common.js";
 import type { DesignTool, ToolOk } from "./types.js";
@@ -63,9 +86,22 @@ const input = z
     objectiveIds: z.array(z.string().min(1).max(200)).max(OBJECTIVES_MAX).optional(),
     pausedUntil: z.string().refine(isLocalDate, { message: "must be a YYYY-MM-DD calendar date" }).nullable().optional(),
     easeNext: z.boolean().optional(),
+    days: z.array(z.string().max(20)).max(7).optional(),
+    time: z.string().max(10).optional(),
+    everyWeeks: z.number().int().optional(),
+    from: z.string().max(20).optional(),
     why: prose(WHY_MAX),
   })
   .strict();
+
+/** The tool's own words for its fields: the plan's, with a course's days by name and its rhythm's start as `from`. */
+const GIVEN_KEYS = ["purpose", "brief", "onEnd", "objectiveIds", "pausedUntil", "easeNext", "days", "time", "everyWeeks", "from"] as const;
+/** The words of a course's schedule the tool takes. */
+const SCHEDULE_KEYS = ["days", "time", "everyWeeks", "from"] as const;
+
+/** A course's schedule in one line, as the plan page says it: "Mon · every 2 weeks · 19:30", "Mon · Fri · 19:30". */
+export const scheduleWords = (s: { weekdays: readonly number[]; time: string | null; everyWeeks: number }): string =>
+  [daysWords(s.weekdays), ...(s.everyWeeks > 1 ? [`every ${s.everyWeeks} weeks`] : []), ...(s.time ? [s.time] : [])].join(" · ");
 
 /** The endings as the card says them. */
 export const ONEND_WORDS: Record<PlanOnEnd, string> = { ask: "Ask me", continue: "Continue", finish: "Finish" };
@@ -98,28 +134,58 @@ export function planSettingLines(from: PlanChangeFields, to: PlanChangeFields): 
       case "easeNext":
         out.push(to.easeNext ? "Next session eased" : "Next session not eased");
         break;
+      case "weekdays":
+        out.push(`Days ${daysWords(from.weekdays)} → ${daysWords(to.weekdays)}`);
+        break;
+      case "time":
+        out.push(`Time ${from.time ?? "none"} → ${to.time ?? "none"}`);
+        break;
+      case "everyWeeks":
+        out.push(`${everyWords(from.everyWeeks)} → ${everyWords(to.everyWeeks)}`);
+        break;
+      case "cadenceFrom":
+        // A new rhythm's start is the "Next" line's to show; the same rhythm moved on a week says so here.
+        if (from.everyWeeks === to.everyWeeks && to.cadenceFrom !== null) out.push(`${everyWords(to.everyWeeks)}, counted from ${dayLabel(to.cadenceFrom)}`);
+        break;
     }
   }
   return out;
 }
 
 /** The card's title: "Base block: new purpose", "… new purpose and brief", "… new purpose, ending and pause", "… new
- * settings" (four or more). */
+ * settings" (four or more); a course's "TRE: new days and rhythm". */
 export function planChangeTitle(name: string, changed: readonly (keyof PlanChangeFields)[]): string {
-  const WORD: Record<keyof PlanChangeFields, string> = { purpose: "purpose", brief: "brief", onEnd: "ending", pausedUntil: "pause", objectiveIds: "objectives", easeNext: "easing" };
-  const named = PLAN_CHANGE_FIELDS.filter((k) => changed.includes(k)).map((k) => WORD[k]);
+  const WORD: Record<keyof PlanChangeFields, string> = {
+    purpose: "purpose", brief: "brief", onEnd: "ending", pausedUntil: "pause", objectiveIds: "objectives", easeNext: "easing",
+    weekdays: "days", time: "time", everyWeeks: "rhythm", cadenceFrom: "rhythm",
+  };
+  const named = [...new Set(PLAN_CHANGE_FIELDS.filter((k) => changed.includes(k)).map((k) => WORD[k]))];
   const what = named.length <= 3 ? `${named.slice(0, -1).join(", ")}${named.length > 1 ? " and " : ""}${named.at(-1)}` : "settings";
   return `${name}: new ${what}`;
 }
 
-/** The plan after the change, in one line: "Ending: Continue · paused until Wed 21 Oct". */
-export const planChangeSummary = (c: PlanChangeFields): string => `Ending: ${ONEND_WORDS[c.onEnd]}${c.pausedUntil ? ` · paused until ${dayLabel(c.pausedUntil)}` : ""}`;
+/** The plan after the change, in one line: "Ending: Continue · paused until Wed 21 Oct"; a course whose schedule changes says
+ * it first: "Mon · every 2 weeks · 19:30 · Ending: Continue". */
+export const planChangeSummary = (c: PlanChangeFields, o: { schedule?: boolean } = {}): string =>
+  `${o.schedule ? `${scheduleWords(c)} · ` : ""}Ending: ${ONEND_WORDS[c.onEnd]}${c.pausedUntil ? ` · paused until ${dayLabel(c.pausedUntil)}` : ""}`;
 
 /** The fields named, as a refusal's "that purpose and that ending". */
 function namedWords(keys: readonly (keyof PlanChangeFields)[]): string {
-  const WORD: Record<keyof PlanChangeFields, string> = { purpose: "that purpose", brief: "that brief", onEnd: "that ending", pausedUntil: "that pause", objectiveIds: "those objectives", easeNext: "that easing" };
-  const words = PLAN_CHANGE_FIELDS.filter((k) => keys.includes(k)).map((k) => WORD[k]);
+  const WORD: Record<keyof PlanChangeFields, string> = {
+    purpose: "that purpose", brief: "that brief", onEnd: "that ending", pausedUntil: "that pause", objectiveIds: "those objectives", easeNext: "that easing",
+    weekdays: "those days", time: "that time", everyWeeks: "that rhythm", cadenceFrom: "that rhythm",
+  };
+  const words = [...new Set(PLAN_CHANGE_FIELDS.filter((k) => keys.includes(k)).map((k) => WORD[k]))];
   return words.length <= 1 ? (words[0] ?? "") : `${words.slice(0, -1).join(", ")} and ${words.at(-1)}`;
+}
+
+/** The card's "Next" line (R1.6): where a course's next sessions fall once its schedule changes — "Next TRE Mon 23 Nov · Mon 7
+ * Dec · Mon 21 Dec" — or null when they fall as they did. */
+const NEXT_SHOWN = 3;
+export function courseNextLine(name: string, before: readonly string[], ahead: readonly string[]): string | null {
+  const next = ahead.slice(0, NEXT_SHOWN);
+  if (next.length === 0 || sameValue(before.slice(0, NEXT_SHOWN), next)) return null;
+  return `Next ${name} ${next.map(dayLabel).join(" · ")}`;
 }
 
 /** What a stored change answers. */
@@ -148,6 +214,7 @@ interface PlanRow {
   id: string;
   name: string;
   kind: string;
+  status: string;
   disciplines: unknown;
   purpose: string | null;
   brief: string | null;
@@ -162,7 +229,8 @@ const idList = (xs: readonly string[]) => (xs.length ? sql.join(xs.map((x) => sq
 
 export const changePlan: DesignTool = {
   name: "change_plan",
-  description: "The main coach: one change to a plan's purpose, brief, ending, objectives or pause (read_plans), as one card. A second call for it replaces it.",
+  description:
+    "The main coach: one change to a plan's purpose, brief, ending, objectives or pause — or a course's days, time or rhythm (every 1 to 4 weeks) — (read_plans), as one card. A second call for it replaces it.",
   inputSchema: {
     type: "object",
     properties: {
@@ -173,26 +241,41 @@ export const changePlan: DesignTool = {
       objectiveIds: { type: "array", items: { type: "string" } },
       pausedUntil: { type: ["string", "null"], description: "Last day, YYYY-MM-DD, today or later; null lifts." },
       easeNext: { type: "boolean", description: "A course's." },
+      days: { type: "array", items: { type: "string" }, description: 'A course\'s days from now on: ["Mon", "Thu"].' },
+      time: { type: "string", description: 'A course\'s time from now on, 24-hour "HH:MM".' },
+      everyWeeks: { type: "integer", description: `A course's rhythm: its days every 1 to ${EVERY_WEEKS_MAX} weeks.` },
+      from: { type: "string", description: "YYYY-MM-DD in the first week of the rhythm; left out, the week of its next day." },
       why: { type: "string", description: `Why, in one plain line the athlete reads on the card: ${capInWords(WHY_MAX)}.` },
     },
     required: ["planId", "why"],
     additionalProperties: false,
   },
-  statementCost: 1 + 1,
+  statementCost: 1 + PREVIEW_STATEMENTS + 1,
   cpuWeight: 0.3,
   roles: ["main"],
   async run(ctx, raw) {
-    const parsed = parseAct(input, raw, "planId, the fields to change (purpose, brief, onEnd, objectiveIds, pausedUntil, easeNext) and why");
+    const parsed = parseAct(input, raw, "planId, the fields to change (purpose, brief, onEnd, objectiveIds, pausedUntil, easeNext, or a course's days, time, everyWeeks and from) and why");
     if (isErr(parsed)) return parsed;
     const mainRunId = mainRunIdOf(ctx);
     if (ctx.run.role !== "main" || !mainRunId) return refuse("not_for_role", "Only the main coach changes a plan.", "Say in your finish line what you would change.");
-    const given = PLAN_CHANGE_FIELDS.filter((k) => parsed[k] !== undefined);
-    if (given.length === 0) return refuse("invalid_input", "No field to change.", "Name what changes: purpose, brief, onEnd, objectiveIds, pausedUntil or easeNext.");
+    const givenKeys = GIVEN_KEYS.filter((k) => parsed[k] !== undefined);
+    if (givenKeys.length === 0) return refuse("invalid_input", "No field to change.", "Name what changes: purpose, brief, onEnd, objectiveIds, pausedUntil, easeNext, or a course's days, time or everyWeeks.");
+    const scheduleGiven = SCHEDULE_KEYS.filter((k) => parsed[k] !== undefined);
+    // A course's schedule in its own words, said before anything is read.
+    const badSchedule: string[] = [];
+    const days = (parsed.days ?? []).map((d) => ({ d, i: dayIndex(d) }));
+    for (const { d, i } of days) if (i === null) badSchedule.push(`days: ${JSON.stringify(d)} isn't a day (Mon … Sun)`);
+    if (new Set(days.map((x) => x.i)).size < days.length) badSchedule.push("days: a day is named twice");
+    if (parsed.days !== undefined && days.length === 0) badSchedule.push("days: at least one");
+    if (parsed.time !== undefined && !/^([01]\d|2[0-3]):[0-5]\d$/.test(parsed.time)) badSchedule.push(`time: ${JSON.stringify(parsed.time)} isn't a 24-hour "HH:MM" time`);
+    if (parsed.everyWeeks !== undefined && (parsed.everyWeeks < 1 || parsed.everyWeeks > EVERY_WEEKS_MAX)) badSchedule.push(`everyWeeks: every 1 to ${EVERY_WEEKS_MAX} weeks`);
+    if (parsed.from !== undefined && !isLocalDate(parsed.from)) badSchedule.push(`from: ${JSON.stringify(parsed.from)} isn't a YYYY-MM-DD date`);
+    if (badSchedule.length > 0) return refuse("invalid_input", badSchedule.join("; "), "Call it again with a schedule a course takes.");
 
     const proposalId = designProposalId(mainRunId);
     const wantedIds = parsed.objectiveIds ?? [];
     const { athlete, extra } = await readAthlete(ctx.db, ctx.userId, ctx.now, {
-      plan: sql`(select json_object('id', pr.id, 'name', pr.name, 'kind', pr.kind, 'disciplines', json(pr.disciplines), 'purpose', pr.purpose, 'brief', pr.brief,
+      plan: sql`(select json_object('id', pr.id, 'name', pr.name, 'kind', pr.kind, 'status', pr.status, 'disciplines', json(pr.disciplines), 'purpose', pr.purpose, 'brief', pr.brief,
           'onEnd', pr.on_end, 'pausedUntil', pr.paused_until, 'objectiveIds', json(case when json_valid(pr.objective_ids) then pr.objective_ids end),
           'config', json(pr.config), 'archivedAt', pr.archived_at)
         from ${programs} pr where pr.user_id = ${ctx.userId} and (pr.id = ${parsed.planId}
@@ -230,6 +313,14 @@ export const changePlan: DesignTool = {
     }
     if (typeof parsed.pausedUntil === "string" && parsed.pausedUntil < athlete.today) wrong.push(`pausedUntil: a pause cannot end before today (${athlete.today})`);
     if (parsed.easeNext !== undefined && kind !== "course") wrong.push("easeNext: only a course can ease its next session");
+    if (scheduleGiven.length > 0 && kind !== "course") {
+      wrong.push(
+        kind === "adaptive"
+          ? `${scheduleGiven.join(", ")}: ${plan.name} is a programme: its days and rhythm are change_programme's (programmeId ${JSON.stringify(plan.id)})`
+          : `${scheduleGiven.join(", ")}: only a course's days, time and rhythm change here; ${KIND_WORDS[kind] ?? "this plan"}'s sessions move with adjust_plan`,
+      );
+      if (kind === "adaptive") fix = "Call change_programme with its days or everyWeeks, and leave them out here.";
+    }
     const own = new Map(parsedArray(extra.ownObjectives).flatMap((x) => (Array.isArray(x) && typeof x[0] === "string" ? [[x[0], String(x[1])] as const] : [])));
     for (const id of wantedIds) {
       const status = own.get(id);
@@ -249,6 +340,14 @@ export const changePlan: DesignTool = {
     }
 
     const from = planFieldsOfRow({ ...plan, objectiveIds: parsedArray(plan.objectiveIds) });
+    const weekdays = parsed.days ? days.map((x) => x.i!).sort((a, b) => a - b) : from.weekdays;
+    const everyWeeks = parsed.everyWeeks ?? from.everyWeeks;
+    if (parsed.from !== undefined && everyWeeks === 1) {
+      return refuse("invalid_input", "from: every week counts from no day", "Give everyWeeks 2 to 4 with from, or leave from out.");
+    }
+    // A rhythm counts from the week `from` names, else the one it has, else the week of the next of its days.
+    const cadenceFrom =
+      everyWeeks === 1 ? null : parsed.from !== undefined ? startOfIsoWeek(parsed.from) : (from.cadenceFrom ?? cadenceAnchor(athlete.today, weekdays));
     const wanted: PlanChangeFields = {
       purpose: parsed.purpose === undefined ? from.purpose : parsed.purpose,
       brief: parsed.brief === undefined ? from.brief : parsed.brief,
@@ -256,11 +355,39 @@ export const changePlan: DesignTool = {
       pausedUntil: parsed.pausedUntil === undefined ? from.pausedUntil : parsed.pausedUntil,
       objectiveIds: parsed.objectiveIds ?? from.objectiveIds,
       easeNext: parsed.easeNext ?? from.easeNext,
+      weekdays,
+      time: parsed.time ?? from.time,
+      everyWeeks,
+      cadenceFrom,
     };
     const changed = changedKeys(from, wanted);
+    const given = PLAN_CHANGE_FIELDS.filter(
+      (k) => (givenKeys as readonly string[]).includes(k) || (k === "weekdays" && parsed.days !== undefined) || (k === "cadenceFrom" && parsed.from !== undefined),
+    );
     if (changed.length === 0) return refuse("no_change", `${plan.name} already has ${namedWords(given)}.`, "Change something it doesn't have.");
     const change = Object.fromEntries(changed.map((k) => [k, wanted[k]])) as Partial<PlanChangeFields>;
     const base = Object.fromEntries(changed.map((k) => [k, from[k]])) as Partial<PlanChangeFields>;
+
+    // A course's new schedule: where its sessions would fall, by placement's own rules, written nowhere.
+    const movesSchedule = changed.some((k) => (SCHEDULE_FIELDS as readonly string[]).includes(k));
+    let nextLine: string | null = null;
+    if (movesSchedule) {
+      const stored = courseConfigSchema.safeParse(parsedJson(plan.config) ?? plan.config);
+      const next = stored.success ? courseConfigSchema.safeParse(withCadence({ ...stored.data, weekdays, time: wanted.time ?? stored.data.time }, everyWeeks, cadenceFrom)) : null;
+      if (next?.success) {
+        const disciplines = (Array.isArray(plan.disciplines) ? plan.disciplines : (parsedJson(plan.disciplines) ?? [])) as string[];
+        const preview = await previewPlacement(
+          ctx.db,
+          ctx.userId,
+          { id: plan.id, kind: "course", status: plan.status, disciplines, pausedUntil: wanted.pausedUntil },
+          next.data,
+          athlete.today,
+          athlete.prefs,
+          ctx.now.toISOString(),
+        );
+        nextLine = courseNextLine(plan.name, preview.before, [...preview.after, ...preview.beyond]);
+      }
+    }
 
     const at = ctx.now.toISOString();
     const toolUseId = ctx.toolUseId ?? `call-${at}`;
@@ -273,8 +400,8 @@ export const changePlan: DesignTool = {
       why: clipProse(parsed.why, WHY_MAX),
       issues: [],
       title: planChangeTitle(plan.name, changed),
-      summary: planChangeSummary(wanted),
-      lines: planSettingLines(from, wanted),
+      summary: planChangeSummary(wanted, { schedule: movesSchedule }),
+      lines: [...planSettingLines(from, wanted), ...(nextLine ? [nextLine] : [])],
       date: athlete.today,
       toolUseId,
       ...(held ? { replaces: [...(held.replaces ?? []), held.toolUseId] } : {}),

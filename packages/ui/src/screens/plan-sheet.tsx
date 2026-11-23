@@ -2,7 +2,7 @@ import { useUnits, useWeightUnit } from "../use-units.js";
 import { useEffect, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, ApiError, type CoachPlanDto, type PlanDetailResponse, type PlanSummaryDto, type PlansResponse, type TrainingLineDto } from "@rg/api-client";
-import { changePlanRequest, courseRowState, planSheetWords, stopInTurns, stopOutcomeWords } from "./plan-words.js";
+import { changePlanRequest, courseRowState, courseScheduleWords, planSheetWords, stopInTurns, stopOutcomeWords } from "./plan-words.js";
 import { ConfirmDialog, formatShortDate, Sheet, Spinner, useEscapeKey } from "../components.js";
 import { dayLabel, lastPhaseOf, lineSentenceName, planEnded, startOfIsoWeek } from "@rg/domain";
 import { PlannedVsActualBars, progressionInUnits, ProgressionStepChart } from "./plan-charts.js";
@@ -746,8 +746,9 @@ function useStopLine(today: string | null, refresh?: StopRefresh) {
 const COURSE_STOP_READS = [...STOP_READS, ["today"]];
 
 /**
- * A COURSE'S SHEET (plans with a purpose §4.2; the one new sheet, kept to what's on the plan sheet): where it has got to, what it
- * is for and how it ends (`PlanWords`), and "Stop this plan…". No settings. Stop asks first, then sends until nothing's left
+ * A COURSE'S SHEET (plans with a purpose §4.2; the one new sheet, kept to what's on the plan sheet): where it has got to, its
+ * schedule (R1.6: its days, rhythm and time, `courseScheduleWords` — read here, changed through the coach's Change), what it
+ * is for and how it ends (`PlanWords`), and "Stop this plan…". No settings of its own to edit. Stop asks first, then sends until nothing's left
  * (`stopInTurns`): `POST /api/plans/:id/stop` does what fits a request, and the first send is what stops the plan. So only that
  * send's failure is one, said in the confirm, which stays open to try again. Anything after it isn't: the hourly pass finishes
  * what's left, and the sheet says so, plainly, with the focus there since the button pressed has gone. Its copies come off the
@@ -800,6 +801,7 @@ export function CourseSheet({ plan, onClose }: { plan: PlanSummaryDto; onClose: 
     </div>
   );
   const state = courseRowState(plan);
+  const schedule = stopped ? "" : courseScheduleWords(plan);
   return (
     <Sheet open onClose={onClose} title={plan.name} footer={footer}>
       <div className="stack">
@@ -810,6 +812,7 @@ export function CourseSheet({ plan, onClose }: { plan: PlanSummaryDto; onClose: 
         ) : state ? (
           <p className="faint num">{state}</p>
         ) : null}
+        {schedule ? <p className="faint plan-schedule">{schedule}</p> : null}
         {/* Stopped here, it's stopped, whatever the plans read says until it's read again. */}
         <PlanWords plan={stopped ? { ...plan, status: "retired" } : plan} canChange={!stopped} />
       </div>

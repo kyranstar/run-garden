@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { isLocalDate } from "./time.js";
+import { addDays, daysBetween, isLocalDate, isoWeekday, startOfIsoWeek } from "./time.js";
 
 // Programs: the one registry of plans (one-workout-system spec §8.1, Phase 1 spec §6). `programs.config` and
 // `program_blocks.intent` are JSON columns; these are what they hold.
@@ -69,10 +69,72 @@ export const sessionModeSchema = z.enum(SESSION_MODES);
 export type SessionMode = z.infer<typeof sessionModeSchema>;
 
 /**
- * An adaptive program's settings (`programs.config` for `kind = "adaptive"`). Every field has a default, so
- * `adaptiveConfigSchema.parse({})` is a complete config.
+ * A PLAN'S RHYTHM LONGER THAN A WEEK (R1.6): its days every `everyWeeks` weeks (2 to 4), counted from `cadenceFrom`, the Monday
+ * of a week it uses. Both keys are stored only when they say something: every week is neither key, never `everyWeeks: 1`, so
+ * a row an older worker reads (its schema is strict) is the row it always was. `withCadence` is the one way to write them.
+ * Placement asks `onWeek` of each ISO week; a week it doesn't use holds none of the plan's sessions.
  */
-export const adaptiveConfigSchema = z
+export const EVERY_WEEKS_MAX = 4;
+const cadenceKeys = {
+  /** Its days every this many weeks, 2 to 4; absent: every week. */
+  everyWeeks: z.number().int().min(1).max(EVERY_WEEKS_MAX).optional(),
+  /** The Monday of a week the rhythm uses; present exactly when `everyWeeks` is. */
+  cadenceFrom: localDate.optional(),
+};
+
+/** The rhythm's rule, on either kind's config: an anchor Monday with every 2 weeks or more, neither key for every week. */
+function cadenceRule(c: { everyWeeks?: number | undefined; cadenceFrom?: string | undefined }, ctx: z.RefinementCtx): void {
+  const issue = (path: string, message: string) => ctx.addIssue({ code: z.ZodIssueCode.custom, path: [path], message });
+  if (c.everyWeeks === 1) issue("everyWeeks", "every week is the default: leave everyWeeks out");
+  if (c.everyWeeks !== undefined && c.everyWeeks > 1 && c.cadenceFrom === undefined) issue("cadenceFrom", "a rhythm of 2 weeks or more needs the Monday it counts from");
+  if (c.cadenceFrom !== undefined && (c.everyWeeks ?? 1) <= 1) issue("cadenceFrom", "cadenceFrom goes with everyWeeks 2 to 4");
+  if (c.cadenceFrom !== undefined && isLocalDate(c.cadenceFrom) && isoWeekday(c.cadenceFrom) !== 1) issue("cadenceFrom", "cadenceFrom must be a Monday");
+}
+
+/** A plan's rhythm as placement reads it: every week unless both keys say otherwise. */
+export interface Cadence {
+  everyWeeks: number;
+  /** The Monday it counts from; null: every week. */
+  from: string | null;
+}
+export function cadenceOf(c: { everyWeeks?: number | undefined; cadenceFrom?: string | undefined }): Cadence {
+  const n = c.everyWeeks ?? 1;
+  return n > 1 && c.cadenceFrom ? { everyWeeks: n, from: c.cadenceFrom } : { everyWeeks: 1, from: null };
+}
+
+/** Whether the ISO week holding `date` is one the rhythm uses: every week, or a whole number of rhythms from its anchor. */
+export function onWeek(date: string, c: { everyWeeks?: number | undefined; cadenceFrom?: string | undefined }): boolean {
+  const { everyWeeks: n, from } = cadenceOf(c);
+  if (n === 1 || from === null) return true;
+  const weeks = Math.round(daysBetween(startOfIsoWeek(from), startOfIsoWeek(date)) / 7);
+  return ((weeks % n) + n) % n === 0;
+}
+
+/**
+ * A config with its rhythm set, as a new object: every 2 weeks or more writes both keys (the anchor on its week's Monday), every
+ * week removes both, so nothing is stored that an older worker would refuse.
+ */
+export function withCadence<T extends object>(config: T, everyWeeks: number, from: string | null): T {
+  const { everyWeeks: _n, cadenceFrom: _f, ...rest } = config as T & { everyWeeks?: unknown; cadenceFrom?: unknown };
+  if (everyWeeks <= 1 || from === null) return rest as T;
+  return { ...rest, everyWeeks, cadenceFrom: startOfIsoWeek(from) } as T;
+}
+
+/** The Monday a rhythm counts from when nothing says: the week of the next of its days, today's included. */
+export function cadenceAnchor(today: string, weekdays: readonly number[]): string {
+  for (let i = 0; i < 7; i++) {
+    const date = addDays(today, i);
+    if (weekdays.includes(isoWeekday(date) - 1)) return startOfIsoWeek(date);
+  }
+  return startOfIsoWeek(today);
+}
+
+/**
+ * An adaptive program's settings (`programs.config` for `kind = "adaptive"`). Every field has a default, so
+ * `adaptiveConfigSchema.parse({})` is a complete config. `adaptiveConfigFields` is the object before the rhythm's rule, for a
+ * route's partial.
+ */
+export const adaptiveConfigFields = z
   .object({
     /** Sessions a week the program aims for. */
     weeklyGoal: z.number().int().min(1).max(7).default(4),
@@ -104,15 +166,17 @@ export const adaptiveConfigSchema = z
       .default([]),
     /** How many weeks ahead slots are placed. */
     placementWeeksAhead: z.number().int().min(1).max(4).default(2),
+    ...cadenceKeys,
   })
   .strict();
+export const adaptiveConfigSchema = adaptiveConfigFields.superRefine(cadenceRule);
 export type AdaptiveConfig = z.infer<typeof adaptiveConfigSchema>;
 
 /**
- * A course's settings (`programs.config` for `kind = "course"`): a fixed course of sessions placed on set
- * weekdays at a set time.
+ * A course's settings (`programs.config` for `kind = "course"`): a fixed course of sessions placed on set weekdays at a set
+ * time, every week or every few (`everyWeeks`). `courseConfigFields` is the object before the rhythm's rule, for a route's pick.
  */
-export const courseConfigSchema = z
+export const courseConfigFields = z
   .object({
     /** Which course (its definition's id). */
     course: z.string().min(1),
@@ -135,8 +199,10 @@ export const courseConfigSchema = z
      * Set, the hourly pass carries it on, and "start" holds the plan's fill.
      */
     finishing: z.enum(["start", "stop"]).optional(),
+    ...cadenceKeys,
   })
   .strict();
+export const courseConfigSchema = courseConfigFields.superRefine(cadenceRule);
 export type CourseConfig = z.infer<typeof courseConfigSchema>;
 
 export const BLOCK_KINDS = ["core_block", "firm_week", "shape_week"] as const;

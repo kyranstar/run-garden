@@ -6,7 +6,7 @@
  * each reads a designed op through these, so it ignores or describes it and never throws on it. A designed proposal is
  * approved on its own surface (Task 8); until then the thread's approve and decline answer it 409 `not_yet`.
  */
-import { dayLabel, defaultOnEnd, describeOps, planOnEndSchema, type AdaptiveConfig, type CoachOp, type PlanOnEnd, type ProgramKind } from "@rg/domain";
+import { cadenceOf, courseConfigSchema, dayLabel, defaultOnEnd, describeOps, planOnEndSchema, type AdaptiveConfig, type CoachOp, type PlanOnEnd, type ProgramKind } from "@rg/domain";
 import type { RetimeExpectation } from "./adjust-retime.js";
 import type { CiteRef } from "./saves-evidence.js";
 import { DESIGNED_OP_KINDS } from "./design-op-kinds.js";
@@ -115,9 +115,28 @@ export interface PlanStructureOp {
 /** A plan change's manifest lines shown, at most; the rest are counted. */
 export const PLAN_LINES_MAX = 8;
 
-/** The settings a programme change sets (§8 §5): the settings sheet's own, but the programme's name and place. */
-export const PROGRAMME_SETTINGS = ["weeklyGoal", "preferredDays", "defaultMinutes", "blockWeeks", "modes", "careProfiles"] as const;
-export type ProgrammeSettings = Pick<AdaptiveConfig, (typeof PROGRAMME_SETTINGS)[number]>;
+/** The settings a programme change sets (§8 §5): the settings sheet's own, but the programme's name and place; R1.6 its rhythm
+ * too, every week as 1 and no anchor (`cadenceOf`), whatever the row stores. */
+export const PROGRAMME_SETTINGS = ["weeklyGoal", "preferredDays", "defaultMinutes", "blockWeeks", "modes", "careProfiles", "everyWeeks", "cadenceFrom"] as const;
+export type ProgrammeSettings = Pick<AdaptiveConfig, "weeklyGoal" | "preferredDays" | "defaultMinutes" | "blockWeeks" | "modes" | "careProfiles"> & {
+  everyWeeks: number;
+  cadenceFrom: string | null;
+};
+
+/** A programme's settings as a change reads them: its rhythm in a change's terms. */
+export function programmeSettingsOf(c: AdaptiveConfig): ProgrammeSettings {
+  const { everyWeeks, from } = cadenceOf(c);
+  return {
+    weeklyGoal: c.weeklyGoal,
+    preferredDays: c.preferredDays,
+    defaultMinutes: c.defaultMinutes,
+    blockWeeks: c.blockWeeks,
+    modes: c.modes,
+    careProfiles: c.careProfiles,
+    everyWeeks,
+    cadenceFrom: from,
+  };
+}
 
 /**
  * A change to an adaptive programme's settings inside a designed proposal (§8 §5; design-tools/change-programme.ts): its
@@ -153,8 +172,11 @@ export interface ProgrammeChangeOp {
   at: string;
 }
 
-/** The fields a plan change sets (plans with a purpose, Stage 1): the plan's own, as `PATCH /api/plans/:id` takes them. */
-export const PLAN_CHANGE_FIELDS = ["purpose", "brief", "onEnd", "pausedUntil", "objectiveIds", "easeNext"] as const;
+/** The fields a plan change sets (plans with a purpose, Stage 1): the plan's own, as `PATCH /api/plans/:id` takes them; R1.6
+ * a course's schedule too: its days, its time and its rhythm. */
+export const PLAN_CHANGE_FIELDS = ["purpose", "brief", "onEnd", "pausedUntil", "objectiveIds", "easeNext", "weekdays", "time", "everyWeeks", "cadenceFrom"] as const;
+/** The fields of a course's schedule (R1.6): a change to any of them is placed again in its own request. */
+export const SCHEDULE_FIELDS = ["weekdays", "time", "everyWeeks", "cadenceFrom"] as const;
 export interface PlanChangeFields {
   purpose: string | null;
   brief: string | null;
@@ -164,10 +186,19 @@ export interface PlanChangeFields {
   objectiveIds: string[];
   /** A course's: whether its next session is eased. */
   easeNext: boolean;
+  /** A course's days, 0 = Monday, in week order; [] for any other plan. */
+  weekdays: number[];
+  /** A course's time, "HH:MM"; null for any other plan. */
+  time: string | null;
+  /** A course's rhythm: its days every this many weeks, 1 to 4; 1 for any other plan. */
+  everyWeeks: number;
+  /** The Monday a course's rhythm counts from; null every week. */
+  cadenceFrom: string | null;
 }
 
 /** A plan's editable fields as its `programs` row holds them: a missing ending is its kind's own (`defaultOnEnd`), a
- * missing list none, and a plan that is no course is never eased. The stale check and the tool read a plan by this. */
+ * missing list none, and a plan that is no course is never eased and has no schedule of its own here (a programme's days
+ * and rhythm are its settings', change_programme's). The stale check and the tool read a plan by this. */
 export function planFieldsOfRow(row: {
   kind: string;
   disciplines: unknown;
@@ -180,6 +211,8 @@ export function planFieldsOfRow(row: {
 }): PlanChangeFields {
   const disciplines = Array.isArray(row.disciplines) ? row.disciplines.filter((d): d is string => typeof d === "string") : [];
   const config = (row.config ?? {}) as { easeNext?: unknown };
+  const course = row.kind === "course" ? courseConfigSchema.safeParse(row.config).data : undefined;
+  const cadence = course ? cadenceOf(course) : { everyWeeks: 1, from: null };
   return {
     purpose: row.purpose,
     brief: row.brief,
@@ -187,6 +220,10 @@ export function planFieldsOfRow(row: {
     pausedUntil: row.pausedUntil,
     objectiveIds: Array.isArray(row.objectiveIds) ? row.objectiveIds.filter((x): x is string => typeof x === "string") : [],
     easeNext: config.easeNext === true,
+    weekdays: course ? [...course.weekdays].sort((a, b) => a - b) : [],
+    time: course?.time ?? null,
+    everyWeeks: cadence.everyWeeks,
+    cadenceFrom: cadence.from,
   };
 }
 

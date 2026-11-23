@@ -9,6 +9,11 @@
  *
  * THE RULE, per ISO week from this one to `placementWeeksAhead` weeks ahead:
  *
+ *  0. A RHYTHM LONGER THAN A WEEK (R1.6: `everyWeeks` from `cadenceFrom`, either kind): a week the rhythm doesn't use (`onWeek`)
+ *     has a goal of 0, so it takes no new slot and its flexible ones go by rules 3 and 4, as a lowered goal's do; what the
+ *     athlete skipped, moved or had written there stays and counts. The window reaches `everyWeeks - 1` weeks ahead when that
+ *     is longer (`weeksAhead`, at most 4), so the next session is always on the plan.
+ *
  *  1. COUNT BY THE DAY A SLOT WAS PLANNED ON (`original_plan_date`), whatever has happened to it since. A slot the
  *     athlete moved to next week still counts for this one; skipped, done and removed slots count. That is what
  *     makes placement safe to run every hour: anything the athlete did to a slot is never undone or re-placed.
@@ -76,7 +81,20 @@
  */
 import { and, count, eq, gt, gte, inArray, isNotNull, isNull, lte, max, ne, or, sql } from "drizzle-orm";
 import { calendarEventSuppressions, plannedWorkouts, programs, scheduleOverrides, sessionBuilds } from "@rg/database";
-import { adaptiveConfigSchema, addDays, courseConfigSchema, nowInstant, startOfIsoWeek, todayInZone, type AdaptiveConfig, type UserPreferences } from "@rg/domain";
+import {
+  adaptiveConfigSchema,
+  addDays,
+  cadenceOf,
+  courseConfigSchema,
+  EVERY_WEEKS_MAX,
+  nowInstant,
+  onWeek,
+  startOfIsoWeek,
+  todayInZone,
+  type AdaptiveConfig,
+  type CourseConfig,
+  type UserPreferences,
+} from "@rg/domain";
 import { EXERCISES } from "@rg/exercise-library";
 import { courseDefinition, deriveDoc } from "@rg/workout";
 import { restoreInProgress } from "./account-state.js";
@@ -98,8 +116,23 @@ type ProgramRow = typeof programs.$inferSelect;
 /** The kinds whose slots this file places. */
 const PLACED_KINDS = ["adaptive", "course"];
 
-/** The days a pass fills, in an adaptive program's terms (a course's are put in them by `placementOf`). */
-type SlotPattern = Pick<AdaptiveConfig, "weeklyGoal" | "preferredDays" | "placementWeeksAhead">;
+/** The days a pass fills, in an adaptive program's terms (a course's are put in them by `placementOf`), and its rhythm. */
+type SlotPattern = Pick<AdaptiveConfig, "weeklyGoal" | "preferredDays" | "placementWeeksAhead" | "everyWeeks" | "cadenceFrom">;
+
+/** A course's settings in a pass's terms: its days are its preferred days and its weekly goal. */
+const coursePattern = (config: CourseConfig): SlotPattern => ({
+  weeklyGoal: config.weekdays.length,
+  preferredDays: config.weekdays,
+  placementWeeksAhead: config.placementWeeksAhead,
+  ...(config.everyWeeks !== undefined ? { everyWeeks: config.everyWeeks } : {}),
+  ...(config.cadenceFrom !== undefined ? { cadenceFrom: config.cadenceFrom } : {}),
+});
+
+/**
+ * The weeks a pass reaches past this one (R1.6): its own `placementWeeksAhead`, or one rhythm less a week when that is longer
+ * (at most EVERY_WEEKS_MAX), so a plan every few weeks always has its next session on the plan.
+ */
+const weeksAhead = (config: SlotPattern): number => Math.min(EVERY_WEEKS_MAX, Math.max(config.placementWeeksAhead, cadenceOf(config).everyWeeks - 1));
 
 /** What a pass places from, whichever kind makes the sessions (`placementOf`). */
 interface Placement {
@@ -339,10 +372,10 @@ function windowGone(today: string, windowTime: string, now: string, timezone: st
   return clock.date > today || (clock.date === today && clock.time >= windowTime);
 }
 
-/** The window placement works over: this ISO week to `placementWeeksAhead` weeks ahead. */
+/** The window placement works over: this ISO week to `weeksAhead` weeks ahead (`placementWeeksAhead`, widened for a rhythm). */
 function windowOf(today: string, config: SlotPattern): { firstMonday: string; lastSunday: string } {
   const firstMonday = startOfIsoWeek(today);
-  return { firstMonday, lastSunday: addDays(firstMonday, 7 * (config.placementWeeksAhead + 1) - 1) };
+  return { firstMonday, lastSunday: addDays(firstMonday, 7 * (weeksAhead(config) + 1) - 1) };
 }
 
 /**
@@ -403,14 +436,16 @@ function planSlots(rows: readonly WorkoutRow[], o: PlanInputs, flexibleIds: Read
   const toArchive: WorkoutRow[] = [];
   const toRevive: WorkoutRow[] = [];
   const toInsert: string[] = [];
-  for (let week = 0; week <= config.placementWeeksAhead; week++) {
+  for (let week = 0; week <= weeksAhead(config); week++) {
     const monday = addDays(firstMonday, 7 * week);
     const sunday = addDays(monday, 6);
+    // A week its rhythm doesn't use (R1.6) wants none: its flexible slots go as a lowered goal's do (rules 3 and 4).
+    const weekGoal = onWeek(monday, config) ? goal : 0;
     const counted = rows.filter((r) => r.originalPlanDate >= monday && r.originalPlanDate <= sunday && !retracted(r));
     const movable = new Map(counted.filter((r) => flexibleIds.has(r.id)).map((r) => [r.effectiveDate, r]));
-    const need = Math.max(0, goal - (counted.length - movable.size));
+    const need = Math.max(0, weekGoal - (counted.length - movable.size));
     const ranked = rankedDays(monday, config.preferredDays, o.isCourse);
-    const weekDays = week === 0 || ranked.some(heldBack) ? new Set(ranked.slice(0, goal)) : null;
+    const weekDays = week === 0 || ranked.some(heldBack) ? new Set(ranked.slice(0, weekGoal)) : null;
 
     const want = new Set<string>();
     for (const date of ranked) {
@@ -469,27 +504,30 @@ export const PREVIEW_STATEMENTS = 2;
 /**
  * What a pass would leave with `config` in place of the program's own, written nowhere (change_programme's card: "Next
  * sessions move to …"): the dates of its live, scheduled sessions from today on, before and after. Rules 1–4 exactly
- * as a pass runs them, a pause included; the content refresh (rule 5) moves no session. An adaptive program's: only
- * change_programme asks.
+ * as a pass runs them, a pause included; the content refresh (rule 5) moves no session. An adaptive program's (change_programme)
+ * or, R1.6, a course's (change_plan's days, time and rhythm: `kind` says which `config` is), by the rules `placementOf` gives it.
+ * A course's also says its next few dates past the window (`beyond`, written nowhere either), by its days and rhythm alone.
  */
 export async function previewPlacement(
   db: Db,
   userId: string,
-  program: Pick<ProgramRow, "id" | "status" | "disciplines" | "pausedUntil">,
-  config: AdaptiveConfig,
+  program: Pick<ProgramRow, "id" | "status" | "disciplines" | "pausedUntil"> & { kind?: string },
+  config: AdaptiveConfig | CourseConfig,
   today: string,
   prefs: UserPreferences,
   now: string,
-): Promise<{ before: string[]; after: string[] }> {
-  const goal = program.status === "active" ? config.weeklyGoal : 0;
-  const rows = await readSlotRows(db, userId, program.id, today, config, goal, false);
+): Promise<{ before: string[]; after: string[]; beyond: string[] }> {
+  const course = program.kind === "course" ? (config as CourseConfig) : null;
+  const pattern = course ? coursePattern(course) : (config as AdaptiveConfig);
+  const goal = program.status === "active" ? pattern.weeklyGoal : 0;
+  const rows = await readSlotRows(db, userId, program.id, today, pattern, goal, course !== null);
   const plan = await planWithTouched(db, rows, {
     programId: program.id,
-    config,
+    config: pattern,
     goal,
-    time: null,
-    quietDays: null,
-    isCourse: false,
+    time: course?.time ?? null,
+    quietDays: course?.quietDaysBeforeRace ?? null,
+    isCourse: course !== null,
     pausedUntil: program.pausedUntil,
     today,
     prefs,
@@ -502,8 +540,24 @@ export async function previewPlacement(
   const after = [...live.filter((r) => !gone.has(r.id)).map((r) => r.effectiveDate), ...plan.toInsert, ...plan.toRevive.map((r) => r.originalPlanDate)]
     .filter((d) => d >= today)
     .sort();
-  return { before, after };
+  if (!course || goal === 0) return { before, after, beyond: [] };
+  // Past the window, the course's own days in the weeks its rhythm uses, the days held back left out: what the card's "Next"
+  // line reads on, so a rhythm of a few weeks shows as one.
+  const heldBack = heldBackDays({ pausedUntil: program.pausedUntil, quietDays: course.quietDaysBeforeRace, prefs });
+  const beyond: string[] = [];
+  const { lastSunday } = windowOf(today, pattern);
+  for (let monday = addDays(lastSunday, 1), weeks = 0; beyond.length < BEYOND_SHOWN && weeks < 4 * EVERY_WEEKS_MAX; monday = addDays(monday, 7), weeks++) {
+    if (!onWeek(monday, pattern)) continue;
+    for (const d of [...pattern.preferredDays].sort((a, b) => a - b)) {
+      const date = addDays(monday, d);
+      if (!heldBack(date) && date !== prefs.raceDate) beyond.push(date);
+    }
+  }
+  return { before, after, beyond: beyond.slice(0, BEYOND_SHOWN) };
 }
+
+/** A course's dates past the window a preview names (`beyond`). */
+const BEYOND_SHOWN = 3;
 
 /**
  * Place (and re-place) one program's slots. Idempotent: a second run with the same inputs writes nothing.
@@ -558,6 +612,85 @@ export async function placeAfterPauseChange(db: Db, userId: string, planId: stri
   }
 }
 
+/** The fields whose change places a plan again in its own request: its pause (R23, R25) and, R1.6, a course's days and rhythm. */
+export const PLACING_FIELDS = ["pausedUntil", "weekdays", "everyWeeks", "cadenceFrom"] as const;
+
+/** What a re-time declares beside its collision pass: the restore's look, the plan, the one write and the days' sessions. */
+export const RETIME_FIXED = 4;
+
+/**
+ * A CHANGE TO A PLAN'S SCHEDULE TAKES EFFECT IN ITS OWN REQUEST (R1.6), as a pause's does: a change of pause, days or rhythm
+ * runs the plan's pass (`placeAfterPauseChange`), and a course's new time re-times its outlines ahead (`retimeCourseOutlines`),
+ * in what the request has left; the hourly pass carries on from there. Answers what it spent.
+ */
+export async function placeAfterPlanChange(
+  db: Db,
+  userId: string,
+  planId: string,
+  changed: readonly string[],
+  today: string,
+  prefs: UserPreferences,
+  now: string,
+  budget: number,
+): Promise<number> {
+  const retimes = changed.includes("time");
+  let spent = 0;
+  if (changed.some((k) => (PLACING_FIELDS as readonly string[]).includes(k))) {
+    spent += await placeAfterPauseChange(db, userId, planId, today, prefs, now, budget - (retimes ? RETIME_FIXED : 0));
+  }
+  if (retimes) spent += await retimeCourseOutlines(db, userId, planId, today, prefs, now, budget - spent);
+  return spent;
+}
+
+/**
+ * A course's new time on its outlines ahead (R1.6): every one from tomorrow that is still the course's to lay — live, an outline,
+ * still a slot, unmoved, scheduled and untouched (`TOUCHED`: the athlete's own time stays) — takes it in one write, its event owed
+ * again; then, when it fits `budget`, the collision pass lays out those days. Today's, written or not, keeps its time: it may be
+ * under way. New outlines take the time anyway (`content`). A failure is logged by code: the time has landed. Answers what it spent.
+ */
+export async function retimeCourseOutlines(db: Db, userId: string, planId: string, today: string, prefs: UserPreferences, now: string, budget: number): Promise<number> {
+  try {
+    if (await restoreInProgress(db, userId)) return 1;
+    const [program] = await db.select({ kind: programs.kind, config: programs.config }).from(programs).where(and(eq(programs.id, planId), eq(programs.userId, userId))).limit(1);
+    const config = program?.kind === "course" ? courseConfigSchema.safeParse(program.config) : null;
+    if (!config?.success) return 2;
+    const moved = await db
+      .update(plannedWorkouts)
+      .set({
+        effectiveTime: config.data.time,
+        calendarSyncState: sql`case when ${plannedWorkouts.calendarSyncState} = 'synced' then 'pending' else ${plannedWorkouts.calendarSyncState} end`,
+        updatedAt: now,
+      })
+      .where(
+        and(
+          eq(plannedWorkouts.userId, userId),
+          eq(plannedWorkouts.planId, planId),
+          eq(plannedWorkouts.origin, "program"),
+          isNull(plannedWorkouts.archivedAt),
+          eq(plannedWorkouts.completionState, "scheduled"),
+          eq(plannedWorkouts.contentState, "outline"),
+          sql`${plannedWorkouts.effectiveDate} = ${plannedWorkouts.originalPlanDate}`,
+          gt(plannedWorkouts.effectiveDate, today),
+          ne(plannedWorkouts.effectiveTime, config.data.time),
+          sql`not ${TOUCHED}`,
+        ),
+      )
+      .returning({ date: plannedWorkouts.effectiveDate });
+    const days = [...new Set(moved.map((r) => r.date))];
+    if (days.length === 0) return 3;
+    const dayRows = await liveSessionsByDay(db, userId, days);
+    // The collision pass: its two reads, and each session of those days re-timed at most once.
+    const collisions = 2 + days.reduce((n, d) => n + (dayRows.get(d) ?? 0), 0);
+    if (RETIME_FIXED + collisions > budget) return RETIME_FIXED;
+    await separateDayCollisions(db, userId, days, prefs, { from: today, now });
+    return RETIME_FIXED + collisions;
+  } catch (e) {
+    if (isRuntimeLimit(e)) throw e;
+    console.error(`retime_failed: plan ${planId} ${e instanceof Error ? e.name : "unknown"}`);
+    return budget;
+  }
+}
+
 /**
  * A course plan's sessions actually done, which numbers its next one (spec §4.2): its own sessions (`course_session` set)
  * that are completed. Nothing else counts, so a workout the coach filed under the plan doesn't advance it. One statement.
@@ -588,7 +721,7 @@ async function placementOf(db: Db, program: ProgramRow, spend: (n: number) => vo
   const config = courseConfigSchema.parse(program.config);
   if (config.finishing === "start") return null;
   const placement = {
-    config: { weeklyGoal: config.weekdays.length, preferredDays: config.weekdays, placementWeeksAhead: config.placementWeeksAhead },
+    config: coursePattern(config),
     title: program.name,
     time: config.time,
     quietDays: config.quietDaysBeforeRace,

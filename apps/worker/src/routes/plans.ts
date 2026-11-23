@@ -5,23 +5,24 @@
  *                        phase and never the one-off bucket; two reads and the preferences. With drafts on
  *                        (plan-drafts.ts `planDraftsOn`), a coach plan's draft is read with its row, no read more, and its
  *                        prompt says where the draft stands (and `note`, when it came to nothing).
- *   PATCH  /:id          {purpose?, brief?, onEnd?, objectiveIds?, pausedUntil?, easeNext?} → {plan}
+ *   PATCH  /:id          {purpose?, brief?, onEnd?, objectiveIds?, pausedUntil?, easeNext?, weekdays?, time?, everyWeeks?,
+ *                        cadenceFrom?} → {plan}
  *   POST   /courses      {course, weekdays, time} → {plan, more, waiting?}: start a course (`course-plans.ts`)
  *   POST   /:id/stop     → {more, waiting?}: stop a plan
  *
  * An edit that breaks a rule (too long, an ending the kind doesn't allow, a pause in the past, easing a plan that
- * isn't a course) is 422 with the issues; another account's plan is 404; a restore in progress is 423. `/api/programs`
- * keeps answering adaptive programmes alone.
+ * isn't a course, days, a time or a rhythm for a plan that isn't one) is 422 with the issues; another account's plan is 404;
+ * a restore in progress is 423. `/api/programs` keeps answering adaptive programmes alone, their days and rhythm among them.
  *
- * A change to the pause, set or cleared, runs the plan's placement pass in this request (`placeAfterPauseChange`), in what
- * the request has left: today's session comes off at once, or the outlines come back, and what doesn't fit is the next
- * hourly pass's.
+ * A change to the pause, set or cleared, or (R1.6) to a course's days or rhythm, runs the plan's placement pass in this
+ * request, and a course's new time re-times its outlines ahead (`placeAfterPlanChange`), in what the request has left: today's
+ * session comes off at once, or the outlines come back, and what doesn't fit is the next hourly pass's.
  *
  * A START is idempotent per course, since a course has one plan. An unknown course or days and a time `courseConfigSchema`
- * refuses are 422, and other days or another time on a course already running are 409 `course_running`, saying how to change
- * them: answering 200 and ignoring them would be false. Stop and start is the one way, since a revival takes the new days and its
- * number goes on; changing them in place would also have to re-place the outlines. A definition says nothing of a limit on
- * sessions a week, so none is held to.
+ * refuses are 422, and other days, another time or another rhythm on a course already running are 409 `course_running`,
+ * saying how to change them: answering 200 and ignoring them would be false. They change in place, by PATCH (R1.6); a start
+ * is every week, and a revival takes the days and the time asked for now and its number goes on. A definition says nothing of
+ * a limit on sessions a week, so none is held to.
  *
  * A STOP IS ONE ROUTE, AND NOT A SECOND WAY TO STOP ANYTHING. Each kind stops as it always has, by the code that has always
  * stopped it, and this only finds it from the plan's id:
@@ -41,7 +42,7 @@
 import { Hono } from "hono";
 import { and, asc, eq } from "drizzle-orm";
 import { coachPlans, programs } from "@rg/database";
-import { courseConfigSchema, nowInstant, planEnded, todayInZone } from "@rg/domain";
+import { courseConfigFields, nowInstant, planEnded, todayInZone } from "@rg/domain";
 import type { AppContext } from "../auth/middleware.js";
 import { requireUser } from "../auth/middleware.js";
 import { restoreInProgress } from "../services/account-state.js";
@@ -52,7 +53,7 @@ import { planDraftsOn } from "../services/plan-drafts.js";
 import { applyPlanPatch, listPlans } from "../services/plan-registry.js";
 import { planStoppedIfNoBlockLeft } from "../services/plan-status.js";
 import { isPlanKind } from "../services/plan-summaries.js";
-import { placeAfterPauseChange } from "../services/program-slots.js";
+import { placeAfterPlanChange } from "../services/program-slots.js";
 import { RestoreInProgressError, updateProgram } from "../services/programs.js";
 import { receipt } from "./coach.js";
 import { placeAndBook } from "./programs.js";
@@ -74,7 +75,7 @@ export const COURSE_START_FIXED = 1 + 2 + 1 + 1 + 3 + 2;
 export const PLAN_STOP_FIXED = 1 + 2 + 1 + 1 + 1;
 
 /** The body of a start: the settings `courseConfigSchema` holds a course to, what's asked for and nothing else. */
-const courseStartSchema = courseConfigSchema.pick({ course: true, weekdays: true, time: true }).strict();
+const courseStartSchema = courseConfigFields.pick({ course: true, weekdays: true, time: true }).strict();
 
 export const planRoutes = new Hono<AppContext>();
 planRoutes.use("*", requireUser);
@@ -99,7 +100,7 @@ planRoutes.patch("/:id", async (c) => {
     if (result.error === "restore_in_progress") return c.json({ error: "restore_in_progress" }, 423);
     return c.json({ error: "invalid_plan", issues: result.issues }, 422);
   }
-  if (result.changed.includes("pausedUntil")) await placeAfterPauseChange(db, userId, id, today, prefs, now, REQUEST_BUDGET - PLAN_PATCH_FIXED);
+  await placeAfterPlanChange(db, userId, id, result.changed, today, prefs, now, REQUEST_BUDGET - PLAN_PATCH_FIXED);
   const plan = (await listPlans(db, userId, today, { drafts: planDraftsOn(c.env) })).find((p) => p.id === id);
   return c.json({ plan });
 });

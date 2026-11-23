@@ -301,7 +301,7 @@ describe("change_programme: one change to a programme's settings, as the sheet c
   it("the words, unit by unit: a day's names, the lines, the title", () => {
     expect(["Mon", "tues", "Weds", "thurs", "Fri", "sat", "SUNDAY", "tu", "th"].map(dayIndex)).toEqual([0, 1, 2, 3, 4, 5, 6, 1, 3]);
     expect(["t", "s", "", "Funday", "x1"].map(dayIndex)).toEqual([null, null, null, null, null]);
-    const base = { weeklyGoal: 3, preferredDays: [0, 2, 4], defaultMinutes: 30, blockWeeks: 5, modes: ["recovery", "consistent", "build"] as AdaptiveConfig["modes"], careProfiles: ["a"] };
+    const base = { weeklyGoal: 3, preferredDays: [0, 2, 4], defaultMinutes: 30, blockWeeks: 5, modes: ["recovery", "consistent", "build"] as AdaptiveConfig["modes"], careProfiles: ["a"], everyWeeks: 1, cadenceFrom: null };
     expect(settingLines(base, { ...base, preferredDays: [] }, (id) => id)).toEqual(["Days Mon · Wed · Fri → any day"]);
     expect(settingLines(base, { ...base, weeklyGoal: 1, careProfiles: ["b"] }, (id) => `${id} care`)).toEqual(["Weekly goal 3 → 1 session", "a care on → off", "b care off → on"]);
     expect(nextLine(["2026-10-19", "2026-10-21"], ["2026-10-19", "2026-10-21"])).toBeNull();
@@ -583,8 +583,71 @@ describe("every reader tolerates a programme change", () => {
     const ctx = await mainRun();
     const res = ok(await readPlans.run(ctx, {}));
     const plan = (res.data as { plans: Array<Record<string, any>> }).plans.find((x) => x.id === p)!;
-    expect(plan.settings).toEqual({ days: ["Mon", "Wed"], weeklyGoal: 2, minutes: 30, blockWeeks: 5, modes: ["recovery", "consistent", "build"], care: [] });
+    // R1.6: its rhythm too, every week here.
+    expect(plan.settings).toEqual({ days: ["Mon", "Wed"], weeklyGoal: 2, everyWeeks: 1, minutes: 30, blockWeeks: 5, modes: ["recovery", "consistent", "build"], care: [] });
     expect(plan.why).toContain("change_programme");
     expect(plan.next.map((n: { date: string }) => n.date)).toEqual(["2026-10-14", "2026-10-19", "2026-10-21"]);
+  });
+});
+
+describe("a programme's rhythm longer than a week (R1.6, the twin of a course's)", () => {
+  it("every 2 weeks: the rhythm and its anchor, the card's line and summary, and where the next sessions go", async () => {
+    const p = await programme({ goal: 2, days: [0, 2] });
+    const ctx = await mainRun();
+    const { res, count } = await change(ctx, { programmeId: p, everyWeeks: 2 });
+    ok(res);
+    expect(count).toBeLessThanOrEqual(changeProgramme.statementCost);
+    const op = await opOf(designProposalId(ctx.run.id), p);
+    // No start named: the week of the programme's next day, this one (Wednesday is today).
+    expect(op.change).toEqual({ everyWeeks: 2, cadenceFrom: "2026-10-12" });
+    expect(op.base).toEqual({ everyWeeks: 1, cadenceFrom: null });
+    expect(op.title).toBe("Mobility: new rhythm");
+    expect(op.summary).toBe("Mon · Wed · 2 a week, every 2 weeks · 30 min");
+    expect(op.lines[0]).toBe("Every week → Every 2 weeks");
+    expect(op.lines[1]).toBe("Next sessions move to Wed 14 Oct · Mon 26 Oct · Wed 28 Oct");
+  });
+
+  it("approved, the off week's sessions come off; back to every week, both keys go and they come back", async () => {
+    const p = await programme({ goal: 2, days: [0, 2] });
+    const first = await proposed(p, { everyWeeks: 2, from: "2026-10-12" });
+    await approveAll(first.id);
+    const config = (await db.select().from(programs).where(eq(programs.id, p)))[0]!.config as Record<string, unknown>;
+    expect(config).toMatchObject({ everyWeeks: 2, cadenceFrom: "2026-10-12" });
+    expect(await live(p)).toEqual(["2026-10-12:completed", "2026-10-14:scheduled", "2026-10-26:scheduled", "2026-10-28:scheduled"]);
+
+    const back = await proposed(p, { everyWeeks: 1 });
+    expect((await opOf(back.id, p)).change).toEqual({ everyWeeks: 1, cadenceFrom: null });
+    await approveAll(back.id);
+    const again = (await db.select().from(programs).where(eq(programs.id, p)))[0]!.config as Record<string, unknown>;
+    expect(Object.keys(again)).not.toContain("everyWeeks");
+    expect(Object.keys(again)).not.toContain("cadenceFrom");
+    expect(await live(p)).toEqual(["2026-10-12:completed", "2026-10-14:scheduled", "2026-10-19:scheduled", "2026-10-21:scheduled", "2026-10-26:scheduled", "2026-10-28:scheduled"]);
+  });
+
+  it("refuses a rhythm past 1 to 4 weeks, or a start that isn't a date, teachably", async () => {
+    const p = await programme({ goal: 2, days: [0, 2] });
+    const ctx = await mainRun();
+    const why = async (input: Record<string, unknown>) => {
+      const r = (await change(ctx, { programmeId: p, ...input })).res;
+      return isToolErr(r) ? `${r.error}: ${r.why}` : "stored";
+    };
+    expect(await why({ everyWeeks: 5 })).toContain("everyWeeks: every 1 to 4 weeks");
+    expect(await why({ everyWeeks: 0 })).toContain("everyWeeks: every 1 to 4 weeks");
+    expect(await why({ everyWeeks: 2, from: "soon" })).toContain("from:");
+    expect(await why({ from: "2026-10-19" })).toContain("from:");
+  });
+
+  it("a course is no programme: the refusal says so, and names change_plan with its id", async () => {
+    const course = newId();
+    await db.insert(programs).values({
+      id: course, userId, kind: "course", name: "TRE", status: "active", disciplines: ["yoga"], startDate: null, endDate: null, raceDate: null, source: null,
+      config: { course: "tre", weekdays: [0, 4], time: "19:30", quietDaysBeforeRace: 7, placementWeeksAhead: 2, easeNext: false },
+      createdAt: NOW.toISOString(), updatedAt: NOW.toISOString(), archivedAt: null,
+    });
+    const r = (await change(await mainRun(), { programmeId: course, weeklyGoal: 1, days: ["Mon"] })).res;
+    expect(isToolErr(r) && r.error).toBe("not_a_programme");
+    expect(isToolErr(r) && r.why).toBe('"TRE" is a course, not a programme.');
+    expect(isToolErr(r) && r.fix).toContain("change_plan");
+    expect(isToolErr(r) && r.fix).toContain(course);
   });
 });

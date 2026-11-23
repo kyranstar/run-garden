@@ -182,7 +182,9 @@ describe("compact (the cached prefix grew 3k tokens since the pre-live audit)", 
     // measured 1,431.75 with its turns; ≥ 100 tokens headroom. The designer's sore-area line (S1): 328.25, under its cap.
     // MEASURED 2026-11-08 (fix wave: read_answers names sleep_quality and stress, in the shared prompt): the role blocks are untouched —
     // main 2,105.75 with its turns, as above; no cap moves.
-    const caps = { main: 2210, designer: 1300, reviewer: 1535 } as const;
+    // REBASED R1.6 (a course's schedule is change_plan's, a rhythm's words, no promise no tool keeps, today's session counted
+    // first — DEBUG-tre-cadence §4, §5): main measured 2,280 with its turns; ≥ 100 tokens headroom.
+    const caps = { main: 2380, designer: 1300, reviewer: 1535 } as const;
     for (const role of ["main", "designer", "reviewer"] as const) expect(roleBlock(role, RUN_LIMITS[role].maxCalls).length / 4, role).toBeLessThanOrEqual(caps[role]);
     // A run's reviewer (§8 §3): the block with the run rubric in place of the workout one — its own cached prefix.
     expect(roleBlock("reviewer", RUN_LIMITS.reviewer.maxCalls, "run").length / 4).toBeLessThanOrEqual(1300);

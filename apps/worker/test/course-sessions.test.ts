@@ -1201,6 +1201,14 @@ describe("never the engine", () => {
     expect(basis.records.weeklyGoal).toBe(3);
   });
 
+  it("a course every 2 weeks reads its days across its rhythm, a whole number still: an off week isn't a week short (R1.6)", async () => {
+    const p = await placed({ weekdays: [0, 2, 4], everyWeeks: 2, cadenceFrom: MON });
+    const id = slotId(p, MON);
+    await buildSessionOutcome(db, userId, id, {}, ctx);
+    // Three days a fortnight: two a week, rounded up, so the review's goal is never a fraction a week can't meet.
+    expect((await reviewBasis(db, userId, id, { today: MON, unit: "kg" })).records.weeklyGoal).toBe(2);
+  });
+
   it("the review basis of a course whose settings don't read falls back to the default goal", async () => {
     const p = await placed();
     const id = slotId(p, MON);

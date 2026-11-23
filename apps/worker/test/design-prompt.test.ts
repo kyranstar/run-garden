@@ -27,7 +27,9 @@ const ROLES = ["main", "designer", "reviewer"] as const;
 // E2) — main measured 2,092.25 (2,105.75 with its turns); ≥ 100 tokens headroom.
 // REBASED 2026-11-06 (audit fixes, safety): the reviewer's block names the only two checks no insistence moves (S5) —
 // measured 1,431.75 with its turns; ≥ 100 tokens headroom. The designer's sore-area line (S1): 328.25, under its cap.
-const ROLE_CAP = { main: 2210, designer: 1500, reviewer: 1535 } as const;
+// REBASED R1.6 (a course's schedule is change_plan's, a rhythm's words, no promise no tool keeps, today's session counted first
+// — DEBUG-tre-cadence §4, §5): main measured 2,280 with its turns (2,266.5 without); ≥ 100 tokens headroom.
+const ROLE_CAP = { main: 2380, designer: 1500, reviewer: 1535 } as const;
 // With a run's reviewer block too (§8 §3: a reviewer's block holds its draft's rubric).
 const ALL_TEXT = [SHARED_PROMPT, ...ROLES.map((r) => roleBlock(r)), roleBlock("reviewer", undefined, "run")].join("\n");
 

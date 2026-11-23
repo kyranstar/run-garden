@@ -135,8 +135,9 @@
  * through `applyPlanPatch`, the function `PATCH /api/plans/:id` calls (one write, one version), costing PLAN_CHANGE_COST. The
  * fields are checked against what they were when it was proposed (`base`: one moved since, by the athlete's own edit, refuses
  * it `stale`, as a programme change is); the plan's own rule (a pause that has gone by) refuses it `plan_refused`. Made twice
- * it writes once, so an approve retried writes nothing more. ONE THAT CHANGES THE PAUSE, set or cleared, also runs the plan's
- * placement pass, in what the request has left (`placeAfterPauseChange`, whether or not this approve's write changed
+ * it writes once, so an approve retried writes nothing more. ONE THAT CHANGES THE PAUSE, set or cleared, or (R1.6) a course's
+ * days, time or rhythm, also runs the plan's placement pass and a new time's re-time, in what the request has left
+ * (`placeAfterPlanChange`, whether or not this approve's write changed
  * anything, so an approve retried after its request died still places, and a pass that has placed writes nothing more). So
  * it costs PLAN_PAUSE_COST: beside anything else that fills the request it waits in `remaining`, and runs first in the next.
  * The card says the pause, which has landed; what the pass couldn't fit is the next hourly pass's. BESIDE A WHOLE PLAN in the same proposal (one card), it follows
@@ -255,6 +256,7 @@ import {
   isObjectiveChangeOp,
   pinsCardLinesOf,
   planFieldsOfRow,
+  programmeSettingsOf,
   sameSetting,
   type ImportCorrectionOp,
   type MovePinsOp,
@@ -268,7 +270,7 @@ import {
   type ProgrammeSettings,
 } from "./proposal-kinds.js";
 import { applyPlanPatch } from "./plan-registry.js";
-import { PAUSE_PASS_COST, placeAfterPauseChange, placeSlotsWithin, RETRACT_COST } from "./program-slots.js";
+import { PAUSE_PASS_COST, placeAfterPlanChange, PLACING_FIELDS, placeSlotsWithin, RETRACT_COST } from "./program-slots.js";
 import { updateProgram } from "./programs.js";
 import { releaseFitStarts } from "./saves-batches.js";
 import { correctionCostOf, CORRECTIONS_FIXED, CORRECTIONS_PER_REQUEST, correctionsReadSql, correctionStateOf, judgeCorrection } from "./import-corrections.js";
@@ -1635,8 +1637,10 @@ export async function approveDesignOps(
       }
       continue;
     }
-    const movesPause = "pausedUntil" in g.change;
-    if (!first && (movesPause ? PLAN_PAUSE_COST : PLAN_CHANGE_COST) > left) {
+    // A change to the pause or (R1.6) to a course's schedule is placed in this request: whatever this write changed, so a
+    // retried approve still places, and a pass that has placed writes nothing more.
+    const moves = Object.keys(g.change).filter((k) => k === "time" || (PLACING_FIELDS as readonly string[]).includes(k));
+    if (!first && (moves.length > 0 ? PLAN_PAUSE_COST : PLAN_CHANGE_COST) > left) {
       remaining.push(...planChanges.slice(i).map((x) => x.id));
       full = true;
       break;
@@ -1645,7 +1649,7 @@ export async function approveDesignOps(
     left -= PLAN_CHANGE_COST;
     const res = await applyPlanChange(db, userId, g, ctx);
     if (res.status === "applied") {
-      if (movesPause) left -= await placeAfterPauseChange(db, userId, g.planId, ctx.today, ctx.prefs, ctx.now, left);
+      if (moves.length > 0) left -= await placeAfterPlanChange(db, userId, g.planId, moves, ctx.today, ctx.prefs, ctx.now, left);
       outcomes.set(g.id, { status: "applied", at: ctx.now, changed: res.changed });
       planned.push({ opId: g.id, summary: g.summary });
     } else {
@@ -1902,7 +1906,8 @@ async function applyProgrammeChunk(
       .limit(1);
     if (!row || row.kind !== "adaptive") return { status: "refused", reason: "That programme isn't there any more.", spent: 0 };
     if (row.status !== "active") return { status: "refused", reason: `${row.name} is retired.`, spent: 0 };
-    const now = adaptiveConfigSchema.parse(row.config);
+    // In a change's terms: every week reads as 1 and no anchor (R1.6), however the row stores it.
+    const now = programmeSettingsOf(adaptiveConfigSchema.parse(row.config));
     const keys = Object.keys(g.change) as (keyof ProgrammeSettings)[];
     const moved = keys.filter((k) => !sameSetting(k, now[k], g.base[k]) && !sameSetting(k, now[k], g.change[k]));
     if (moved.length > 0) return { status: "refused", reason: "Its settings changed since this was suggested: ask the coach again.", spent: 0 };

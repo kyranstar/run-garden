@@ -339,7 +339,8 @@ describe("read_plans", () => {
     expect((res as ToolErr).why).toContain('"zzz"');
   });
 
-  it("past what shortening can fit: the last plans are counted (morePlans), never a list cut mid-way", async () => {
+  // REBASED R1.6 (never a plan hidden, DEBUG-tre-cadence §5.2): the last plans are listed in short, not counted away.
+  it("past what shortening can fit: the last plans are listed in short (otherPlans), never a list cut mid-way", async () => {
     const long = (s: string) => `${s} ${"with a very long name the watch gave it ".repeat(4)}`.trim();
     for (let n = 0; n < 10; n++) {
       await block(rich.userId, { id: `cp-many-${n}`, name: long(`Block ${n}`), start: day(2), end: "2026-12-31" });
@@ -353,13 +354,14 @@ describe("read_plans", () => {
       }
     }
     const { res, count } = await read();
-    const r = ok(res) as ToolOk & { data: { plans: Array<Record<string, any>>; morePlans?: number } };
+    const r = ok(res) as ToolOk & { data: { plans: Array<Record<string, any>>; otherPlans?: Array<Record<string, any>>; morePlans?: number } };
     expect(count).toBe(1);
     expect(Buffer.byteLength(JSON.stringify({ provenance: r.provenance, missing: r.missing, data: r.data }))).toBeLessThanOrEqual(RESULT_BUDGET_BYTES);
-    expect(r.data.morePlans).toBeGreaterThan(0);
-    // 10 blocks, 10 watch plans, the fixture's programme: every one shown or counted.
-    expect(r.data.plans.length + r.data.morePlans!).toBe(21);
-    // The coach's own running blocks come first: the ones left out are the others.
+    expect(r.data.otherPlans!.length).toBeGreaterThan(0);
+    expect(r.data.morePlans).toBeUndefined();
+    // 10 blocks, 10 watch plans, the fixture's programme: every one named, in full or in short.
+    expect(r.data.plans.length + r.data.otherPlans!.length).toBe(21);
+    // The coach's own running blocks come first: the ones in short are the others.
     expect(r.data.plans[0]!.kind).toBe("coach block");
   });
 
@@ -579,7 +581,10 @@ describe("read_plans", () => {
       const r = ok((await read()).res) as ToolOk & { data: Record<string, any> };
       expect(r.data.continueLine).toBe(CONTINUE_LINE);
       expect(Buffer.byteLength(JSON.stringify({ provenance: r.provenance, missing: r.missing, data: r.data })), `k=${k}`).toBeLessThanOrEqual(RESULT_BUDGET_BYTES);
-      dropped = Math.max(dropped, r.data.morePlans ?? 0);
+      // REBASED R1.6: past the edge, plans go short (otherPlans), never counted away; all eleven named every time.
+      expect(r.data.morePlans, `k=${k}`).toBeUndefined();
+      expect(r.data.plans.length + (r.data.otherPlans?.length ?? 0), `k=${k}`).toBe(11);
+      dropped = Math.max(dropped, r.data.otherPlans?.length ?? 0);
     }
     expect(dropped).toBeGreaterThan(0);
   });
@@ -597,12 +602,14 @@ describe("read_plans", () => {
     const r = ok(res);
     expect(count).toBe(1);
     expect(Buffer.byteLength(JSON.stringify({ provenance: r.provenance, missing: r.missing, data: r.data }))).toBeLessThanOrEqual(RESULT_BUDGET_BYTES);
-    // Every plan is named or counted (morePlans counts any plan left out, the fixture's own beside the eight; each next
-    // session now carries its `revisable`, so the room is a plan tighter); each one shown keeps its first shape week.
+    // Every plan is named, in full or (REBASED R1.6) in short — the fixture's own beside the eight; each next session now
+    // carries its `revisable`, so the room is a plan tighter; each one shown keeps its first shape week.
     const shown = r.data.plans.filter((p) => String(p.id).startsWith("cp-big-"));
-    const named = r.data.plans.length;
-    expect(named + ((r.data as { morePlans?: number }).morePlans ?? 0)).toBe(9);
-    expect(shown.length).toBeGreaterThanOrEqual(6);
+    const named = r.data.plans.length + ((r.data as { otherPlans?: unknown[] }).otherPlans?.length ?? 0);
+    expect((r.data as { morePlans?: number }).morePlans).toBeUndefined();
+    expect(named).toBe(9);
+    // REBASED R1.6: a plan in short takes the room a count didn't, so one block fewer is shown in full.
+    expect(shown.length).toBeGreaterThanOrEqual(5);
     for (const big of shown) {
       expect(big.shapeWeeks.length + big.moreShapeWeeks).toBe(30);
       if (big.shapeWeeks.length > 0) expect(big.shapeWeeks[0].weekStart).toBe("2026-05-18");

@@ -290,21 +290,44 @@ describe("POST /api/plans/courses: a new plan", () => {
     expect(res.status).toBe(409);
     expect(res.body).toEqual({
       error: "course_running",
-      why: "This course is already running on other days or at another time. Stop it and start it again with the new ones: it carries on from the sessions done.",
+      why: "This course is already running on other days, at another time or in another rhythm. Change its days, time or rhythm on the plan itself: it carries on from the sessions done.",
     });
     expect(writes()).toEqual([]);
     expect(courseConfigSchema.parse((await planOf(id)).config)).toMatchObject({ weekdays: [0, 4], time: "18:15" });
     expect(await coursePlans()).toHaveLength(1);
   });
 
-  it("what the words say is so: stop it, start it with the new days, and it carries on from the sessions done", async () => {
+  it("a start of every week on a course running every 2 weeks is another rhythm: refused, nothing changes (R1.6)", async () => {
+    const id = await started();
+    await db.update(programs).set({ config: { ...(await planOf(id)).config as object, everyWeeks: 2, cadenceFrom: MON } }).where(eq(programs.id, id));
+    statements.length = 0;
+    const res = await start();
+    expect(res.status).toBe(409);
+    expect(res.body.error).toBe("course_running");
+    expect(writes()).toEqual([]);
+  });
+
+  it("what the words say is so: change its days on the plan, and it carries on from the sessions done", async () => {
     const id = await started();
     await ownSession(id, day(-1, 0), 1, "completed");
     expect((await start({ ...BODY, weekdays: [1, 3] })).status).toBe(409);
+    const res = await send("PATCH", `/api/plans/${id}`, { weekdays: [1, 3] });
+    expect(res.status).toBe(200);
+    expect(res.body.plan).toMatchObject({ id, course: { session: 2, of: 4 } });
+    expect(courseConfigSchema.parse((await planOf(id)).config).weekdays).toEqual([1, 3]);
+  });
+
+  it("and stop then start still carries on, every week again: a revival starts no rhythm it wasn't asked for (R1.6)", async () => {
+    const id = await started();
+    await ownSession(id, day(-1, 0), 1, "completed");
+    await db.update(programs).set({ config: { ...(await planOf(id)).config as object, everyWeeks: 2, cadenceFrom: MON } }).where(eq(programs.id, id));
     await until(() => stop(id));
     const { last } = await until(() => start({ ...BODY, weekdays: [1, 3] }));
     expect(last.plan).toMatchObject({ id, course: { session: 2, of: 4 } });
-    expect(courseConfigSchema.parse((await planOf(id)).config).weekdays).toEqual([1, 3]);
+    const config = (await planOf(id)).config as Record<string, unknown>;
+    expect(config.weekdays).toEqual([1, 3]);
+    expect(Object.keys(config)).not.toContain("everyWeeks");
+    expect(Object.keys(config)).not.toContain("cadenceFrom");
   });
 
   it("a retry with the same days stays 200, whatever order it names them in", async () => {

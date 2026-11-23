@@ -23,7 +23,7 @@
  */
 import { and, eq, inArray, sql } from "drizzle-orm";
 import { exercisePrefs, plannedWorkouts, programs } from "@rg/database";
-import { addDays, adaptiveConfigSchema, courseConfigSchema, isLocalDate, startOfIsoWeek, type WeightUnit } from "@rg/domain";
+import { addDays, adaptiveConfigSchema, cadenceOf, courseConfigSchema, isLocalDate, startOfIsoWeek, type WeightUnit } from "@rg/domain";
 import type { EngineData, ExerciseRecord } from "@rg/exercise-library";
 import { Hist, Lib, Records, type Block, type HistorySession, type RecordsState } from "@rg/session-engine";
 import { makeLibraryIndex } from "@rg/workout";
@@ -392,12 +392,18 @@ const sliceOf = (ex: ExerciseRecord): ExerciseSlice => {
 /**
  * The sessions a week the session's plan aims for, by its kind: a course's are its days (read as a programme's, its settings
  * don't parse and it would quietly take the default goal); anything else's are a programme's, whose defaults a Studio
- * bucket's empty settings take.
+ * bucket's empty settings take. A rhythm longer than a week (R1.6) spreads its goal across its weeks, so an off week isn't
+ * read as one short: rounded up, since the goal is counted in whole sessions (the engine's and a device's `weeklyGoal` is an
+ * integer), and never below one.
  */
 function weeklyGoalOf(program: { kind: string; config: unknown } | undefined): number {
-  const goal = (n: number | undefined): number => n ?? 4;
-  if (program?.kind === "course") return goal(courseConfigSchema.safeParse(program.config).data?.weekdays.length);
-  return goal(adaptiveConfigSchema.safeParse(program?.config ?? {}).data?.weeklyGoal);
+  const goal = (n: number | undefined, every: number): number => (n === undefined ? 4 : Math.max(1, Math.ceil(n / every)));
+  if (program?.kind === "course") {
+    const c = courseConfigSchema.safeParse(program.config).data;
+    return goal(c?.weekdays.length, c ? cadenceOf(c).everyWeeks : 1);
+  }
+  const a = adaptiveConfigSchema.safeParse(program?.config ?? {}).data;
+  return goal(a?.weeklyGoal, a ? cadenceOf(a).everyWeeks : 1);
 }
 
 export async function reviewBasis(

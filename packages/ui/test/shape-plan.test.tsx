@@ -19,7 +19,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { CoachPlanDto, PlanDetailResponse, PlanSummaryDto, PlanWeekResponse, ProgramDto, TrainingLineDto, WorkoutDto } from "@rg/api-client";
 import { CoachOpenContext, type CoachOpener } from "../src/screens/studio/coach-ask.js";
-import { planRequests, PlanSheet, usePlanSummaries } from "../src/screens/plan-sheet.js";
+import { CourseSheet, planRequests, PlanSheet, usePlanSummaries } from "../src/screens/plan-sheet.js";
 import { planEntries, planRowState, YourPlans } from "../src/screens/plan-cards.js";
 import { RaceMismatchNotice, WeeklyBrief } from "../src/screens/plan-brief.js";
 import { WeekView, weekLine, weekPlanName, weekTitle } from "../src/screens/week-view.js";
@@ -297,6 +297,21 @@ describe("a course in Your plans (plans with a purpose): a row of its own, and a
 
   it("one the server can't place reads as its kind alone, with no stray separator", () => {
     expect(rowsOf(listed([summary({ course: null })]))).toEqual(["Evening practice Practice"]);
+  });
+
+  it("its row says its schedule under its state: its days, its rhythm and its time (R1.6)", () => {
+    const every2 = summary({ schedule: { days: [0], time: "19:30", everyWeeks: 2, from: "2026-11-23" } });
+    expect(rowsOf(listed([every2]))).toEqual(["Evening practice Practice · Session 3 of 10 Mon · every 2 weeks · 19:30"]);
+    expect(listed([every2])).toContain('<span class="plan-row-state plan-row-schedule">Mon · every 2 weeks · 19:30</span>');
+    expect(rowsOf(listed([summary({ schedule: { days: [0, 4], time: "19:30", everyWeeks: 1, from: null } })]))).toEqual(["Evening practice Practice · Session 3 of 10 Mon · Fri · 19:30"]);
+    // A stopped one has no schedule ahead of it.
+    const [, past] = listed([summary({ status: "retired", schedule: { days: [0], time: "19:30", everyWeeks: 2, from: "2026-11-23" } })]).split("Past plans");
+    expect(rowsOf(past!)).toEqual(["Evening practice Practice · Stopped"]);
+  });
+
+  it("its sheet says its schedule too", () => {
+    const html = renderToStaticMarkup(wrap(createElement(CourseSheet, { plan: summary({ schedule: { days: [0], time: "19:30", everyWeeks: 2, from: "2026-11-23" } }), onClose: noop }), null));
+    expect(html).toContain('<p class="faint plan-schedule">Mon · every 2 weeks · 19:30</p>');
   });
 
   describe("a row takes its name from its plan (R2)", () => {

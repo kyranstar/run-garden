@@ -1313,4 +1313,37 @@ describe("fix round 7: the sanctioned rest the thread coach is held to", () => {
     const dossier = await buildDossier(db, rich.userId, prefs, TODAY);
     expect(dossier.text).toContain(`sanctioned rest used 1 of ${SANCTIONED_REST_PER_ROLLING_WEEK} this rolling week`);
   });
+
+  // R1.6 (DEBUG-tre-cadence §5.4): the owner's three skips, Fri, Mon, Fri, called the third "the 3rd in a rolling week" when
+  // its week held two. Each skip is counted in the rolling week that ends on its own day, as the garden lands it.
+  it("counts only the skips inside each skip's own rolling week, by date", async () => {
+    const fri = await planned({ date: day(-2), category: "yoga", origin: "studio" });
+    const mon = await planned({ date: day(-5), category: "yoga", origin: "studio" });
+    const nextFri = await planned({ date: day(-9), category: "yoga", origin: "studio" });
+    const far = await planned({ date: day(-30), category: "yoga", origin: "studio" });
+    // The owner's run's scope: the coach's whole reach.
+    const r = await mainRun({ kind: "auto" });
+    const rest = (res: ToolOk) => (res.data as { sanctionedRest: unknown }).sanctionedRest;
+    expect(rest(ok((await adjust(r, skip(fri))).res))).toEqual({ usedThisWeek: 0, inProposal: 1, allowance: 1 });
+    expect(rest(ok((await adjust(r, skip(mon))).res))).toEqual({ usedThisWeek: 0, inProposal: 2, allowance: 1 });
+    // The Friday after: its rolling week (Sat to Fri) holds the Monday and itself, not the first Friday.
+    expect(rest(ok((await adjust(r, skip(nextFri))).res))).toEqual({ usedThisWeek: 0, inProposal: 2, allowance: 1 });
+    // A month on: alone in its week, so no note.
+    expect(rest(ok((await adjust(r, skip(far))).res))).toEqual({ usedThisWeek: 0, inProposal: 1, allowance: 1 });
+    const ops = await planOps(designProposalId(r.id));
+    const note = (id: string) => ops.find((o) => o.op.workoutId === id)!.issues.find((i) => i.code === "sanctioned_rest")?.message ?? null;
+    expect(note(fri)).toBeNull();
+    expect(note(mon)).toBe("This would be the 2nd sanctioned skip in a rolling week: only the first counts as a rest day for the garden; further ones are merely neutral.");
+    expect(note(nextFri)).toBe("This would be the 2nd sanctioned skip in a rolling week: only the first counts as a rest day for the garden; further ones are merely neutral.");
+    expect(note(far)).toBeNull();
+  });
+
+  it("a skip ahead counts the skips already resolved in its own week, not this one's", async () => {
+    // Resolved today, two days ago: this rolling week's, not the week of a skip ten days on.
+    await planned({ date: day(2), state: "skipped" });
+    await db.update(plannedWorkouts).set({ sanctionedBy: "coach", resolutionDate: day(2) }).where(eq(plannedWorkouts.effectiveDate, day(2)));
+    const ahead = await planned({ date: day(-10), category: "yoga", origin: "studio" });
+    const res = ok((await adjust(await mainRun({ kind: "auto" }), skip(ahead))).res);
+    expect((res.data as { sanctionedRest: unknown }).sanctionedRest).toEqual({ usedThisWeek: 0, inProposal: 1, allowance: 1 });
+  });
 });

@@ -173,8 +173,10 @@ describe("change_plan: one change to a plan's purpose, brief, ending or pause", 
     const ctx = await mainRun();
     const { res, count } = await change(ctx, { planId: p, purpose: "Run a first 10K", onEnd: "continue", pausedUntil: "2026-10-21" });
     const stored = ok(res);
-    expect(changePlan.statementCost).toBe(2);
-    expect(count).toBeLessThanOrEqual(changePlan.statementCost);
+    // REBASED R1.6: the declared cost holds a course's schedule preview too (its rows and one touched lookup); a change of
+    // words still runs its two.
+    expect(changePlan.statementCost).toBe(4);
+    expect(count).toBeLessThanOrEqual(2);
     expect(stored.data).toMatchObject({ stored: true, opId: planChangeId(p), planId: p });
     const op = await opOf(designProposalId(ctx.run.id), p);
     expect(op).toMatchObject({
@@ -275,7 +277,7 @@ describe("change_plan: one change to a plan's purpose, brief, ending or pause", 
   });
 
   it("the words, unit by unit: a line a field, the title by the fields, nothing for what is the same", () => {
-    const from: PlanChangeFields = { purpose: "Get fitter", brief: null, onEnd: "ask", pausedUntil: "2026-10-20", objectiveIds: ["a"], easeNext: false };
+    const from: PlanChangeFields = { purpose: "Get fitter", brief: null, onEnd: "ask", pausedUntil: "2026-10-20", objectiveIds: ["a"], easeNext: false, weekdays: [], time: null, everyWeeks: 1, cadenceFrom: null };
     expect(planSettingLines(from, { ...from, purpose: null, brief: "Slow build", pausedUntil: null, objectiveIds: ["a", "b"], easeNext: true })).toEqual([
       "Purpose cleared",
       "Brief: Slow build",

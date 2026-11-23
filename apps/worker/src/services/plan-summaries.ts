@@ -1,7 +1,10 @@
 import { z } from "zod";
 import {
+  cadenceOf,
+  courseConfigFields,
   courseConfigSchema,
   defaultOnEnd,
+  EVERY_WEEKS_MAX,
   isLocalDate,
   planOnEndSchema,
   planPrompt,
@@ -63,9 +66,30 @@ export const planPatchSchema = z
       .optional(),
     /** A course's: whether its next session is eased. */
     easeNext: z.boolean().optional(),
+    /** A course's days (R1.6), 0 = Monday, held to its settings' own rule. */
+    weekdays: courseConfigFields.shape.weekdays.optional(),
+    /** A course's time, "HH:MM". */
+    time: courseConfigFields.shape.time.optional(),
+    /** A course's rhythm: its days every 1 to 4 weeks. */
+    everyWeeks: z.number().int().min(1).max(EVERY_WEEKS_MAX).optional(),
+    /** The day its rhythm counts from, put on that week's Monday; null or left out with a new rhythm: the week of its next day. */
+    cadenceFrom: z
+      .string()
+      .refine(isLocalDate, { message: "must be a YYYY-MM-DD calendar date" })
+      .nullable()
+      .optional(),
   })
   .strict();
 export type PlanPatch = z.infer<typeof planPatchSchema>;
+
+/** A course's schedule as the list carries it (R1.6): its days (0 = Monday, in week order), its time, its rhythm and, every 2
+ * weeks or more, the Monday it counts from. */
+export interface CourseScheduleDto {
+  days: number[];
+  time: string;
+  everyWeeks: number;
+  from: string | null;
+}
 
 export interface PlanSummaryDto {
   id: string;
@@ -80,6 +104,8 @@ export interface PlanSummaryDto {
   lineKey: string | null;
   listedAs: string | null;
   course: { session: number; of: number } | { after: string } | null;
+  /** A course's days, time and rhythm (R1.6); absent for any other kind, and for settings that don't read. */
+  schedule?: CourseScheduleDto;
   /** `note`: what happened to the plan's draft, when it came to nothing (drafts on only); absent otherwise. */
   prompt: { kind: "whats_next" | "draft_ready"; label: string; request: string; note?: string } | null;
 }
@@ -303,6 +329,15 @@ function courseLabel(row: Pick<PlanRow, "kind" | "config" | "courseDone">): Plan
   return definition.sessionLabel(row.courseDone ?? 0) ?? { after: definition.afterLabel };
 }
 
+/** A course's schedule from its settings (R1.6); null for any other kind, or settings that don't read. */
+export function courseScheduleOf(row: Pick<PlanRow, "kind" | "config">): CourseScheduleDto | null {
+  if (row.kind !== "course") return null;
+  const config = courseConfigSchema.safeParse(row.config);
+  if (!config.success) return null;
+  const { everyWeeks, from } = cadenceOf(config.data);
+  return { days: [...config.data.weekdays].sort((a, b) => a - b), time: config.data.time, everyWeeks, from };
+}
+
 export const isPlanKind = (kind: string): kind is (typeof PLAN_KINDS)[number] => (PLAN_KINDS as readonly string[]).includes(kind);
 
 /** Which line each plan's blocks make: a plan id → its line's key. */
@@ -318,6 +353,7 @@ export function planSummaryOf(row: PlanRow, lineKeys: ReadonlyMap<string, string
   const onEnd = planOnEndSchema.safeParse(row.onEnd);
   const ending: PlanOnEnd = onEnd.success ? onEnd.data : defaultOnEnd(kind, row.disciplines);
   const status = row.status === "retired" || row.status === "archived" ? "retired" : "active";
+  const schedule = courseScheduleOf(row);
   return {
     id: row.id,
     kind,
@@ -331,6 +367,7 @@ export function planSummaryOf(row: PlanRow, lineKeys: ReadonlyMap<string, string
     lineKey: lineKeys.get(row.id) ?? null,
     listedAs: kind === "coach" ? studioPlanId : kind === "adaptive" || kind === "course" ? row.id : null,
     course: courseLabel(row),
+    ...(schedule ? { schedule } : {}),
     prompt: promptDto(promptOfPlan(endingRowOf(row), today, superseded)),
   };
 }

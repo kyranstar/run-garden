@@ -22,7 +22,7 @@ import { z, ZodError } from "zod";
 import { asc, desc, eq } from "drizzle-orm";
 import { locations } from "@rg/database";
 import { activeProfileIds, conditionView } from "../services/condition-views.js";
-import { adaptiveConfigSchema, nowInstant, todayInZone } from "@rg/domain";
+import { adaptiveConfigFields, adaptiveConfigSchema, nowInstant, todayInZone } from "@rg/domain";
 import type { AppContext } from "../auth/middleware.js";
 import { requireUser } from "../auth/middleware.js";
 import { loadPreferences, syncCalendar } from "../services/calendar-sync.js";
@@ -53,8 +53,8 @@ const createSchema = z
 const patchSchema = z
   .object({
     name: programNameSchema.optional(),
-    /** Only the keys sent change; the service merges them over the stored config. */
-    config: adaptiveConfigSchema.partial().strict().optional(),
+    /** Only the keys sent change; the service merges them over the stored config (a rhythm of every week removes its keys). */
+    config: adaptiveConfigFields.partial().strict().optional(),
     status: adaptiveStatusSchema.optional(),
   })
   .strict();

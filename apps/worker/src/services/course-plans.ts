@@ -7,8 +7,8 @@
  * without being written (a number and no document) among them. A revival keeps the plan's own words and any easing asked for,
  * a pause from before the stop doesn't outlive it, and it writes a `program_versions` row saying what changed. A new plan
  * takes an id from the account and the course, so two racing first starts make one row. Running, it stands as it is: other
- * days or another time are refused (`course_running`), since answering 200 and ignoring them would be false: its days change by
- * stopping it and starting it again.
+ * days, another time or another rhythm are refused (`course_running`), since answering 200 and ignoring them would be false: they
+ * change in place (R1.6: `PATCH /api/plans/:id`, the coach's change_plan). A start is every week, and so is a revival.
  *
  * WHAT'S ALREADY PLANNED (`finishStart`). Sessions from before courses existed sit in the Studio's bucket as document workouts.
  * One is a session of this course when its document's `source.ref` says `<course>-course:<n>`. Each comes to one of:
@@ -55,7 +55,7 @@
  */
 import { and, asc, eq, gte, inArray, isNull, ne, notInArray, or, sql } from "drizzle-orm";
 import { performedSessions, plannedWorkouts, programs, userPreferences } from "@rg/database";
-import { courseConfigSchema, defaultOnEnd, DOC_ORIGINS, docOriginRow, nowInstant, todayInZone, userPreferencesSchema, type UserPreferences } from "@rg/domain";
+import { courseConfigSchema, defaultOnEnd, DOC_ORIGINS, docOriginRow, nowInstant, todayInZone, userPreferencesSchema, withCadence, type UserPreferences } from "@rg/domain";
 import { courseDefinition, courseSessionOfRef } from "@rg/workout";
 import { restoreInProgress } from "./account-state.js";
 import { STILL_TO_DO } from "./course-sessions.js";
@@ -73,8 +73,10 @@ type ProgramRow = typeof programs.$inferSelect;
 
 const pw = plannedWorkouts;
 
-/** What a start naming other days or another time on a running course is told: how they do change. */
-export const COURSE_RUNNING_WHY = "This course is already running on other days or at another time. Stop it and start it again with the new ones: it carries on from the sessions done.";
+/** What a start naming other days, another time or another rhythm on a running course is told: how they do change (R1.6: in
+ * place, `PATCH /api/plans/:id` or the coach's change_plan). */
+export const COURSE_RUNNING_WHY =
+  "This course is already running on other days, at another time or in another rhythm. Change its days, time or rhythm on the plan itself: it carries on from the sessions done.";
 
 /** Who a session taken off is recorded as, and why it left: the header's WHY. */
 const BY_THE_PLAN = { source: "program_replace", archiveReason: "program_replaced" } as const;
@@ -91,9 +93,16 @@ export interface CourseStep {
   waiting?: true;
 }
 
-/** The same days at the same time: a retry of what's running, in whatever order it names them. */
-const sameSchedule = (a: { weekdays: readonly number[]; time: string }, b: { weekdays: readonly number[]; time: string }): boolean =>
-  a.time === b.time && a.weekdays.length === b.weekdays.length && a.weekdays.every((d) => b.weekdays.includes(d));
+/** A course's schedule as a start compares it: its days, its time and (R1.6) its rhythm, absent every week. */
+type Schedule = { weekdays: readonly number[]; time: string; everyWeeks?: number | undefined };
+
+/** The same days at the same time in the same rhythm: a retry of what's running, in whatever order it names them. A start
+ * asks for every week, so one on a course running every few weeks is another schedule. */
+const sameSchedule = (a: Schedule, b: Schedule): boolean =>
+  a.time === b.time &&
+  (a.everyWeeks ?? 1) === (b.everyWeeks ?? 1) &&
+  a.weekdays.length === b.weekdays.length &&
+  a.weekdays.every((d) => b.weekdays.includes(d));
 
 /** Clear the marker: its step found nothing left. Only that kind's, so an older step can't clear a newer one's. */
 const clearFinishing = (db: Db, userId: string, planId: string, kind: "start" | "stop", now: string) =>
@@ -121,12 +130,14 @@ async function theCoursePlan(db: Db, userId: string, input: { course: string; we
     if (found.status === "active" && found.archivedAt === null && stored.success) {
       return sameSchedule(stored.data, asked) ? { id: found.id, starting: stored.data.finishing === "start" } : null;
     }
-    const config = courseConfigSchema.parse({ ...(stored.success ? stored.data : {}), ...asked, finishing: "start" });
+    // A revival takes the schedule asked for now, which is every week: a rhythm from before the stop doesn't outlive it (R1.6).
+    const config = courseConfigSchema.parse(withCadence({ ...(stored.success ? stored.data : {}), ...asked, finishing: "start" }, 1, null));
     const changed = [
       ...(found.status !== "active" ? ["status"] : []),
       ...(found.archivedAt !== null ? ["archivedAt"] : []),
       ...(!stored.success || JSON.stringify(stored.data.weekdays) !== JSON.stringify(asked.weekdays) ? ["weekdays"] : []),
       ...(!stored.success || stored.data.time !== asked.time ? ["time"] : []),
+      ...(stored.success && stored.data.everyWeeks !== undefined ? ["everyWeeks"] : []),
       ...(found.pausedUntil !== null ? ["pausedUntil"] : []),
     ];
     const fields = { purpose: found.purpose, brief: found.brief, onEnd: found.onEnd, pausedUntil: null, objectiveIds: found.objectiveIds, config };
