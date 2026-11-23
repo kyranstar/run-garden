@@ -29,6 +29,7 @@ import { seedRealisticAccount } from "./realistic-account.js";
 
 afterEach(() => {
   vi.unstubAllGlobals();
+  vi.useRealTimers();
 });
 
 /** The mock COROS account's week: its activities (a run with its detail, a ride, a strength session) land on that
@@ -303,6 +304,12 @@ describe("the sweep's work is bounded per invocation", () => {
   // half, the hourly's other heavy steps waiting behind it, and the garden's log and timeline holding only the days
   // rebuilt so far. A rebuild left unfinished is a walk left unfinished, as a replay on record is: the sweep walks it on.
   it("a version rebuild left unfinished walks on in the sweep too, capped like a replay", { timeout: 60_000 }, async () => {
+    // The clock pinned (2026-11-23): the rebuild walks SWEEP_REPLAY_MAX_DAYS days on from the garden's genesis, today − 120
+    // days, and writes a Monday's checkpoint as well as its stop day's. So when a real today in Los Angeles was a Monday or a
+    // Tuesday, a Monday fell inside the walk and two rows carried the new version, both right. On Wed 18 Nov the genesis is
+    // a Tuesday, so the walk (Tue–Thu) holds no Monday. The clock runs on from there, as a real one does.
+    vi.useFakeTimers({ toFake: ["Date"], shouldAdvanceTime: true });
+    vi.setSystemTime(new Date("2026-11-18T20:00:00.000Z")); // Wed 18 Nov 2026, 12:00 in Los Angeles
     const db = makeTestDb({ boundVariableCap: 100 });
     const acct = await seedRealisticAccount(db, { newActivities: false, gardenBehindDays: 2, corosBaseMonday: lastMonday() });
     vi.stubGlobal("fetch", acct.fetchImpl);
