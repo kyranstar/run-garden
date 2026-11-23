@@ -85,10 +85,10 @@ export async function stopInTurns(send: () => Promise<PlanStopResponse>, max = S
 export function stopOutcomeWords(outcome: StopOutcome): string {
   switch (outcome) {
     case "stopped":
-      return "Stopped. Its sessions ahead have come off.";
+      return "Stopped. Its sessions ahead have been taken off.";
     case "waiting":
-      return "Stopped. A session on its way to your watch comes off once it lands.";
+      return "Stopped. A session still being sent to your watch will be taken off once it's there.";
     case "left":
-      return "Stopped. The rest comes off by itself.";
+      return "Stopped. The rest will be taken off for you.";
   }
 }

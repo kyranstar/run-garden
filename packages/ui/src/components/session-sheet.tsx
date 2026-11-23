@@ -968,7 +968,7 @@ export function SessionSheet({
           </button>
         ) : null}
         {/* Deletes can land after the push and wait for the hourly: the line stays until every job of it has run. */}
-        {state === "updating" ? <small className="watch-state-hint">An old copy can take up to an hour to come off.</small> : null}
+        {state === "updating" ? <small className="watch-state-hint">Taking an old copy off can take up to an hour.</small> : null}
         {state === "failed" && retry.isError ? (
           <p className="confirm-error watch-state-error" role="alert">
             {retryRefusal(retry.error)}
@@ -1192,7 +1192,7 @@ export function SessionSheet({
         onConfirm={() => remove.mutate()}
         error={remove.isError ? removeRefusal(remove.error) : null}
       >
-        {s?.watch?.state === "on_watch" ? "It comes off your plan, your calendar and your watch." : "It comes off your plan and your calendar."}
+        {s?.watch?.state === "on_watch" ? "It will be taken off your plan, your calendar and your watch." : "It will be taken off your plan and your calendar."}
       </ConfirmDialog>
       <ConfirmDialog
         open={discardingCopy}
@@ -1213,7 +1213,7 @@ export function SessionSheet({
         onConfirm={() => keepOff.mutate()}
         error={keepOff.isError ? "Couldn't take it off — try again." : null}
       >
-        It comes off your watch and stays in the app. Put it back on any time.
+        It will be taken off your watch and kept in the app. Put it back on any time.
       </ConfirmDialog>
       {previewing && s ? (
         <WatchPreviewSheet workoutId={w.id} minutes={view?.minutes ?? null} readOnly onClose={() => setPreviewing(false)} />

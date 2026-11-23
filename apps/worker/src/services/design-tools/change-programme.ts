@@ -111,12 +111,12 @@ export function settingLines(from: ProgrammeSettings, to: ProgrammeSettings, car
   return out;
 }
 
-/** Where the next sessions go, when they move: "Next sessions move to Tue 21 Oct · Thu 23 Oct" — null when they stay. */
+/** Where the next sessions go, when they move: "Next sessions will be moved to Tue 21 Oct · Thu 23 Oct" — null when they stay. */
 export function nextLine(before: readonly string[], after: readonly string[]): string | null {
   const was = before.slice(0, NEXT_SHOWN);
   const next = after.slice(0, NEXT_SHOWN);
   if (next.length === 0 || same(was, next)) return null;
-  return `${was.length > 0 ? "Next sessions move to" : "Next sessions"} ${next.map(dayLabel).join(" · ")}`;
+  return `${was.length > 0 ? "Next sessions will be moved to" : "Next sessions"} ${next.map(dayLabel).join(" · ")}`;
 }
 
 /** The card's title: "Mobility: new days", "Mobility: new days and goal", "Mobility: new settings" (three or more). */

@@ -82,7 +82,7 @@ const change = (opId: string, over: Partial<DesignChangeLineDto> = {}): DesignCh
   time: null,
   summary: "Strength A — skipped",
   was: null,
-  effect: "comes off the plan — a flare day",
+  effect: "taken off the plan — a flare day",
   why: "Your knee needs a rest day before Thursday.",
   issues: [],
   outcome: null,
@@ -470,7 +470,7 @@ const before = { date: "2026-10-13", time: "07:00", title: "Strength A", minutes
 
 describe("fix wave 3B: a change's line and what it did (B-I5)", () => {
   it("one reason line — the why — never the skip's reason and the why stacked", async () => {
-    serve({ reads: [pending([], [change("adj-1"), change("adj-2", { workoutId: "w-2", date: "2026-10-14", why: "", effect: "comes off the plan — a flare day" })])] });
+    serve({ reads: [pending([], [change("adj-1"), change("adj-2", { workoutId: "w-2", date: "2026-10-14", why: "", effect: "taken off the plan — a flare day" })])] });
     mount();
     await until(() => text().includes("Strength A — skipped"), "the changes");
     const items = [...document.querySelectorAll<HTMLElement>(".coach-pc-item--change")];
@@ -478,7 +478,7 @@ describe("fix wave 3B: a change's line and what it did (B-I5)", () => {
     expect(items[0]!.querySelector(".coach-pc-why")!.textContent).toBe("Your knee needs a rest day before Thursday.");
     expect(items[0]!.textContent).not.toContain("a flare day");
     // No why: its own reason is the one line.
-    expect(items[1]!.querySelector(".coach-pc-why")!.textContent).toBe("comes off the plan — a flare day");
+    expect(items[1]!.querySelector(".coach-pc-why")!.textContent).toBe("taken off the plan — a flare day");
   });
 
   it("a move keeps where it was on its own line", async () => {

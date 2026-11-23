@@ -318,7 +318,7 @@ export function describeOps(ops: CoachOp[], planned?: ReadonlyMap<string, Planne
           was: null,
           // `reason` is optional (a skip with no stated reason is still a
           // skip), so the line must read as a sentence without one.
-          change: op.reason ? `comes off the plan — ${op.reason}` : "comes off the plan",
+          change: op.reason ? `taken off the plan — ${op.reason}` : "taken off the plan",
           detail: [],
           kind: op.kind,
         });
@@ -345,7 +345,7 @@ export function describeOps(ops: CoachOp[], planned?: ReadonlyMap<string, Planne
           date: op.weekStart,
           summary: `Week of ${dayLabel(op.weekStart)} rewritten`,
           was: null,
-          change: "everything already planned that week comes off",
+          change: "everything already planned that week is taken off",
           detail: [],
           kind: op.kind,
         });
@@ -374,7 +374,7 @@ export function describeOps(ops: CoachOp[], planned?: ReadonlyMap<string, Planne
           date: first,
           summary: "Wind-down",
           was: null,
-          change: "what is still planned in these weeks comes off, replaced by the sessions below",
+          change: "what is still planned in these weeks is taken off and replaced by the sessions below",
           detail: [],
           kind: op.kind,
         });
@@ -405,7 +405,7 @@ export function describeOps(ops: CoachOp[], planned?: ReadonlyMap<string, Planne
           date: null,
           summary: "Retires the coached plan",
           was: null,
-          change: "its remaining sessions come off the calendar",
+          change: "its remaining sessions are taken off the calendar",
           detail: [],
           kind: op.kind,
         });
@@ -445,7 +445,7 @@ export function describeOps(ops: CoachOp[], planned?: ReadonlyMap<string, Planne
           // delete lane is generalised to workouts the app did not author
           // (spec §7 phase B), and a never-pushed one has no watch copy at all.
           change: `taken off the plan entirely — not counted as a missed or rested day · ${
-            was?.appPushed ? "comes off your watch" : "your watch is not changed"
+            was?.appPushed ? "taken off your watch" : "your watch is not changed"
           }`,
           detail: [],
           kind: op.kind,

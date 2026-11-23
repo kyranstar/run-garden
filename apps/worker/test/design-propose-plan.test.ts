@@ -551,7 +551,7 @@ describe("propose_plan: changes to a block of the coach's", () => {
       [{ kind: "extendPlan", planId: "cp-spring", shapeWeeks: [{ weekStart: "2026-06-01", volumeTarget: "30 km", keySessions: ["long 12 km"] }, { weekStart: "2026-06-08", volumeTarget: "32 km", keySessions: [] }] }, "Extend Spring 10K", "2 more weeks · to Sun 14 Jun"],
       [{ kind: "firmUp", planId: "cp-spring", weekStart: "2026-05-18", sessions: [{ date: "2026-05-18", session: easy(30) }, { date: "2026-05-20", session: easy(40) }] }, "Spring 10K: week of Mon 18 May", "2 sessions"],
       [{ kind: "windDown", planId: "cp-spring", sessions: [{ date: "2026-05-18", session: easy(25) }] }, "Wind down Spring 10K", "1 easier session · from Mon 18 May"],
-      [{ kind: "retirePlan", planId: "cp-spring" }, "Retire Spring 10K", "Its sessions still to come come off"],
+      [{ kind: "retirePlan", planId: "cp-spring" }, "Retire Spring 10K", "Its sessions still to come will be taken off"],
     ];
     for (const [change, title, summary] of cases) {
       const run = await mainRun();

@@ -117,7 +117,7 @@ const DATED = {
 const CHANGE_SCHEMA = {
   type: "object",
   description:
-    "createPlan { discipline: run|lift, name, continuesPlanId (a planId from read_plans) or newPlan { name, purpose, brief?, onEnd? }, startDate, endDate, raceDate?, firmSessions, shapeWeeks }; extendPlan { planId, shapeWeeks }; firmUp or reshapeWeek { planId, weekStart, sessions } (a week filled in, or its sessions replaced); windDown { planId, sessions } (easier sessions in place of what is planned in their weeks); retirePlan { planId } (its sessions still to come come off).",
+    "createPlan { discipline: run|lift, name, continuesPlanId (a planId from read_plans) or newPlan { name, purpose, brief?, onEnd? }, startDate, endDate, raceDate?, firmSessions, shapeWeeks }; extendPlan { planId, shapeWeeks }; firmUp or reshapeWeek { planId, weekStart, sessions } (a week filled in, or its sessions replaced); windDown { planId, sessions } (easier sessions in place of what is planned in their weeks); retirePlan { planId } (its sessions still to come are taken off).",
   properties: {
     kind: { enum: [...PLAN_STRUCTURE_KINDS] },
     planId: { type: "string" },
@@ -204,7 +204,7 @@ export function planCardWords(op: PlanStructureChange, name: string | null): { t
       return { title: `Wind down ${plan}`, summary: `${plural(sessions, "easier session")}${first ? ` · from ${dayLabel(first)}` : ""}` };
     }
     case "retirePlan":
-      return { title: `Retire ${plan}`, summary: "Its sessions still to come come off" };
+      return { title: `Retire ${plan}`, summary: "Its sessions still to come will be taken off" };
   }
 }
 

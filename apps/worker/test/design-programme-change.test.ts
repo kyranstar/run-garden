@@ -214,7 +214,7 @@ describe("change_programme: one change to a programme's settings, as the sheet c
       issues: [],
     });
     // Today's session stays (it is today's); the weeks after move from Mon and Wed to Tue and Thu.
-    expect(op.lines).toEqual(["Days Mon · Wed → Tue · Thu", "Next sessions move to Wed 14 Oct · Tue 20 Oct · Thu 22 Oct"]);
+    expect(op.lines).toEqual(["Days Mon · Wed → Tue · Thu", "Next sessions will be moved to Wed 14 Oct · Tue 20 Oct · Thu 22 Oct"]);
     // Nothing on the plan moved yet.
     expect(await live(p)).toEqual(["2026-10-12:completed", "2026-10-14:scheduled", "2026-10-19:scheduled", "2026-10-21:scheduled", "2026-10-26:scheduled", "2026-10-28:scheduled"]);
     expect((await configOf(p)).preferredDays).toEqual([0, 2]);
@@ -227,7 +227,7 @@ describe("change_programme: one change to a programme's settings, as the sheet c
     ok((await change(ctx, { programmeId: p, days: ["thursday", "Tue"] })).res);
     const op = await opOf(designProposalId(ctx.run.id), p);
     // Today's untouched outline goes under the pause. Next week's Tuesday is inside it, so only Thursday; the week after has both.
-    expect(op.lines).toEqual(["Days Mon · Wed → Tue · Thu", "Next sessions move to Thu 22 Oct · Tue 27 Oct · Thu 29 Oct"]);
+    expect(op.lines).toEqual(["Days Mon · Wed → Tue · Thu", "Next sessions will be moved to Thu 22 Oct · Tue 27 Oct · Thu 29 Oct"]);
   });
 
   it("goal, minutes, block length, modes and care each say their line; fewer days than sessions is a note", async () => {
@@ -545,7 +545,7 @@ describe("every reader tolerates a programme change", () => {
       ["programme", programmeChangeId(p), "Mobility: new days"],
       ["programme", programmeChangeId(q), "Strength: new goal"],
     ]);
-    expect(cards[0]!.lines).toEqual(["Days Mon · Wed → Tue · Thu", "Next sessions move to Wed 14 Oct · Tue 20 Oct · Thu 22 Oct"]);
+    expect(cards[0]!.lines).toEqual(["Days Mon · Wed → Tue · Thu", "Next sessions will be moved to Wed 14 Oct · Tue 20 Oct · Thu 22 Oct"]);
     const block = conversationBlock(await conversationRows(db, userId, namedConversationSql(userId, ctx.run.id), { limit: 6 }), NOW)!;
     expect(block).toContain(`Suggested a programme change (id ${designProposalId(ctx.run.id)}): ${markUntrusted("main coach", "Mobility: new days")} · Tue · Thu · 2 a week · 30 min — still open`);
   });

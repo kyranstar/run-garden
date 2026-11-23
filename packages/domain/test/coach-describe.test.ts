@@ -269,6 +269,18 @@ describe("describeOps — every op kind is described", () => {
     }
   });
 
+  // R1.7, the owner's copy rule: nothing comes off by itself. Each change says what is done to it, in the passive.
+  it("says each session taken off in the passive, never as coming off by itself", () => {
+    const changeOf = (kind: CoachOp["kind"]) => describeOps([coachOpSchema.parse(SAMPLES[kind])])[0]!.change;
+    expect(changeOf("skip")).toBe("taken off the plan — you're travelling");
+    expect(describeOps([coachOpSchema.parse({ kind: "skip", workoutId: "w1" })])[0]!.change).toBe("taken off the plan");
+    expect(changeOf("reshapeWeek")).toBe("everything already planned that week is taken off");
+    expect(changeOf("windDown")).toBe("what is still planned in these weeks is taken off and replaced by the sessions below");
+    expect(changeOf("retirePlan")).toBe("its remaining sessions are taken off the calendar");
+    const all = Object.values(SAMPLES).flatMap((raw) => describeOps([coachOpSchema.parse(raw)]).map((l) => l.change));
+    expect(all.filter((c) => /\bcomes? off\b/.test(c))).toEqual([]);
+  });
+
   it("puts plan-level ops last and dates the rest", () => {
     const ops = [SAMPLES.retirePlan, SAMPLES.resolveRaceConflict, SAMPLES.add].map((o) =>
       coachOpSchema.parse(o),
@@ -358,7 +370,7 @@ describe("describeOps — every op kind is described", () => {
     const op = [coachOpSchema.parse({ kind: "remove", workoutId: "w1" })];
     const pushed = describeOps(op, new Map([["w1", { summary: "Easy 30", appPushed: true }]]));
     expect(pushed[0]!.change).toBe(
-      "taken off the plan entirely — not counted as a missed or rested day · comes off your watch",
+      "taken off the plan entirely — not counted as a missed or rested day · taken off your watch",
     );
     const imported = describeOps(op, new Map([["w1", { summary: "Easy 30", onWatch: true }]]));
     expect(imported[0]!.change).toBe(

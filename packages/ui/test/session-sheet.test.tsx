@@ -1284,7 +1284,7 @@ describe("the watch line is a status (the watch mirrors the plan §3.9)", () => 
     features.player = true;
     mount(session({ watch: { state: "updating" } }), { route: (c) => (c.path === "/api/sessions/watch/drain" ? answer({ ran: false, pending: 1 }) : undefined) });
     await until(() => label() === "Updating your watch…", "updating");
-    expect(body()).toContain("An old copy can take up to an hour to come off.");
+    expect(body()).toContain("Taking an old copy off can take up to an hour.");
   });
 
   it("Keep off my watch asks first, then keeps it off — the drain runs, the line says Kept off with Put on my watch, focused", async () => {
@@ -1293,7 +1293,7 @@ describe("the watch line is a status (the watch mirrors the plan §3.9)", () => 
     await until(() => label() === "On your watch", "On your watch");
     await click("Keep off my watch");
     expect(body()).toContain("Keep this session off your watch?");
-    expect(body()).toContain("It comes off your watch and stays in the app. Put it back on any time.");
+    expect(body()).toContain("It will be taken off your watch and kept in the app. Put it back on any time.");
     expect(calls.some((c) => c.path.endsWith("/keep-off-watch"))).toBe(false);
     const confirm = [...document.querySelectorAll<HTMLButtonElement>(".btn-danger")].find((b) => b.textContent === "Keep off my watch")!;
     await act(async () => confirm.click());
@@ -2089,7 +2089,7 @@ describe("a document workout in the sheet, CUJ wave", () => {
     await until(() => !!button("Remove") && body().includes("Goblet squat"), "the session read");
     await click("Remove");
     await until(() => body().includes("Remove this workout?"), "the confirm");
-    expect(body()).toContain("It comes off your plan, your calendar and your watch.");
+    expect(body()).toContain("It will be taken off your plan, your calendar and your watch.");
   });
 
   /**

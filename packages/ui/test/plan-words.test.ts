@@ -142,8 +142,8 @@ describe("stopInTurns: a stop sent until it's done, within a bound", () => {
 
 describe("stopOutcomeWords: what a stop says happened", () => {
   it("in plain words, each different", () => {
-    expect(stopOutcomeWords("stopped")).toBe("Stopped. Its sessions ahead have come off.");
-    expect(stopOutcomeWords("waiting")).toBe("Stopped. A session on its way to your watch comes off once it lands.");
-    expect(stopOutcomeWords("left")).toBe("Stopped. The rest comes off by itself.");
+    expect(stopOutcomeWords("stopped")).toBe("Stopped. Its sessions ahead have been taken off.");
+    expect(stopOutcomeWords("waiting")).toBe("Stopped. A session still being sent to your watch will be taken off once it's there.");
+    expect(stopOutcomeWords("left")).toBe("Stopped. The rest will be taken off for you.");
   });
 });

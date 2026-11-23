@@ -274,7 +274,7 @@ describe("decline, the draft and the proposal's read", () => {
         time: null,
         summary: "Easy run — skipped",
         was: null,
-        effect: "comes off the plan — Rest the legs.",
+        effect: "taken off the plan — Rest the legs.",
         why: "Heavy legs.",
         // Its advisory notes (Task 9's card shows them; design-manifest-review.test.ts pins them).
         issues: expect.any(Array),

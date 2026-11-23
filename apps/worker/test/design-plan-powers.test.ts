@@ -449,7 +449,7 @@ describe("approve, op by op, through the thread coach's appliers", () => {
     });
     const r = await mainRun();
     const added = ok((await adjust(r, change(pushed, { kind: "remove" }))).res).data as { change: { effect: { text: string } } };
-    expect(added.change.effect.text).toMatch(/comes off your watch/);
+    expect(added.change.effect.text).toMatch(/taken off your watch/);
     await db.update(coachProposals).set({ status: "pending" }).where(eq(coachProposals.id, designProposalId(r.id)));
     statements.length = 0;
     expect((await approveDesignOps(db, rich.userId, (await proposalOf(designProposalId(r.id)))! as never, {}, { ...ctx(), prefs: watchPrefs }, Number.POSITIVE_INFINITY)).status).toBe("approved");

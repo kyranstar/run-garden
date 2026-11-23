@@ -33,7 +33,7 @@ afterEach(() => {
 });
 
 const OP = "prog-p1";
-const LINES = ["Days Mon · Wed · Fri → Tue · Thu", "Next sessions move to Tue 20 Oct · Thu 22 Oct · Tue 27 Oct"];
+const LINES = ["Days Mon · Wed · Fri → Tue · Thu", "Next sessions will be moved to Tue 20 Oct · Thu 22 Oct · Tue 27 Oct"];
 const card = (over: Partial<CoachConversationCardDto> = {}): CoachConversationCardDto => ({
   kind: "programme",
   proposalId: "dp-run-2",

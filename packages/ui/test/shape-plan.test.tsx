@@ -473,7 +473,7 @@ describe("a course in Your plans (plans with a purpose): a row of its own, and a
       const { stops } = await openSheet(summary(), (n) => asJson({ more: n < 3 }));
       await press("Stop this plan…");
       await press("Stop the plan");
-      await until(() => text().includes("Stopped. Its sessions ahead have come off."), "the line");
+      await until(() => text().includes("Stopped. Its sessions ahead have been taken off."), "the line");
       expect(stops()).toBe(3);
       expect(document.querySelector("[role=status]")?.textContent).toContain("Stopped.");
       // The button pressed has gone, and the focus doesn't fall to the page.
@@ -511,7 +511,7 @@ describe("a course in Your plans (plans with a purpose): a row of its own, and a
       const { stops } = await openSheet(summary(), (n) => asJson(n === 2 ? { more: true, waiting: true } : { more: true }));
       await press("Stop this plan…");
       await press("Stop the plan");
-      await until(() => text().includes("A session on its way to your watch comes off once it lands."), "the line");
+      await until(() => text().includes("A session still being sent to your watch will be taken off once it's there."), "the line");
       expect(stops()).toBe(2);
     });
 
@@ -519,7 +519,7 @@ describe("a course in Your plans (plans with a purpose): a row of its own, and a
       const { stops } = await openSheet(summary(), () => asJson({ more: true }));
       await press("Stop this plan…");
       await press("Stop the plan");
-      await until(() => text().includes("The rest comes off by itself."), "the line");
+      await until(() => text().includes("The rest will be taken off for you."), "the line");
       expect(stops()).toBe(30);
       expect(document.querySelector("[role=alert]")).toBeNull();
     });
@@ -528,7 +528,7 @@ describe("a course in Your plans (plans with a purpose): a row of its own, and a
       const { stops } = await openSheet(summary(), (n) => (n === 1 ? asJson({ more: true }) : asJson({ error: "internal" }, 500)));
       await press("Stop this plan…");
       await press("Stop the plan");
-      await until(() => text().includes("The rest comes off by itself."), "the line");
+      await until(() => text().includes("The rest will be taken off for you."), "the line");
       expect(stops()).toBe(2);
       expect(document.querySelector("[role=alert]")).toBeNull();
     });
