@@ -337,7 +337,9 @@ describe("each act tool's declared statement cost is the most it runs", () => {
       { input: { ...change, objectiveIds: ["nope"] } },
     ]);
     expect(n).toBe(2);
-    expect(tool("change_plan").statementCost).toBe(2);
+    // REBASED R1.6: the declared cost holds a course's schedule preview too (its rows and one touched lookup:
+    // PREVIEW_STATEMENTS), measured within it in course-schedule-change.test.ts; a change of words still runs its two.
+    expect(tool("change_plan").statementCost).toBe(4);
     const refused = await measured("change_plan", { ...change, planId: "nope" }, rich.userId, await runRow(rich.userId));
     expect(refused.count).toBe(1);
   });

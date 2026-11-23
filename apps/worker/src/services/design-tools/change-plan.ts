@@ -6,8 +6,8 @@
  *
  * A COURSE'S SCHEDULE (R1.6): its days (`days`, by name), its time (`time`) and its rhythm (`everyWeeks`, 1 to 4, from the week
  * of `from`, else the rhythm's own anchor, else the week of the next of its days). The card says each ("Days Mon · Fri → Mon",
- * "Time 19:30 → 07:30", "Every week → Every 2 weeks") and where the next sessions fall ("Next TRE Mon 23 Nov · Mon 7 Dec · Mon
- * 21 Dec": placement's preview, written nowhere, then the rhythm past its window). Approved, the plan is placed again in the same
+ * "Time 19:30 → 07:30", "Every week → Every 2 weeks") and where the next sessions fall ("Next Evening practice Mon 23 Nov · Mon 7
+ * Dec · Mon 21 Dec": placement's preview, written nowhere, then the rhythm past its window). Approved, the plan is placed again in the same
  * request. A programme's days and rhythm are change_programme's, and a refusal says so.
  *
  * A SIBLING OF change_programme, NOT A KIND OF IT: change_programme edits an adaptive programme's days, goal and minutes
@@ -153,7 +153,7 @@ export function planSettingLines(from: PlanChangeFields, to: PlanChangeFields): 
 }
 
 /** The card's title: "Base block: new purpose", "… new purpose and brief", "… new purpose, ending and pause", "… new
- * settings" (four or more); a course's "TRE: new days and rhythm". */
+ * settings" (four or more); a course's "Evening practice: new days and rhythm". */
 export function planChangeTitle(name: string, changed: readonly (keyof PlanChangeFields)[]): string {
   const WORD: Record<keyof PlanChangeFields, string> = {
     purpose: "purpose", brief: "brief", onEnd: "ending", pausedUntil: "pause", objectiveIds: "objectives", easeNext: "easing",
@@ -179,8 +179,8 @@ function namedWords(keys: readonly (keyof PlanChangeFields)[]): string {
   return words.length <= 1 ? (words[0] ?? "") : `${words.slice(0, -1).join(", ")} and ${words.at(-1)}`;
 }
 
-/** The card's "Next" line (R1.6): where a course's next sessions fall once its schedule changes — "Next TRE Mon 23 Nov · Mon 7
- * Dec · Mon 21 Dec" — or null when they fall as they did. */
+/** The card's "Next" line (R1.6): where a course's next sessions fall once its schedule changes — "Next Evening practice Mon
+ * 23 Nov · Mon 7 Dec · Mon 21 Dec" — or null when they fall as they did. */
 const NEXT_SHOWN = 3;
 export function courseNextLine(name: string, before: readonly string[], ahead: readonly string[]): string | null {
   const next = ahead.slice(0, NEXT_SHOWN);

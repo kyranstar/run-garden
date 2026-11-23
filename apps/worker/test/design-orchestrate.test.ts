@@ -1436,7 +1436,9 @@ describe("the prompt says how a set works", () => {
     // turns; ≥ 100 tokens of headroom.
     // REBASED 2026-11-06 (audit fixes, safety, on fix-evidence's main): its challenge lines (E2) measured 2,092.25 without
     // its turns — under 100 tokens of headroom against 2,160; re-pinned with ≥ 100.
-    expect(roleBlock("main").length / 4).toBeLessThanOrEqual(2195);
+    // REBASED R1.6 (a course's schedule is change_plan's, a rhythm's words, no promise no tool keeps, today's session counted
+    // first — DEBUG-tre-cadence §4, §5): measured 2,266.5 without its turns; ≥ 100 tokens of headroom.
+    expect(roleBlock("main").length / 4).toBeLessThanOrEqual(2370);
   });
 });
 

@@ -140,7 +140,11 @@ const BEFORE = { tools: 34_935, shared: 20_450, main: 4_586 };
 /* MEASURED 2026-11-08 (fix wave: read_answers names sleep_quality and stress in the shared prompt and its tool's description
  * and question field, so the coach knows those answers exist): tools 48,234 → 48,279, shared 30,014 → 30,037, the main block
  * as before (8,423) — grown 26,700 → 26,745; the cap holds, unraised, with 185 characters (~52 tokens) of headroom. */
-const GROWTH_MAX_CHARS = 26_930;
+/* REBASED R1.6 (plans with a rhythm longer than a week, DEBUG-tre-cadence §4, §5): change_plan's days, time, everyWeeks and
+ * from, change_programme's everyWeeks and from, read_plans' planId and description (tools 48,279 → 49,087); the main block's
+ * three sentences — a course's schedule and a rhythm's words, no promise no tool keeps, today's session first (8,423 →
+ * 9,120); shared unchanged (30,037) — grown 26,745 → 28,273; held with 187 characters (~53 tokens) of headroom. */
+const GROWTH_MAX_CHARS = 28_460;
 
 const toolsSent = () => JSON.stringify(allTools().map((t) => ({ name: t.name, description: t.description, input_schema: t.inputSchema })));
 
