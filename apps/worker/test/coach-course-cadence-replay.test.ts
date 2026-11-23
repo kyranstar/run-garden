@@ -93,10 +93,14 @@ function scriptedCoach(rhythm: { everyWeeks: number; why: string }, finishLine: 
       if (step === 1) return turn([use("read_plans", {})], "Reading your plans.");
       if (step === 2) {
         const read = lastResult(req, "read_plans");
-        const listed = [...(read?.data?.plans ?? []), ...(read?.data?.otherPlans ?? [])] as Array<{ id: string; planId?: string | null; name: { text: string } }>;
-        const tre = listed.find((p) => p.name.text === "TRE");
+        const full = (read?.data?.plans ?? []) as Array<{ id: string; planId?: string | null; name: { text: string } }>;
+        // In short: [id, name, schedule] by kind (a block in lines by its id alone).
+        const short = Object.values((read?.data?.otherPlans ?? {}) as Record<string, unknown[]>)
+          .flat()
+          .flatMap((s) => (Array.isArray(s) ? [{ id: s[0] as string, name: s[1] as { text: string } }] : []));
+        const tre = [...full.map((p) => ({ id: p.planId ?? p.id, name: p.name })), ...short].find((p) => p.name.text === "TRE");
         if (!tre) return turn([use("finish", { summary: "I couldn't find TRE." })]);
-        return turn([use("change_plan", { planId: tre.planId ?? tre.id, days: ["Mon"], everyWeeks: rhythm.everyWeeks, why: rhythm.why })], "TRE is a course: its rhythm is change_plan's.");
+        return turn([use("change_plan", { planId: tre.id, days: ["Mon"], everyWeeks: rhythm.everyWeeks, why: rhythm.why })], "TRE is a course: its rhythm is change_plan's.");
       }
       return turn([use("finish", { summary: finishLine })], finishLine);
     },
@@ -139,6 +143,13 @@ async function crowdedWithTre(): Promise<{ userId: string; tre: string }> {
     brief: "Ten sessions in order, then floor practice.",
     config: courseConfigSchema.parse({ course: INTRO_COURSE.id, weekdays: [0, 4], time: "19:30" }), createdAt: at(day(40)), updatedAt: at(day(40)),
   });
+  // Its last session done: Monday this week (the fixture's today is Wednesday 13 May).
+  const done = `tre-done-${a.userId.slice(0, 6)}`;
+  await db.insert(schema.plannedWorkouts).values({
+    id: done, userId: a.userId, planId: tre, sourceWorkoutId: done, title: "TRE", category: "yoga", sport: "yoga", originalPlanDate: "2026-05-11", lastVerifiedCorosDate: "",
+    effectiveDate: "2026-05-11", effectiveTime: "19:30", sourceContentFingerprint: "studio", fallbackEstimatedDurationSeconds: 660, calendarBlockDurationSeconds: 900,
+    origin: "studio", contentState: "outline", completionState: "completed", courseSession: 3, createdAt: at(day(2)), updatedAt: at(day(2)),
+  });
   await placeSlots(db, a.userId, tre, TODAY, await loadPreferences(db, a.userId), NOW.toISOString());
   return { userId: a.userId, tre };
 }
@@ -154,14 +165,14 @@ describe('"Can we change TRE to be like every two weeks please", replayed', () =
     const { userId, tre } = await crowdedWithTre();
     expect(await liveDates(tre)).toEqual(["2026-05-15", "2026-05-18", "2026-05-22", "2026-05-25", "2026-05-29"]);
     const runId = (await createRun(db, userId, { scope: { kind: "auto" }, request: ASK }, NOW)).run.id;
-    const line = "TRE is every other Monday now, from Mon 18 May; Friday's sessions come off.";
-    const { deps, requests } = scriptedCoach({ everyWeeks: 2, why: "Every two weeks, as you asked: Mondays, from next Monday." }, line);
+    const line = "TRE is every other Monday now: two weeks after Monday's session, Mon 25 May; Friday's sessions come off.";
+    const { deps, requests } = scriptedCoach({ everyWeeks: 2, why: "Every two weeks, as you asked: Mondays, two weeks after your last." }, line);
     expect(await drive(userId, runId, deps)).toBe("finished");
 
-    // The model saw TRE, its planId and its schedule, though the plans don't all fit in full.
+    // The model saw TRE, its id and its schedule, though the plans don't all fit in full.
     const read = lastResult(requests[1]!, "read_plans")!;
-    const named = [...read.data.plans, ...(read.data.otherPlans ?? [])].find((p: { id: string }) => p.id === tre);
-    expect(named).toBeDefined();
+    const shortIds = Object.values((read.data.otherPlans ?? {}) as Record<string, unknown[]>).flat().map((s) => (Array.isArray(s) ? s[0] : s));
+    expect([...read.data.plans.map((p: { id: string }) => p.id), ...shortIds]).toContain(tre);
     expect(read.data.morePlans).toBeUndefined();
     // And it was told how a rhythm is set.
     expect(requests[0]!.system.map((b) => b.text).join("\n")).toContain(RHYTHM_LINE);
@@ -174,20 +185,21 @@ describe('"Can we change TRE to be like every two weeks please", replayed', () =
     expect(ops.filter((o) => o.kind === "plan_adjust")).toEqual([]);
     const op = ops[0] as PlanChangeOp;
     expect(op.planId).toBe(tre);
-    expect(op.change).toEqual({ weekdays: [0], everyWeeks: 2, cadenceFrom: "2026-05-18" });
-    // Mon 15 Jun is in the week before the athlete's race (Sat 20 Jun): the course's quiet days hold it back, so the next is 29 Jun.
-    expect(op.lines).toEqual(["Days Mon · Fri → Mon", "Every week → Every 2 weeks", "Next TRE Mon 18 May · Mon 1 Jun · Mon 29 Jun"]);
+    // Counted from the week of the last session done (Mon 11 May), so the next is two weeks after it.
+    expect(op.change).toEqual({ weekdays: [0], everyWeeks: 2, cadenceFrom: "2026-05-11" });
+    // Then every other Monday; Mon 22 Jun is past the race's quiet days (13–20 Jun).
+    expect(op.lines).toEqual(["Days Mon · Fri → Mon", "Every week → Every 2 weeks", "Next TRE Mon 25 May · Mon 8 Jun · Mon 22 Jun"]);
 
     const prefs = await loadPreferences(db, userId);
     const res = await approveDesignOps(db, userId, p! as never, { opIds: [op.id] }, { today: TODAY, now: NOW.toISOString(), prefs }, Number.POSITIVE_INFINITY);
     expect(res.status, JSON.stringify(res)).toBe("approved");
     const [row] = await db.select().from(schema.programs).where(eq(schema.programs.id, tre));
-    expect(row!.config).toMatchObject({ weekdays: [0], everyWeeks: 2, cadenceFrom: "2026-05-18" });
+    expect(row!.config).toMatchObject({ weekdays: [0], everyWeeks: 2, cadenceFrom: "2026-05-11" });
     await placeSlots(db, userId, tre, TODAY, prefs, NOW.toISOString());
-    // From today: next Monday, then every other one; no Friday, and none in the weeks between.
-    expect(await liveDates(tre)).toEqual(["2026-05-18"]);
+    // From today: Mon 25 May, two weeks after the last; no Friday, and none in the week between.
+    expect(await liveDates(tre)).toEqual(["2026-05-25"]);
     await placeSlots(db, userId, tre, "2026-05-25", prefs, "2026-05-25T15:00:00.000Z");
-    expect((await liveDates(tre)).filter((d) => d <= "2026-06-14")).toEqual(["2026-05-18", "2026-06-01"]);
+    expect((await liveDates(tre)).filter((d) => d <= "2026-06-14")).toEqual(["2026-05-25", "2026-06-08"]);
   });
 
   it('"every few weeks": the model is told it is 2 or 3, chosen from the plan, its why saying which; the card says the rhythm', async () => {
@@ -195,7 +207,7 @@ describe('"Can we change TRE to be like every two weeks please", replayed', () =
     const runId = (await createRun(db, userId, { scope: { kind: "auto" }, request: "Can we do TRE every few weeks instead?" }, NOW)).run.id;
     const { deps, requests } = scriptedCoach(
       { everyWeeks: 3, why: "Every 3 weeks: its brief is ten sessions in order, and three weeks apart still keeps them going." },
-      "TRE is every third Monday from Mon 18 May.",
+      "TRE is every third Monday, three weeks after your last: Mon 1 Jun.",
     );
     expect(await drive(userId, runId, deps)).toBe("finished");
     expect(requests[0]!.system.map((b) => b.text).join("\n")).toContain('"every few weeks" is 2 or 3, chosen from the plan\'s brief and history, the card\'s why saying which');

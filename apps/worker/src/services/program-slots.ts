@@ -9,10 +9,13 @@
  *
  * THE RULE, per ISO week from this one to `placementWeeksAhead` weeks ahead:
  *
- *  0. A RHYTHM LONGER THAN A WEEK (R1.6: `everyWeeks` from `cadenceFrom`, either kind): a week the rhythm doesn't use (`onWeek`)
- *     has a goal of 0, so it takes no new slot and its flexible ones go by rules 3 and 4, as a lowered goal's do; what the
- *     athlete skipped, moved or had written there stays and counts. The window reaches `everyWeeks - 1` weeks ahead when that
- *     is longer (`weeksAhead`, at most 4), so the next session is always on the plan.
+ *  0. A RHYTHM LONGER THAN A WEEK (R1.6: a course's `everyWeeks` from `cadenceFrom`; a programme runs every week): a week the
+ *     rhythm doesn't use (`onWeek`: none before its anchor, then one in every `everyWeeks`) has a goal of 0, so it takes no new
+ *     slot and its flexible ones go by rules 3 and 4, as a lowered goal's do; what the athlete skipped, moved or had written
+ *     there stays and counts. The window reaches `everyWeeks` weeks ahead when that is longer (`weeksAhead`, at most 4), so
+ *     the next session is always on the plan. A pass READS AND WEIGHS the widest window any plan reaches (`readWindowOf`, fix
+ *     round 1), placing nothing new past its own: a window that shrank takes off at once an outline its wider one put there
+ *     and the plan no longer wants.
  *
  *  1. COUNT BY THE DAY A SLOT WAS PLANNED ON (`original_plan_date`), whatever has happened to it since. A slot the
  *     athlete moved to next week still counts for this one; skipped, done and removed slots count. That is what
@@ -116,8 +119,9 @@ type ProgramRow = typeof programs.$inferSelect;
 /** The kinds whose slots this file places. */
 const PLACED_KINDS = ["adaptive", "course"];
 
-/** The days a pass fills, in an adaptive program's terms (a course's are put in them by `placementOf`), and its rhythm. */
-type SlotPattern = Pick<AdaptiveConfig, "weeklyGoal" | "preferredDays" | "placementWeeksAhead" | "everyWeeks" | "cadenceFrom">;
+/** The days a pass fills, in an adaptive program's terms (a course's are put in them by `placementOf`), and a course's rhythm
+ * (a programme runs every week: R1.6 fix round 1). */
+type SlotPattern = Pick<AdaptiveConfig, "weeklyGoal" | "preferredDays" | "placementWeeksAhead"> & { everyWeeks?: number | undefined; cadenceFrom?: string | undefined };
 
 /** A course's settings in a pass's terms: its days are its preferred days and its weekly goal. */
 const coursePattern = (config: CourseConfig): SlotPattern => ({
@@ -129,10 +133,11 @@ const coursePattern = (config: CourseConfig): SlotPattern => ({
 });
 
 /**
- * The weeks a pass reaches past this one (R1.6): its own `placementWeeksAhead`, or one rhythm less a week when that is longer
- * (at most EVERY_WEEKS_MAX), so a plan every few weeks always has its next session on the plan.
+ * The weeks a pass reaches past this one (R1.6): its own `placementWeeksAhead`, or one rhythm when that is longer (at most
+ * EVERY_WEEKS_MAX), so a plan every few weeks always has its next session on the plan — the one after this week's too, once
+ * this week's is done (fix round 1: one rhythm less a week fell short then).
  */
-const weeksAhead = (config: SlotPattern): number => Math.min(EVERY_WEEKS_MAX, Math.max(config.placementWeeksAhead, cadenceOf(config).everyWeeks - 1));
+const weeksAhead = (config: SlotPattern): number => Math.min(EVERY_WEEKS_MAX, Math.max(config.placementWeeksAhead, cadenceOf(config).everyWeeks));
 
 /** What a pass places from, whichever kind makes the sessions (`placementOf`). */
 interface Placement {
@@ -379,14 +384,26 @@ function windowOf(today: string, config: SlotPattern): { firstMonday: string; la
 }
 
 /**
+ * The weeks a pass reads and weighs (R1.6 fix round 1, the review's MINOR 5): the widest any window reaches (EVERY_WEEKS_MAX
+ * ahead), whatever this plan's own, so a window that shrank — a rhythm shortened, `placementWeeksAhead` lowered — still sees
+ * the outlines its wider one placed: one the plan no longer wants comes off at once, one it still wants stays. Past its own
+ * window a pass places nothing new.
+ */
+const READ_WEEKS = EVERY_WEEKS_MAX;
+function readWindowOf(today: string): { firstMonday: string; lastSunday: string } {
+  const firstMonday = startOfIsoWeek(today);
+  return { firstMonday, lastSunday: addDays(firstMonday, 7 * (READ_WEEKS + 1) - 1) };
+}
+
+/**
  * The program's slots placement reads (one statement): planned in the window (rule 1's count, and every id a new slot
  * could take), or sitting in it now (a slot moved in from outside still holds its date). A program that wants no slots
  * (`goal` 0) also reads every live slot past the window: retiring retracts its flexible future slots wherever an
  * earlier, wider window put them (M2). A course reads its own sessions once written too (`course_session`), so each still
  * holds its day; a workout the coach filed under the plan isn't one of them.
  */
-async function readSlotRows(db: Db, userId: string, programId: string, today: string, config: SlotPattern, goal: number, isCourse: boolean): Promise<WorkoutRow[]> {
-  const { firstMonday, lastSunday } = windowOf(today, config);
+async function readSlotRows(db: Db, userId: string, programId: string, today: string, goal: number, isCourse: boolean): Promise<WorkoutRow[]> {
+  const { firstMonday, lastSunday } = readWindowOf(today);
   return db
     .select(plannedRowColumns())
     .from(plannedWorkouts)
@@ -424,7 +441,8 @@ function heldBackDays({ pausedUntil, quietDays, prefs }: Pick<PlanInputs, "pause
 /** Rules 1–4 and 6 over the rows as read: the slots to retract, to bring back and to place — `flexibleIds` the ones that may go. */
 function planSlots(rows: readonly WorkoutRow[], o: PlanInputs, flexibleIds: ReadonlySet<string>) {
   const { programId, config, goal, today, prefs, now, discipline } = o;
-  const { firstMonday, lastSunday } = windowOf(today, config);
+  const { firstMonday, lastSunday } = readWindowOf(today);
+  const placedWeeks = weeksAhead(config);
   const byId = new Map(rows.map((r) => [r.id, r]));
   // Rule 2's two limits on a NEW slot (ruling 2a-R11): never on today once today's window has passed (it would
   // only become a "Did this happen?" and a miss), and in this week only on the days a full week would hold one —
@@ -436,9 +454,11 @@ function planSlots(rows: readonly WorkoutRow[], o: PlanInputs, flexibleIds: Read
   const toArchive: WorkoutRow[] = [];
   const toRevive: WorkoutRow[] = [];
   const toInsert: string[] = [];
-  for (let week = 0; week <= weeksAhead(config); week++) {
+  for (let week = 0; week <= READ_WEEKS; week++) {
     const monday = addDays(firstMonday, 7 * week);
     const sunday = addDays(monday, 6);
+    // Past its own window (`readWindowOf`): its flexible outlines are weighed as any week's, and nothing new goes there.
+    const beyond = week > placedWeeks;
     // A week its rhythm doesn't use (R1.6) wants none: its flexible slots go as a lowered goal's do (rules 3 and 4).
     const weekGoal = onWeek(monday, config) ? goal : 0;
     const counted = rows.filter((r) => r.originalPlanDate >= monday && r.originalPlanDate <= sunday && !retracted(r));
@@ -458,6 +478,7 @@ function planSlots(rows: readonly WorkoutRow[], o: PlanInputs, flexibleIds: Read
         want.add(date);
         continue;
       }
+      if (beyond) continue;
       if (date < today || occupied.has(date)) continue;
       if (weekDays && !weekDays.has(date)) continue;
       if (date === today && todayGone) continue;
@@ -475,7 +496,7 @@ function planSlots(rows: readonly WorkoutRow[], o: PlanInputs, flexibleIds: Read
       else toInsert.push(date);
     }
   }
-  // Past the window only a program that wants no slots reads anything: every flexible one there goes.
+  // Past the read window only a program that wants no slots reads anything: every flexible one there goes.
   for (const r of rows) if (r.effectiveDate > lastSunday && flexibleIds.has(r.id)) toArchive.push(r);
   return { toArchive, toRevive, toInsert };
 }
@@ -520,7 +541,7 @@ export async function previewPlacement(
   const course = program.kind === "course" ? (config as CourseConfig) : null;
   const pattern = course ? coursePattern(course) : (config as AdaptiveConfig);
   const goal = program.status === "active" ? pattern.weeklyGoal : 0;
-  const rows = await readSlotRows(db, userId, program.id, today, pattern, goal, course !== null);
+  const rows = await readSlotRows(db, userId, program.id, today, goal, course !== null);
   const plan = await planWithTouched(db, rows, {
     programId: program.id,
     config: pattern,
@@ -546,11 +567,13 @@ export async function previewPlacement(
   const heldBack = heldBackDays({ pausedUntil: program.pausedUntil, quietDays: course.quietDaysBeforeRace, prefs });
   const beyond: string[] = [];
   const { lastSunday } = windowOf(today, pattern);
+  const kept = new Set(after);
   for (let monday = addDays(lastSunday, 1), weeks = 0; beyond.length < BEYOND_SHOWN && weeks < 4 * EVERY_WEEKS_MAX; monday = addDays(monday, 7), weeks++) {
     if (!onWeek(monday, pattern)) continue;
     for (const d of [...pattern.preferredDays].sort((a, b) => a - b)) {
       const date = addDays(monday, d);
-      if (!heldBack(date) && date !== prefs.raceDate) beyond.push(date);
+      // An outline a wider window placed there already is `after`'s.
+      if (!heldBack(date) && date !== prefs.raceDate && !kept.has(date)) beyond.push(date);
     }
   }
   return { before, after, beyond: beyond.slice(0, BEYOND_SHOWN) };
@@ -768,7 +791,7 @@ async function place(
 
   const discipline = defaultDiscipline(program);
   spend(1);
-  const rows = await readSlotRows(db, userId, programId, today, config, goal, isCourse);
+  const rows = await readSlotRows(db, userId, programId, today, goal, isCourse);
   const { toArchive, toRevive, toInsert, touchedReads } = await planWithTouched(db, rows, { ...placement, programId, pausedUntil: program.pausedUntil, today, prefs, now, discipline });
   spend(touchedReads);
 

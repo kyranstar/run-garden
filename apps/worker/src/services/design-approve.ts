@@ -256,7 +256,6 @@ import {
   isObjectiveChangeOp,
   pinsCardLinesOf,
   planFieldsOfRow,
-  programmeSettingsOf,
   sameSetting,
   type ImportCorrectionOp,
   type MovePinsOp,
@@ -1906,8 +1905,7 @@ async function applyProgrammeChunk(
       .limit(1);
     if (!row || row.kind !== "adaptive") return { status: "refused", reason: "That programme isn't there any more.", spent: 0 };
     if (row.status !== "active") return { status: "refused", reason: `${row.name} is retired.`, spent: 0 };
-    // In a change's terms: every week reads as 1 and no anchor (R1.6), however the row stores it.
-    const now = programmeSettingsOf(adaptiveConfigSchema.parse(row.config));
+    const now = adaptiveConfigSchema.parse(row.config);
     const keys = Object.keys(g.change) as (keyof ProgrammeSettings)[];
     const moved = keys.filter((k) => !sameSetting(k, now[k], g.base[k]) && !sameSetting(k, now[k], g.change[k]));
     if (moved.length > 0) return { status: "refused", reason: "Its settings changed since this was suggested: ask the coach again.", spent: 0 };

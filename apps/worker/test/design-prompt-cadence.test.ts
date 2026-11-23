@@ -11,8 +11,9 @@ import { roleBlock, SHARED_PROMPT } from "../src/services/design-prompt.js";
 const main = roleBlock("main");
 const others = [roleBlock("designer"), roleBlock("reviewer"), roleBlock("reviewer", undefined, "run"), SHARED_PROMPT].join("\n");
 
+// Fix round 1 (the review's MAJOR 1): a rhythm is a course's alone; nothing invites a programme's.
 export const RHYTHM_LINE =
-  "A course's days, time or rhythm from now on are change_plan's. A rhythm longer than a week is everyWeeks with the days (a programme's through change_programme): \"every few weeks\" is 2 or 3, chosen from the plan's brief and history, the card's why saying which; twice a month is every 2 weeks; monthly is every 4 weeks, and say plainly that isn't a calendar month.";
+  "A course's days, time or rhythm from now on are change_plan's. A rhythm longer than a week is everyWeeks with the days: \"every few weeks\" is 2 or 3, chosen from the plan's brief and history, the card's why saying which; twice a month is every 2 weeks; monthly is every 4 weeks, and say plainly that isn't a calendar month. A programme runs every week.";
 export const TODAY_LINE = "Before thinning a plan or adding to it, count a session on today not yet logged: it may already be this week's, or this rhythm's — ask, or count it.";
 export const PROMISE_LINE =
   "Never promise a future or recurring action no tool carries out (\"I'll skip the extras as they appear\", \"I'll remind you\"): use the lever that does it, or say plainly it can't be done.";
@@ -21,6 +22,8 @@ describe("the main coach's block", () => {
   it("routes a course's schedule to change_plan, and reads a rhythm's words", () => {
     expect(main).toContain(RHYTHM_LINE);
     expect(others).not.toContain("everyWeeks");
+    // No programme rhythm is invited anywhere.
+    expect(main).not.toMatch(/programme's through change_programme|programme['’]s rhythm|programme every/i);
   });
   it("counts today's unlogged session before thinning or adding", () => {
     expect(main).toContain(TODAY_LINE);

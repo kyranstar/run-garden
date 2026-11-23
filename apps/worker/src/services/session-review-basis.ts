@@ -392,18 +392,17 @@ const sliceOf = (ex: ExerciseRecord): ExerciseSlice => {
 /**
  * The sessions a week the session's plan aims for, by its kind: a course's are its days (read as a programme's, its settings
  * don't parse and it would quietly take the default goal); anything else's are a programme's, whose defaults a Studio
- * bucket's empty settings take. A rhythm longer than a week (R1.6) spreads its goal across its weeks, so an off week isn't
- * read as one short: rounded up, since the goal is counted in whole sessions (the engine's and a device's `weeklyGoal` is an
- * integer), and never below one.
+ * bucket's empty settings take. A course's rhythm longer than a week (R1.6) spreads its goal across its weeks, so an off week
+ * isn't read as one short: rounded up, since the goal is counted in whole sessions (the engine's and a device's `weeklyGoal` is
+ * an integer), and never below one. A programme runs every week (fix round 1).
  */
 function weeklyGoalOf(program: { kind: string; config: unknown } | undefined): number {
-  const goal = (n: number | undefined, every: number): number => (n === undefined ? 4 : Math.max(1, Math.ceil(n / every)));
+  const goal = (n: number | undefined, every = 1): number => (n === undefined ? 4 : Math.max(1, Math.ceil(n / every)));
   if (program?.kind === "course") {
     const c = courseConfigSchema.safeParse(program.config).data;
     return goal(c?.weekdays.length, c ? cadenceOf(c).everyWeeks : 1);
   }
-  const a = adaptiveConfigSchema.safeParse(program?.config ?? {}).data;
-  return goal(a?.weeklyGoal, a ? cadenceOf(a).everyWeeks : 1);
+  return goal(adaptiveConfigSchema.safeParse(program?.config ?? {}).data?.weeklyGoal);
 }
 
 export async function reviewBasis(

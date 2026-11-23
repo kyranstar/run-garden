@@ -41,18 +41,18 @@ describe("a course's rhythm", () => {
   });
 });
 
-describe("a programme's rhythm (the twin)", () => {
-  it("an empty config is still every default, with no rhythm keys", () => {
+// Fix round 1 (the review's MAJOR 1): a programme's goal is read per week everywhere (its row, its build's mode), so a rhythm
+// there would read as falling behind. Gated for this release: a programme's settings hold no rhythm, and nothing writes one.
+describe("a programme runs every week (gated, fix round 1)", () => {
+  it("an empty config is every default, with no rhythm keys, and reads as every week", () => {
     expect(Object.keys(adaptiveConfigSchema.parse({}))).not.toContain("everyWeeks");
     expect(cadenceOf(adaptiveConfigSchema.parse({}))).toEqual({ everyWeeks: 1, from: null });
   });
-  it("takes the same two keys, held to the same rules", () => {
-    expect(adaptiveConfigSchema.safeParse({ everyWeeks: 2, cadenceFrom: "2026-11-23" }).success).toBe(true);
-    expect(adaptiveConfigSchema.safeParse({ everyWeeks: 2 }).success).toBe(false);
-    expect(adaptiveConfigSchema.safeParse({ everyWeeks: 5, cadenceFrom: "2026-11-23" }).success).toBe(false);
-  });
-  it("the settings route's partial still builds from its fields", () => {
-    expect(adaptiveConfigFields.partial().strict().safeParse({ everyWeeks: 1 }).success).toBe(true);
+  it("refuses either key, whatever its value", () => {
+    expect(adaptiveConfigSchema.safeParse({ everyWeeks: 2, cadenceFrom: "2026-11-23" }).success).toBe(false);
+    expect(adaptiveConfigSchema.safeParse({ everyWeeks: 1 }).success).toBe(false);
+    expect(adaptiveConfigSchema.safeParse({ cadenceFrom: "2026-11-23" }).success).toBe(false);
+    expect(adaptiveConfigFields.partial().strict().safeParse({ everyWeeks: 2 }).success).toBe(false);
   });
 });
 
@@ -69,11 +69,13 @@ describe("onWeek: whether a week is one the rhythm uses", () => {
     expect(onWeek("2026-12-14", every2)).toBe(false);
     expect(onWeek("2026-12-21", every2)).toBe(true);
   });
-  it("and the weeks before the anchor, in the same rhythm", () => {
+  // Fix round 1 (the review's MINOR 3): an anchor is where the rhythm starts, so "from 7 Dec" places nothing before it.
+  it("no week before the anchor is one of its weeks: the rhythm starts there", () => {
     expect(onWeek("2026-11-16", every2)).toBe(false);
-    expect(onWeek("2026-11-09", every2)).toBe(true);
-    expect(onWeek("2026-10-26", { everyWeeks: 3, cadenceFrom: "2026-11-23" })).toBe(false);
-    expect(onWeek("2026-11-02", { everyWeeks: 3, cadenceFrom: "2026-11-23" })).toBe(true);
+    expect(onWeek("2026-11-09", every2)).toBe(false);
+    expect(onWeek("2026-11-02", { everyWeeks: 3, cadenceFrom: "2026-11-23" })).toBe(false);
+    expect(onWeek("2026-11-22", every2)).toBe(false);
+    expect(onWeek("2026-11-23", every2)).toBe(true);
   });
   it("any day of a week answers for its week", () => {
     expect(onWeek("2026-12-11", every2)).toBe(true);
@@ -111,15 +113,19 @@ describe("withCadence: the keys written only when they say something", () => {
   });
 });
 
-describe("cadenceAnchor: the week the rhythm starts when nothing says", () => {
-  it("the week of the next of its days, today included", () => {
-    // Sunday 22 Nov: the next Monday is tomorrow, so the rhythm starts with it.
-    expect(cadenceAnchor("2026-11-22", [0])).toBe("2026-11-23");
-    // Wednesday: Friday is still to come this week.
-    expect(cadenceAnchor("2026-11-25", [0, 4])).toBe("2026-11-23");
-    // Monday itself.
-    expect(cadenceAnchor("2026-11-23", [0])).toBe("2026-11-23");
-    // Saturday, a Monday-only course: next week.
-    expect(cadenceAnchor("2026-11-28", [0])).toBe("2026-11-30");
+// Fix round 1 (the review's MAJOR 2): the rhythm runs from the last session done, so "every 2 weeks" asked the day after one
+// puts the next two weeks after it, not one.
+describe("cadenceAnchor: the week the rhythm counts from when nothing says", () => {
+  it("the week of the plan's latest done session", () => {
+    // Done Monday 23 Nov, asked Tuesday: that week, so every 2 weeks next falls on 7 Dec.
+    expect(cadenceAnchor("2026-11-24", "2026-11-23")).toBe("2026-11-23");
+    // Done Monday 7 Dec, asked Wednesday 9 Dec: every 3 weeks from that week.
+    expect(cadenceAnchor("2026-12-09", "2026-12-07")).toBe("2026-12-07");
+    // Done on a Friday: its week's Monday.
+    expect(cadenceAnchor("2026-11-24", "2026-11-20")).toBe("2026-11-16");
+  });
+  it("none done: the current week", () => {
+    expect(cadenceAnchor("2026-11-22", null)).toBe("2026-11-16");
+    expect(cadenceAnchor("2026-11-25", null)).toBe("2026-11-23");
   });
 });

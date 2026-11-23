@@ -20,6 +20,7 @@ import { schema } from "@rg/database";
 import { adaptiveConfigSchema, addDays, courseConfigSchema, newId, type AdaptiveConfig, type CourseConfig, type UserPreferences } from "@rg/domain";
 import type { Db } from "../src/services/db.js";
 import { applyMove } from "../src/services/jobs.js";
+import { applyPlanPatch } from "../src/services/plan-registry.js";
 import { placeSlots, previewPlacement, slotId } from "../src/services/program-slots.js";
 import { isWrite, makeTestDb, makeTestUser } from "./helpers.js";
 import { INTRO_COURSE } from "./course-fixture.js";
@@ -172,6 +173,89 @@ describe("the window reaches the next session", () => {
     await placeSlots(db, userId, p, MON, prefs, NOW);
     expect(await liveDates(p)).toEqual([day(0, 0), day(3, 0)]);
   });
+
+  // Fix round 1 (the review's MINOR 5): a pass looks over the widest window any rhythm reaches, so one that shrank takes off an
+  // outline its new pattern doesn't want straight away, and keeps one it does.
+  it("a window that shrinks: every 4 weeks to every week, the old far outline comes off at once", async () => {
+    const p = await seedCourse({ weekdays: [0], everyWeeks: 4, cadenceFrom: day(3, 0) });
+    await placeSlots(db, userId, p, MON, prefs, NOW);
+    expect(await liveDates(p)).toEqual([day(3, 0)]);
+    await setConfig(p, courseConfigSchema.parse({ course: INTRO_COURSE.id, weekdays: [4], time: "19:30" }));
+    const res = await placeSlots(db, userId, p, MON, prefs, NOW);
+    expect(res.archived).toEqual([slotId(p, day(3, 0))]);
+    expect(await liveDates(p)).toEqual([day(0, 4), day(1, 4), day(2, 4)]);
+    statements.length = 0;
+    expect(await placeSlots(db, userId, p, MON, prefs, NOW)).toEqual({ placed: [], archived: [] });
+    expect(writes()).toEqual([]);
+  });
+
+  it("and keeps a far outline the new pattern still wants, placing nothing new past its window", async () => {
+    const p = await seedCourse({ weekdays: [0], everyWeeks: 4, cadenceFrom: day(3, 0) });
+    await placeSlots(db, userId, p, MON, prefs, NOW);
+    await setConfig(p, courseConfigSchema.parse({ course: INTRO_COURSE.id, weekdays: [0], time: "19:30" }));
+    const res = await placeSlots(db, userId, p, MON, prefs, NOW);
+    expect(res.archived).toEqual([]);
+    expect(await liveDates(p)).toEqual([day(0, 0), day(1, 0), day(2, 0), day(3, 0)]);
+  });
+});
+
+// Fix round 1 (the review's MAJOR 2): with no `from`, a new rhythm counts from the week of the plan's latest done session, so
+// the next falls a rhythm after it; none done, the current week. The same rhythm keeps its own anchor. The review's two probes.
+describe("where a new rhythm counts from when nothing says (PATCH /api/plans/:id's applyPlanPatch)", () => {
+  const noon = (d: string) => `${d}T20:00:00.000Z`;
+  const done = (id: string) => db.update(plannedWorkouts).set({ completionState: "completed", resolutionDate: MON }).where(eq(plannedWorkouts.id, id));
+
+  it("Monday's session done, every 2 weeks asked on Tuesday: the next is two weeks after it, not one", async () => {
+    const p = await seedCourse({ weekdays: [0] });
+    await placeSlots(db, userId, p, MON, prefs, NOW);
+    await done(slotId(p, MON));
+    const tue = day(0, 1);
+    expect((await applyPlanPatch(db, userId, p, { everyWeeks: 2 }, noon(tue), tue)).ok).toBe(true);
+    expect(await configOf(p)).toMatchObject({ everyWeeks: 2, cadenceFrom: MON });
+    await placeSlots(db, userId, p, tue, prefs, noon(tue));
+    expect((await liveDates(p)).filter((d) => d > tue)).toEqual([day(2, 0)]);
+  });
+
+  it("every 2 weeks to every 3 on 9 Dec, the last done 7 Dec: the next falls three weeks after it", async () => {
+    const p = await seedCourse({ weekdays: [0], ...EVERY_2 });
+    const dec7 = day(2, 0);
+    await placeSlots(db, userId, p, dec7, prefs, noon(dec7));
+    await done(slotId(p, dec7));
+    const dec9 = day(2, 2);
+    expect((await applyPlanPatch(db, userId, p, { everyWeeks: 3 }, noon(dec9), dec9)).ok).toBe(true);
+    expect(await configOf(p)).toMatchObject({ everyWeeks: 3, cadenceFrom: dec7 });
+    await placeSlots(db, userId, p, dec9, prefs, noon(dec9));
+    expect((await liveDates(p)).filter((d) => d > dec9)).toEqual([day(5, 0)]);
+  });
+
+  it("none done: the current week", async () => {
+    const p = await seedCourse({ weekdays: [0, 4] });
+    const wed = day(0, 2);
+    expect((await applyPlanPatch(db, userId, p, { everyWeeks: 2 }, noon(wed), wed)).ok).toBe(true);
+    expect(await configOf(p)).toMatchObject({ everyWeeks: 2, cadenceFrom: MON });
+  });
+
+  it("the same rhythm keeps its own anchor, whatever was done since: new days, or the rhythm named again", async () => {
+    const p = await seedCourse({ weekdays: [0], everyWeeks: 2, cadenceFrom: day(1, 0) });
+    await placeSlots(db, userId, p, MON, prefs, NOW);
+    // A session done in another week than the anchor's (filed under the plan by hand: what matters is its day).
+    await db.update(plannedWorkouts).set({ completionState: "completed" }).where(eq(plannedWorkouts.planId, p));
+    const anyDone = (await db.select().from(plannedWorkouts).where(eq(plannedWorkouts.planId, p))).length;
+    expect(anyDone).toBeGreaterThan(0);
+    const wed = day(3, 2);
+    expect((await applyPlanPatch(db, userId, p, { weekdays: [0, 3] }, noon(wed), wed)).ok).toBe(true);
+    expect(await configOf(p)).toMatchObject({ weekdays: [0, 3], everyWeeks: 2, cadenceFrom: day(1, 0) });
+    expect((await applyPlanPatch(db, userId, p, { weekdays: [3], everyWeeks: 2 }, noon(wed), wed)).ok).toBe(true);
+    expect(await configOf(p)).toMatchObject({ weekdays: [3], everyWeeks: 2, cadenceFrom: day(1, 0) });
+  });
+});
+
+describe("a rhythm starts at its anchor (fix round 1, the review's MINOR 3)", () => {
+  it("from a Monday two weeks on: nothing before it, then every other week", async () => {
+    const p = await seedCourse({ weekdays: [0], everyWeeks: 2, cadenceFrom: day(2, 0), placementWeeksAhead: 4 });
+    await placeSlots(db, userId, p, MON, prefs, NOW);
+    expect(await liveDates(p)).toEqual([day(2, 0), day(4, 0)]);
+  });
 });
 
 describe("what holds days back still holds", () => {
@@ -191,11 +275,12 @@ describe("what holds days back still holds", () => {
   });
 });
 
-describe("a programme every 2 weeks (the twin)", () => {
-  it("places its goal on its days in the weeks the rhythm uses, and none between", async () => {
-    const p = await seedProgramme({ weeklyGoal: 2, preferredDays: [1, 3], ...EVERY_2 });
+describe("a programme runs every week (fix round 1)", () => {
+  it("its settings take no rhythm, so it places every week as it always has", async () => {
+    expect(adaptiveConfigSchema.safeParse({ weeklyGoal: 2, preferredDays: [1, 3], ...EVERY_2 }).success).toBe(false);
+    const p = await seedProgramme({ weeklyGoal: 2, preferredDays: [1, 3] });
     await placeSlots(db, userId, p, MON, prefs, NOW);
-    expect(await liveDates(p)).toEqual([day(0, 1), day(0, 3), day(2, 1), day(2, 3)]);
+    expect(await liveDates(p)).toEqual([day(0, 1), day(0, 3), day(1, 1), day(1, 3), day(2, 1), day(2, 3)]);
   });
 });
 

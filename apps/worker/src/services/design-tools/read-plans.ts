@@ -5,7 +5,7 @@
  * plan's: its sessions are the watch's, read_plan lists them), and whether the coach may change its STRUCTURE
  * (`coachMayChange`): only a block it wrote that is still running — propose_plan extends it, firms up a week, winds it
  * down or retires it; a watch plan's sessions are moved, skipped or eased with adjust_plan, a programme is the athlete's
- * own: its `settings` — days, weekly goal, rhythm, minutes, block length, modes, care (each switched-on condition's with
+ * own: its `settings` — days, weekly goal, minutes, block length, modes, care (each switched-on condition's with
  * care, on or off) — change with change_programme; a running course is a fixed sequence: its `settings` — days, time and
  * rhythm (R1.6) — change with change_plan, which also eases its next session or pauses it, by the `planId` listed here, and
  * adjust_plan skips or moves one; the Studio plan is the Studio's (the newest,
@@ -41,10 +41,11 @@
  * cut mid-list, and briefs are cut at a word last of all.
  *
  * NEVER A PLAN HIDDEN (R1.6: the owner's course was dropped from the end of an answer that didn't fit, and the coach never saw
- * it). Past what shortening fits, the last plans are listed in short instead of in full (`otherPlans`: each one's id, kind,
- * name, the `planId` change_plan takes, and its schedule — a course's days, rhythm and time, a programme's days and goal, a
- * block's or a watch plan's dates), and `planId` reads any one plan in full. Counted away (`morePlans`) only past even that,
- * which the per-kind caps keep out of reach.
+ * it). Past what shortening fits (its last room clips names too), the last plans are listed in short instead of in full —
+ * `otherPlans`, grouped by kind, courses first: `[id, name, schedule]` each (a course's days, rhythm and time, a programme's
+ * days and goal, anything else's dates), a block a line already names by its id alone (fix round 1: so ten of every kind still
+ * fit) — and `planId` reads any one plan in full. Courses come before programmes in the full list too, so they go short last.
+ * Counted (`morePlans`) only past even that, the watch's plans first and a course's last, and past the per-kind cap of 20.
  */
 import { sql, type SQL } from "drizzle-orm";
 import { z } from "zod";
@@ -76,8 +77,9 @@ import { DISCIPLINE_WORD as PLAN_DISCIPLINE_WORD } from "../plan-summaries.js";
 
 /** A block that ended this many days ago or less is still listed. */
 export const ENDED_DAYS = 30;
-/** Plans of each kind listed, at most. */
-const PLANS_MAX = 10;
+/** Plans of each kind read, at most (20 since R1.6 fix round 1: ten of every kind and more still fit in short); any past it
+ * are counted (`morePlans`), never dropped unsaid. */
+const PLANS_MAX = 20;
 /** Sessions still to come shown per plan. */
 export const NEXT_SESSIONS = 3;
 /** Shape weeks listed per block before the answer's size is weighed. */
@@ -88,7 +90,8 @@ const KEY_SESSIONS_MAX = 4;
 const input = z.object({ planId: z.string().min(1).max(200).optional() }).strict();
 
 /** What a read says of the plans it lists in short (`otherPlans`). */
-export const OTHER_PLANS_NOTE = "Listed in short to fit the answer: read_plans with a planId gives that plan in full.";
+export const OTHER_PLANS_NOTE =
+  "Listed in short to fit the answer, by kind: [id, name, schedule] — a coach block by its id alone, its name and dates in lines. read_plans with a planId gives that plan in full.";
 /** A name in a short listing: a line, not the whole of a long imported name. */
 const SHORT_NAME_MAX = 40;
 
@@ -269,13 +272,9 @@ function planOf(r: Row, today: string, room: Room, caring: readonly Caring[], li
     out.weeklyGoal = c.success ? c.data.weeklyGoal : null;
     // What change_programme changes, as the athlete's settings sheet shows it: [] days is any day.
     if (c.success) {
-      const { everyWeeks, from } = cadenceOf(c.data);
       out.settings = {
         days: c.data.preferredDays.map((d) => DAY_SHORT[d]),
         weeklyGoal: c.data.weeklyGoal,
-        // R1.6: its weekly goal every this many weeks, counted from `from`'s week.
-        everyWeeks,
-        ...(from ? { from } : {}),
         minutes: c.data.defaultMinutes,
         blockWeeks: c.data.blockWeeks,
         modes: c.data.modes,
@@ -403,12 +402,24 @@ export const readPlans: DesignTool = {
           select ${studioPlans.id} as id, ${studioPlans.plan} as plan, ${studioPlans.brief} as brief, ${studioPlans.createdAt} as created_at
           from ${studioPlans} where ${studioPlans.userId} = ${ctx.userId}
           order by ${studioPlans.createdAt} desc, ${studioPlans.id} desc limit 1) s)`,
+      // How many of each kind there are, past the cap or not (fix round 1): none is ever left out unsaid.
+      counts: sql`json_array(
+          (select count(*) from ${cp} where ${cp.userId} = ${ctx.userId} and substr(${cp.id}, 1, ${LOOSE_PLAN_ID_PREFIX.length}) <> ${LOOSE_PLAN_ID_PREFIX}
+            and (${cp.status} in ('active', 'draft') or ${cp.endDate} >= ${endedSince})),
+          (select count(*) from ${programs} where ${programs.userId} = ${ctx.userId} and ${programs.kind} = 'adaptive' and ${programs.status} = 'active'),
+          (select count(*) from ${programs} where ${programs.userId} = ${ctx.userId} and ${programs.kind} = 'course' and ${programs.status} = 'active' and ${programs.archivedAt} is null),
+          (select count(*) from ${trainingPlans} where ${trainingPlans.userId} = ${ctx.userId} and ${trainingPlans.status} = 'active' and ${trainingPlans.archivedAt} is null))`,
     });
     const today = athlete.today;
     const caring = athlete.profiles.flatMap((p) => (p.care ? [{ profileId: p.id, care: p.care.block.label }] : []));
     const blocks = parsedArray(extra.blocks) as Row[];
     const studio = studioRowOf(extra.studio, today);
-    const rows = [...blocks, ...parsedArray(extra.programmes), ...parsedArray(extra.courses), ...(studio ? [studio] : []), ...parsedArray(extra.watch)] as Row[];
+    const [programmes, courses, watch] = [parsedArray(extra.programmes), parsedArray(extra.courses), parsedArray(extra.watch)] as Row[][];
+    // Past the per-kind cap: counted, never dropped unsaid.
+    const readOfKind = [blocks.length, programmes!.length, courses!.length, watch!.length];
+    const pastCap = (parsedArray(extra.counts) as unknown[]).reduce<number>((n, c, i) => n + Math.max(0, Number(c) - (readOfKind[i] ?? 0)), 0);
+    // Courses before programmes (fix round 1): past what fits, the last plans go short first, so a course stays in full longest.
+    const rows = [...blocks, ...courses!, ...programmes!, ...(studio ? [studio] : []), ...watch!] as Row[];
     // The blocks as the plan list groups them: lines, each with its phases (a retired block is none).
     const trainingLines = linesOf(
       blocks.flatMap((b) => (b.start && b.end && b.discipline ? [lineBlockOf({ ...b, discipline: b.discipline, startDate: b.start, endDate: b.end, raceDate: b.race, programId: b.programId })] : [])),
@@ -465,15 +476,25 @@ export const readPlans: DesignTool = {
       linesData = linesFor(room);
       if (sizeOf({ plans, ...linesData }) <= RESULT_BUDGET_BYTES) break;
     }
-    let short: Array<Record<string, unknown>> = [];
-    let left = 0;
-    const dataOf = () => ({ plans, ...(short.length > 0 ? { otherPlans: short, otherPlansNote: OTHER_PLANS_NOTE } : {}), ...(left > 0 ? { morePlans: left } : {}), ...linesData });
+    // The plans in short, grouped by kind, courses first (fix round 1): a block a line names by its id alone.
+    const inLines = new Set(shownLines.flatMap((l) => l.phases.map((ph) => ph.id)));
+    let short: Row[] = [];
+    let left = asked === undefined ? pastCap : 0;
+    const dataOf = () => ({
+      plans,
+      ...(short.length > 0 ? { otherPlans: shortGroups(short, inLines), otherPlansNote: OTHER_PLANS_NOTE } : {}),
+      ...(left > 0 ? { morePlans: left } : {}),
+      ...linesData,
+    });
     while (plans.length > 0 && sizeOf(dataOf()) > RESULT_BUDGET_BYTES) {
-      short = [shortOf(ordered[plans.length - 1]!), ...short];
+      short = [ordered[plans.length - 1]!, ...short];
       plans = plans.slice(0, -1);
     }
+    // Past even that, the last of the least kept kind goes, counted: a watch plan's first, a course's last.
     while (short.length > 0 && sizeOf(dataOf()) > RESULT_BUDGET_BYTES) {
-      short = short.slice(0, -1);
+      const kind = [...SHORT_ORDER].reverse().find((k) => short.some((r) => r.kind === k))!;
+      const at = short.map((r) => r.kind).lastIndexOf(kind);
+      short = [...short.slice(0, at), ...short.slice(at + 1)];
       left += 1;
     }
     const listed = plans.length + short.length;
@@ -492,10 +513,21 @@ export const readPlans: DesignTool = {
   },
 };
 
-/** A plan in short (R1.6): its id, kind and name, the id change_plan takes, and its schedule in a line. */
-function shortOf(r: Row): Record<string, unknown> {
-  const planId = (parsedJson(r.plan) as { id?: unknown } | null)?.id;
-  return { id: r.id, kind: KIND_WORDS[r.kind], name: untrusted(clipWords(r.name, SHORT_NAME_MAX)), schedule: scheduleOf(r), ...(typeof planId === "string" ? { planId } : {}) };
+/** The kinds a short listing groups, in its order: courses first (fix round 1), the watch's plans last. */
+const SHORT_ORDER = ["course", "programme", "block", "studio", "watch"] as const;
+
+/**
+ * The plans in short (R1.6, tightened in fix round 1 so ten of every kind still fit), grouped by kind in SHORT_ORDER: each
+ * `[id, name, schedule]` — the id is what change_plan and read_plans take — and a block a line already names (with its dates)
+ * by its id alone.
+ */
+function shortGroups(rows: readonly Row[], inLines: ReadonlySet<string>): Record<string, unknown[]> {
+  const out: Record<string, unknown[]> = {};
+  for (const kind of SHORT_ORDER) {
+    const of = rows.filter((r) => r.kind === kind);
+    if (of.length > 0) out[KIND_WORDS[kind]] = of.map((r) => (r.kind === "block" && inLines.has(r.id) ? r.id : [r.id, untrusted(clipWords(r.name, SHORT_NAME_MAX)), scheduleOf(r)]));
+  }
+  return out;
 }
 
 /** A plan's schedule in a line: a course's days, rhythm and time; a programme's days and goal; anything else's dates. */
@@ -506,10 +538,7 @@ function scheduleOf(r: Row): string {
   }
   if (r.kind === "programme") {
     const c = adaptiveConfigSchema.safeParse(parsedJson(r.config) ?? {});
-    if (c.success) {
-      const n = cadenceOf(c.data).everyWeeks;
-      return `${daysWords(c.data.preferredDays)} · ${c.data.weeklyGoal} a week${n > 1 ? `, every ${n} weeks` : ""}`;
-    }
+    if (c.success) return `${daysWords(c.data.preferredDays)} · ${c.data.weeklyGoal} a week`;
   }
   return `${r.start ?? "no start"} → ${r.end ?? "no end"}`;
 }

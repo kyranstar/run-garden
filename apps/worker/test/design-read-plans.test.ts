@@ -87,6 +87,8 @@ const ok = (res: ToolOk | ToolErr): ToolOk & { data: { plans: Array<Record<strin
   if (isToolErr(res)) throw new Error(`refused: ${res.error} — ${res.why}`);
   return res as ToolOk & { data: { plans: Array<Record<string, any>> } };
 };
+/** The plans an answer lists in short (R1.6: grouped by kind). */
+const shortCount = (data: unknown): number => Object.values((data as { otherPlans?: Record<string, unknown[]> }).otherPlans ?? {}).flat().length;
 
 /** A plan's row in the registry (synthetic words). */
 async function planRow(userId: string, o: { id: string; kind: string; name?: string; disciplines?: string[]; purpose?: string | null; brief?: string | null; onEnd?: string | null; pausedUntil?: string | null; objectiveIds?: string[] | null }) {
@@ -354,13 +356,13 @@ describe("read_plans", () => {
       }
     }
     const { res, count } = await read();
-    const r = ok(res) as ToolOk & { data: { plans: Array<Record<string, any>>; otherPlans?: Array<Record<string, any>>; morePlans?: number } };
+    const r = ok(res) as ToolOk & { data: { plans: Array<Record<string, any>>; otherPlans?: Record<string, unknown[]>; morePlans?: number } };
     expect(count).toBe(1);
     expect(Buffer.byteLength(JSON.stringify({ provenance: r.provenance, missing: r.missing, data: r.data }))).toBeLessThanOrEqual(RESULT_BUDGET_BYTES);
-    expect(r.data.otherPlans!.length).toBeGreaterThan(0);
+    expect(shortCount(r.data)).toBeGreaterThan(0);
     expect(r.data.morePlans).toBeUndefined();
     // 10 blocks, 10 watch plans, the fixture's programme: every one named, in full or in short.
-    expect(r.data.plans.length + r.data.otherPlans!.length).toBe(21);
+    expect(r.data.plans.length + shortCount(r.data)).toBe(21);
     // The coach's own running blocks come first: the ones in short are the others.
     expect(r.data.plans[0]!.kind).toBe("coach block");
   });
@@ -583,8 +585,8 @@ describe("read_plans", () => {
       expect(Buffer.byteLength(JSON.stringify({ provenance: r.provenance, missing: r.missing, data: r.data })), `k=${k}`).toBeLessThanOrEqual(RESULT_BUDGET_BYTES);
       // REBASED R1.6: past the edge, plans go short (otherPlans), never counted away; all eleven named every time.
       expect(r.data.morePlans, `k=${k}`).toBeUndefined();
-      expect(r.data.plans.length + (r.data.otherPlans?.length ?? 0), `k=${k}`).toBe(11);
-      dropped = Math.max(dropped, r.data.otherPlans?.length ?? 0);
+      expect(r.data.plans.length + shortCount(r.data), `k=${k}`).toBe(11);
+      dropped = Math.max(dropped, shortCount(r.data));
     }
     expect(dropped).toBeGreaterThan(0);
   });
@@ -605,7 +607,7 @@ describe("read_plans", () => {
     // Every plan is named, in full or (REBASED R1.6) in short — the fixture's own beside the eight; each next session now
     // carries its `revisable`, so the room is a plan tighter; each one shown keeps its first shape week.
     const shown = r.data.plans.filter((p) => String(p.id).startsWith("cp-big-"));
-    const named = r.data.plans.length + ((r.data as { otherPlans?: unknown[] }).otherPlans?.length ?? 0);
+    const named = r.data.plans.length + shortCount(r.data);
     expect((r.data as { morePlans?: number }).morePlans).toBeUndefined();
     expect(named).toBe(9);
     // REBASED R1.6: a plan in short takes the room a count didn't, so one block fewer is shown in full.

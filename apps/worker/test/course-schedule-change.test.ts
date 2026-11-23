@@ -107,15 +107,17 @@ describe("through PATCH /api/plans/:id", () => {
     const res = await patch(p, { everyWeeks: 2, cadenceFrom: MON });
     expect(res.status).toBe(200);
     expect(await configOf(p)).toMatchObject({ weekdays: [0, 4], everyWeeks: 2, cadenceFrom: MON });
-    expect(await live(p)).toEqual([MON, day(0, 4)]);
+    // The off week's two came off in the request; the window reaches the next on week (one rhythm ahead).
+    expect((await live(p)).filter((d) => d >= day(1, 0) && d <= day(1, 6))).toEqual([]);
+    await placeSlots(db, userId, p, MON, prefs, NOW);
+    expect(await live(p)).toEqual([MON, day(0, 4), day(2, 0), day(2, 4)]);
     expect(res.json.plan.schedule).toEqual({ days: [0, 4], time: "18:15", everyWeeks: 2, from: MON });
     expect(res.total).toBeLessThanOrEqual(REQUEST_BUDGET);
     const [version] = await db.select().from(programVersions).where(eq(programVersions.programId, p));
     expect((version!.summary as { changed: string[] }).changed.sort()).toEqual(["cadenceFrom", "everyWeeks"]);
   });
 
-  it("days and a rhythm with no anchor: the rhythm starts with the week of the next of its days", async () => {
-    // Monday: today is the next Monday, so the rhythm counts from this week.
+  it("days and a rhythm with no anchor, nothing done yet: the rhythm counts from this week", async () => {
     const p = await course({ placementWeeksAhead: 2 });
     const res = await patch(p, { weekdays: [0], everyWeeks: 2 });
     expect(res.status).toBe(200);
@@ -137,13 +139,14 @@ describe("through PATCH /api/plans/:id", () => {
 
   it("back to every week removes both keys and brings the outlines back", async () => {
     const p = await course({ everyWeeks: 2, cadenceFrom: MON });
-    expect(await live(p)).toEqual([MON, day(0, 4)]);
+    expect(await live(p)).toEqual([MON, day(0, 4), day(2, 0), day(2, 4)]);
     const res = await patch(p, { everyWeeks: 1 });
     expect(res.status).toBe(200);
     const config = await configOf(p);
     expect(Object.keys(config)).not.toContain("everyWeeks");
     expect(Object.keys(config)).not.toContain("cadenceFrom");
-    expect(await live(p)).toEqual([MON, day(0, 4), day(1, 0), day(1, 4)]);
+    // Next week's come back; the week after, past the shorter window now, keeps the two it still wants.
+    expect(await live(p)).toEqual([MON, day(0, 4), day(1, 0), day(1, 4), day(2, 0), day(2, 4)]);
     expect(res.json.plan.schedule).toEqual({ days: [0, 4], time: "18:15", everyWeeks: 1, from: null });
   });
 
@@ -264,13 +267,14 @@ describe("through the coach's change_plan, and its approve", () => {
     expect(await configOf(p)).toMatchObject({ weekdays: [0], everyWeeks: 2, cadenceFrom: MON });
     // The soonest retractions went in the request (today's Friday first); what didn't fit is the hourly pass's.
     expect((await row(slotId(p, day(0, 4)))).archivedAt).toBe(NOW);
-    expect((await live(p)).length).toBeLessThan(4);
+    expect((await live(p)).filter((d) => d > MON && d <= day(1, 6))).not.toEqual([day(0, 4), day(1, 0), day(1, 4)]);
     await placeSlots(db, userId, p, MON, prefs, NOW);
-    expect(await live(p)).toEqual([MON]);
+    // Today's, then the Monday two weeks on: the window reaches one rhythm ahead.
+    expect(await live(p)).toEqual([MON, day(2, 0)]);
 
     const again = await invoke(app(), "POST", `/api/coach/proposals/${id}/approve`, { opIds: [`pc-${p}`] });
     expect(again.seen.filter((s) => isWrite(s) && /planned_workouts|"programs"|program_versions/.test(s))).toEqual([]);
-    expect(await live(p)).toEqual([MON]);
+    expect(await live(p)).toEqual([MON, day(2, 0)]);
   });
 
   it("a new time on the card, re-timed on approval", async () => {
@@ -295,6 +299,38 @@ describe("through the coach's change_plan, and its approve", () => {
     expect(res.json.refused[0]).toMatchObject({ error: "stale" });
     expect(await configOf(p)).toMatchObject({ weekdays: [2] });
     expect(Object.keys(await configOf(p))).not.toContain("everyWeeks");
+  });
+
+  /** A session of the plan done on `date`. */
+  async function doneOn(p: string, date: string) {
+    const id = newId();
+    await db.insert(plannedWorkouts).values({
+      id, userId, planId: p, sourceWorkoutId: id, title: "TRE", category: "yoga", sport: "yoga", originalPlanDate: date, lastVerifiedCorosDate: "",
+      effectiveDate: date, effectiveTime: "18:15", sourceContentFingerprint: "studio", fallbackEstimatedDurationSeconds: 660, calendarBlockDurationSeconds: 900,
+      origin: "studio", contentState: "outline", completionState: "completed", courseSession: 1, createdAt: NOW, updatedAt: NOW,
+    });
+  }
+
+  // Fix round 1 (the review's MAJOR 2): a new rhythm counts from the week of the latest done session; the same rhythm keeps its
+  // own anchor.
+  it("a new rhythm with no from counts from the week of the plan's latest done session", async () => {
+    const p = await course();
+    await doneOn(p, day(-1, 4));
+    await doneOn(p, day(-2, 0));
+    const ctx = await mainRun();
+    ok(await changePlan.run(ctx, { planId: p, days: ["Mon"], everyWeeks: 2, why: "Every two weeks." }));
+    expect((await opOf(ctx)).change).toEqual({ weekdays: [0], everyWeeks: 2, cadenceFrom: day(-1, 0) });
+  });
+
+  it("the same rhythm keeps its anchor: new days alone, or the rhythm named again with them", async () => {
+    const p = await course({ everyWeeks: 2, cadenceFrom: day(1, 0) });
+    await doneOn(p, day(-1, 0));
+    const first = await mainRun();
+    ok(await changePlan.run(first, { planId: p, days: ["Mon", "Thu"], why: "Thursdays suit you better than Fridays." }));
+    expect((await opOf(first)).change).toEqual({ weekdays: [0, 3] });
+    const second = await mainRun();
+    ok(await changePlan.run(second, { planId: p, days: ["Thu"], everyWeeks: 2, why: "Thursdays only." }));
+    expect((await opOf(second)).change).toEqual({ weekdays: [3] });
   });
 
   it.each([

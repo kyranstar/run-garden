@@ -5,7 +5,8 @@
  * (`pausedUntil`, its last day; null lifts it) and, for a course, whether its next session is eased.
  *
  * A COURSE'S SCHEDULE (R1.6): its days (`days`, by name), its time (`time`) and its rhythm (`everyWeeks`, 1 to 4, from the week
- * of `from`, else the rhythm's own anchor, else the week of the next of its days). The card says each ("Days Mon · Fri → Mon",
+ * of `from`; else the same rhythm's own anchor; else, a new rhythm, the week of the plan's latest done session, or this week with
+ * none — fix round 1, so the next falls a rhythm after the last). The card says each ("Days Mon · Fri → Mon",
  * "Time 19:30 → 07:30", "Every week → Every 2 weeks") and where the next sessions fall ("Next Evening practice Mon 23 Nov · Mon 7
  * Dec · Mon 21 Dec": placement's preview, written nowhere, then the rhythm past its window). Approved, the plan is placed again in the same
  * request. A programme's days and rhythm are change_programme's, and a refusal says so.
@@ -37,7 +38,7 @@
  */
 import { sql } from "drizzle-orm";
 import { z } from "zod";
-import { accountState, coachPlans, coachProposals, objectives, programs } from "@rg/database";
+import { accountState, coachPlans, coachProposals, objectives, plannedWorkouts, programs } from "@rg/database";
 import {
   cadenceAnchor,
   clipWords,
@@ -48,6 +49,7 @@ import {
   onEndAllowed,
   PLAN_ON_END,
   planOnEndSchema,
+  PROGRAMME_EVERY_WEEK,
   startOfIsoWeek,
   withCadence,
   type PlanOnEnd,
@@ -223,6 +225,8 @@ interface PlanRow {
   objectiveIds: unknown;
   config: unknown;
   archivedAt: string | null;
+  /** The day of its latest done session, or null: where a new rhythm counts from (fix round 1). */
+  lastDone: string | null;
 }
 
 const idList = (xs: readonly string[]) => (xs.length ? sql.join(xs.map((x) => sql`${x}`), sql`, `) : sql`null`);
@@ -277,7 +281,8 @@ export const changePlan: DesignTool = {
     const { athlete, extra } = await readAthlete(ctx.db, ctx.userId, ctx.now, {
       plan: sql`(select json_object('id', pr.id, 'name', pr.name, 'kind', pr.kind, 'status', pr.status, 'disciplines', json(pr.disciplines), 'purpose', pr.purpose, 'brief', pr.brief,
           'onEnd', pr.on_end, 'pausedUntil', pr.paused_until, 'objectiveIds', json(case when json_valid(pr.objective_ids) then pr.objective_ids end),
-          'config', json(pr.config), 'archivedAt', pr.archived_at)
+          'config', json(pr.config), 'archivedAt', pr.archived_at,
+          'lastDone', (select max(d.effective_date) from ${plannedWorkouts} d where d.user_id = pr.user_id and d.plan_id = pr.id and d.completion_state = 'completed'))
         from ${programs} pr where pr.user_id = ${ctx.userId} and (pr.id = ${parsed.planId}
           or (json_valid(pr.source) and json_extract(pr.source, '$.studioPlanId') = ${parsed.planId})
           or pr.id = (select cp.program_id from ${coachPlans} cp where cp.id = ${parsed.planId} and cp.user_id = ${ctx.userId}))
@@ -316,10 +321,10 @@ export const changePlan: DesignTool = {
     if (scheduleGiven.length > 0 && kind !== "course") {
       wrong.push(
         kind === "adaptive"
-          ? `${scheduleGiven.join(", ")}: ${plan.name} is a programme: its days and rhythm are change_programme's (programmeId ${JSON.stringify(plan.id)})`
+          ? `${scheduleGiven.join(", ")}: ${plan.name} is a programme — ${PROGRAMME_EVERY_WEEK} Its days are change_programme's (programmeId ${JSON.stringify(plan.id)})`
           : `${scheduleGiven.join(", ")}: only a course's days, time and rhythm change here; ${KIND_WORDS[kind] ?? "this plan"}'s sessions move with adjust_plan`,
       );
-      if (kind === "adaptive") fix = "Call change_programme with its days or everyWeeks, and leave them out here.";
+      if (kind === "adaptive") fix = "Change its days with change_programme, and leave days, time, everyWeeks and from out here.";
     }
     const own = new Map(parsedArray(extra.ownObjectives).flatMap((x) => (Array.isArray(x) && typeof x[0] === "string" ? [[x[0], String(x[1])] as const] : [])));
     for (const id of wantedIds) {
@@ -345,9 +350,16 @@ export const changePlan: DesignTool = {
     if (parsed.from !== undefined && everyWeeks === 1) {
       return refuse("invalid_input", "from: every week counts from no day", "Give everyWeeks 2 to 4 with from, or leave from out.");
     }
-    // A rhythm counts from the week `from` names, else the one it has, else the week of the next of its days.
+    // A rhythm counts from the week `from` names; else the same rhythm keeps the anchor it has; else (fix round 1) a new one
+    // counts from the week of the plan's latest done session, so the next falls a rhythm after it — this week, with none done.
     const cadenceFrom =
-      everyWeeks === 1 ? null : parsed.from !== undefined ? startOfIsoWeek(parsed.from) : (from.cadenceFrom ?? cadenceAnchor(athlete.today, weekdays));
+      everyWeeks === 1
+        ? null
+        : parsed.from !== undefined
+          ? startOfIsoWeek(parsed.from)
+          : everyWeeks === from.everyWeeks && from.cadenceFrom !== null
+            ? from.cadenceFrom
+            : cadenceAnchor(athlete.today, plan.lastDone);
     const wanted: PlanChangeFields = {
       purpose: parsed.purpose === undefined ? from.purpose : parsed.purpose,
       brief: parsed.brief === undefined ? from.brief : parsed.brief,
@@ -385,7 +397,7 @@ export const changePlan: DesignTool = {
           athlete.prefs,
           ctx.now.toISOString(),
         );
-        nextLine = courseNextLine(plan.name, preview.before, [...preview.after, ...preview.beyond]);
+        nextLine = courseNextLine(plan.name, preview.before, [...preview.after, ...preview.beyond].sort());
       }
     }
 

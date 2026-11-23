@@ -115,28 +115,10 @@ export interface PlanStructureOp {
 /** A plan change's manifest lines shown, at most; the rest are counted. */
 export const PLAN_LINES_MAX = 8;
 
-/** The settings a programme change sets (§8 §5): the settings sheet's own, but the programme's name and place; R1.6 its rhythm
- * too, every week as 1 and no anchor (`cadenceOf`), whatever the row stores. */
-export const PROGRAMME_SETTINGS = ["weeklyGoal", "preferredDays", "defaultMinutes", "blockWeeks", "modes", "careProfiles", "everyWeeks", "cadenceFrom"] as const;
-export type ProgrammeSettings = Pick<AdaptiveConfig, "weeklyGoal" | "preferredDays" | "defaultMinutes" | "blockWeeks" | "modes" | "careProfiles"> & {
-  everyWeeks: number;
-  cadenceFrom: string | null;
-};
-
-/** A programme's settings as a change reads them: its rhythm in a change's terms. */
-export function programmeSettingsOf(c: AdaptiveConfig): ProgrammeSettings {
-  const { everyWeeks, from } = cadenceOf(c);
-  return {
-    weeklyGoal: c.weeklyGoal,
-    preferredDays: c.preferredDays,
-    defaultMinutes: c.defaultMinutes,
-    blockWeeks: c.blockWeeks,
-    modes: c.modes,
-    careProfiles: c.careProfiles,
-    everyWeeks,
-    cadenceFrom: from,
-  };
-}
+/** The settings a programme change sets (§8 §5): the settings sheet's own, but the programme's name and place. A programme runs
+ * every week (R1.6 fix round 1): a rhythm is a course's alone. */
+export const PROGRAMME_SETTINGS = ["weeklyGoal", "preferredDays", "defaultMinutes", "blockWeeks", "modes", "careProfiles"] as const;
+export type ProgrammeSettings = Pick<AdaptiveConfig, (typeof PROGRAMME_SETTINGS)[number]>;
 
 /**
  * A change to an adaptive programme's settings inside a designed proposal (§8 §5; design-tools/change-programme.ts): its

@@ -337,7 +337,7 @@ export type PlanPatchResult =
   | { ok: false; error: "invalid"; issues: Array<{ path: Array<string | number>; message: string }> };
 
 /** Why a programme's days or rhythm are refused here, and anything else's (R1.6): a course's alone change on its plan. */
-export const NOT_A_COURSE_PROGRAMME = "a programme's days and rhythm are its own settings (PATCH /api/programs/:id): only a course's change here";
+export const NOT_A_COURSE_PROGRAMME = "a programme's days are its own settings (PATCH /api/programs/:id), and a programme runs every week: only a course's days, time and rhythm change here";
 export const NOT_A_COURSE = "only a course's days, time and rhythm change here";
 
 /** A course's editable settings as they read (easing and schedule): the change's own terms. */
@@ -348,10 +348,11 @@ function courseFields(raw: unknown) {
 
 /**
  * A course's settings with a patch's easing and schedule (R1.6), checked whole by its schema. Days are kept in week order. A
- * rhythm of every week writes neither of its keys (`withCadence`); a longer one counts from `cadenceFrom`'s Monday, else from
- * the one it already had, else from the week of the next of its days (`cadenceAnchor`); null asks for that week afresh.
+ * rhythm of every week writes neither of its keys (`withCadence`); a longer one counts from `cadenceFrom`'s Monday; else the
+ * same rhythm keeps the anchor it has; else (fix round 1) a new one counts from the week of the plan's latest done session
+ * (`lastDone`), or this week with none (`cadenceAnchor`) — so the next falls a rhythm after the last. Null asks for that anew.
  */
-function courseConfigWith(raw: unknown, p: PlanPatch, today: string): { ok: true; config: CourseConfig } | { ok: false; path: string; message: string } {
+function courseConfigWith(raw: unknown, p: PlanPatch, today: string, lastDone: string | null): { ok: true; config: CourseConfig } | { ok: false; path: string; message: string } {
   const stored = courseConfigSchema.safeParse(raw);
   if (!stored.success) return { ok: false, path: "config", message: "the course's settings are not complete" };
   let c: CourseConfig = { ...stored.data };
@@ -362,7 +363,8 @@ function courseConfigWith(raw: unknown, p: PlanPatch, today: string): { ok: true
     const was = cadenceOf(stored.data);
     const n = p.everyWeeks ?? was.everyWeeks;
     if (n === 1 && typeof p.cadenceFrom === "string") return { ok: false, path: "cadenceFrom", message: "every week counts from no day: give everyWeeks 2 to 4 with it" };
-    const from = n === 1 ? null : p.cadenceFrom === undefined && was.from !== null ? was.from : (p.cadenceFrom ?? cadenceAnchor(today, c.weekdays));
+    const keeps = p.cadenceFrom === undefined && n === was.everyWeeks && was.from !== null;
+    const from = n === 1 ? null : typeof p.cadenceFrom === "string" ? p.cadenceFrom : keeps ? was.from : cadenceAnchor(today, lastDone);
     c = withCadence(c, n, from);
   }
   const merged = courseConfigSchema.safeParse(c);
@@ -387,9 +389,18 @@ export async function applyPlanPatch(db: Db, userId: string, id: string, patch: 
   const p: PlanPatch = parsed.data;
 
   if (await restoreInProgress(db, userId)) return { ok: false, error: "restore_in_progress" };
-  const [row] = await db.select().from(programs).where(and(eq(programs.id, id), eq(programs.userId, userId))).limit(1);
+  // With its latest done session's day, in the same statement: where a new rhythm counts from (fix round 1).
+  const [found] = await db
+    .select({
+      ...getTableColumns(programs),
+      lastDone: sql<string | null>`(select max(d.effective_date) from planned_workouts d where d.user_id = programs.user_id and d.plan_id = programs.id and d.completion_state = 'completed')`,
+    })
+    .from(programs)
+    .where(and(eq(programs.id, id), eq(programs.userId, userId)))
+    .limit(1);
   // An archived row is no plan: the list leaves it out, so an edit of it would answer with nothing to show.
-  if (!row || row.archivedAt !== null || !isPlanKind(row.kind)) return { ok: false, error: "not_found" };
+  if (!found || found.archivedAt !== null || !isPlanKind(found.kind)) return { ok: false, error: "not_found" };
+  const { lastDone, ...row } = found;
   const kind = row.kind as ProgramKind;
 
   if (p.onEnd !== undefined && !onEndAllowed(kind, p.onEnd)) return invalid("onEnd", `a ${kind} plan cannot end by "${p.onEnd}"`);
@@ -402,7 +413,7 @@ export async function applyPlanPatch(db: Db, userId: string, id: string, patch: 
       if (p.easeNext !== undefined) return invalid("easeNext", "only a course can ease its next session");
       return invalid(scheduleGiven[0]!, kind === "adaptive" ? NOT_A_COURSE_PROGRAMME : NOT_A_COURSE);
     }
-    const merged = courseConfigWith(row.config, p, today);
+    const merged = courseConfigWith(row.config, p, today, lastDone);
     if (!merged.ok) return invalid(merged.path, merged.message);
     config = merged.config;
   }

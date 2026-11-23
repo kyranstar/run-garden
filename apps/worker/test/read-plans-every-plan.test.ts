@@ -9,7 +9,7 @@
  */
 import { beforeEach, describe, expect, it } from "vitest";
 import { schema } from "@rg/database";
-import { courseConfigSchema, newId } from "@rg/domain";
+import { adaptiveConfigSchema, courseConfigSchema, newId } from "@rg/domain";
 import type { Env } from "../src/env.js";
 import type { Db } from "../src/services/db.js";
 import { readPlans } from "../src/services/design-tools/read-plans.js";
@@ -61,12 +61,19 @@ async function read(input: unknown = {}) {
   const res = await readPlans.run({ db, env: ENV, userId, run: { id: "run-rp", role: "main", scope: { kind: "auto" }, parentId: null, rehearsal: false }, now: NOW }, input);
   return { res, count: statements.length, writes: statements.filter(isWrite) };
 }
-type Answer = ToolOk & { data: { plans: Array<Record<string, any>>; otherPlans?: Array<Record<string, any>>; otherPlansNote?: string; morePlans?: number } };
+/** A plan in short (fix round 1): `[id, name, schedule]`, or a block named in `lines` by its id alone; grouped by kind. */
+type Short = string | [string, { untrusted: true; text: string }, string];
+type Answer = ToolOk & {
+  data: { plans: Array<Record<string, any>>; otherPlans?: Record<string, Short[]>; otherPlansNote?: string; morePlans?: number; lines?: Array<Record<string, any>> };
+};
 const ok = (res: ToolOk | ToolErr): Answer => {
   if (isToolErr(res)) throw new Error(`refused: ${res.error} — ${res.why}`);
   return res as Answer;
 };
 const bytes = (r: Answer) => Buffer.byteLength(JSON.stringify({ provenance: r.provenance, missing: r.missing, data: r.data }));
+const shortIdOf = (s: Short): string => (typeof s === "string" ? s : s[0]);
+/** Every plan the answer names: in full, or in short. */
+const namedIds = (r: Answer): string[] => [...r.data.plans.map((p) => p.id as string), ...Object.values(r.data.otherPlans ?? {}).flat().map(shortIdOf)];
 
 /** Ten running blocks with long names and long session titles, two watch plans, the fixture's programme, and TRE: fourteen. */
 async function crowded(): Promise<string[]> {
@@ -97,27 +104,66 @@ describe("read_plans with more plans than fit", () => {
     expect(writes).toEqual([]);
     expect(bytes(r)).toBeLessThanOrEqual(RESULT_BUDGET_BYTES);
     expect(r.data.morePlans).toBeUndefined();
-    const named = [...r.data.plans.map((p) => p.id), ...(r.data.otherPlans ?? []).map((p) => p.id)];
+    const named = namedIds(r);
     for (const id of ids) expect(named, id).toContain(id);
     // Some had to go short: the answer says how to read one in full.
-    expect(r.data.otherPlans!.length).toBeGreaterThan(0);
-    expect(r.data.otherPlansNote).toBe("Listed in short to fit the answer: read_plans with a planId gives that plan in full.");
+    expect(Object.values(r.data.otherPlans!).flat().length).toBeGreaterThan(0);
+    expect(r.data.otherPlansNote).toBe(
+      "Listed in short to fit the answer, by kind: [id, name, schedule] — a coach block by its id alone, its name and dates in lines. read_plans with a planId gives that plan in full.",
+    );
     // The coach's own running blocks still come first, in full.
     expect(r.data.plans[0]!.kind).toBe("coach block");
   });
 
-  it("a course in short says its kind, its name and its days and time; a programme its days and goal; a block its dates", async () => {
+  it("in short: a course its days and time, a watch plan its dates, a block in lines its id alone; courses first", async () => {
     await crowded();
     const r = ok((await read()).res);
-    const short = new Map((r.data.otherPlans ?? []).map((p) => [p.id, p]));
-    const all = new Map([...r.data.plans.map((p) => [p.id, p] as const), ...short]);
-    const tre = all.get(TRE)!;
-    if (short.has(TRE)) expect(tre).toEqual({ id: TRE, kind: "course", name: { untrusted: true, text: "TRE" }, schedule: "Mon · Fri · 19:30", planId: TRE });
-    else expect(tre.settings).toMatchObject({ days: ["Mon", "Fri"], time: "19:30", everyWeeks: 1 });
-    for (const p of short.values()) {
-      expect(typeof p.schedule).toBe("string");
-      if (p.kind === "coach block" || p.kind === "watch plan") expect(p.schedule).toMatch(/^\d{4}-\d\d-\d\d → \d{4}-\d\d-\d\d$/);
+    const groups = r.data.otherPlans!;
+    const all = [...r.data.plans.map((p) => [p.id, p] as const)];
+    const tre = (groups.course ?? []).find((s) => shortIdOf(s) === TRE);
+    if (tre) expect(tre).toEqual([TRE, { untrusted: true, text: "TRE" }, "Mon · Fri · 19:30"]);
+    else expect(new Map(all).get(TRE)!.settings).toMatchObject({ days: ["Mon", "Fri"], time: "19:30", everyWeeks: 1 });
+    for (const s of groups["watch plan"] ?? []) expect((s as [string, unknown, string])[2]).toMatch(/^\d{4}-\d\d-\d\d → \d{4}-\d\d-\d\d$/);
+    const inLines = new Set((r.data.lines ?? []).flatMap((l) => (l.phases as Array<{ id: string }>).map((p) => p.id)));
+    for (const s of groups["coach block"] ?? []) {
+      if (inLines.has(shortIdOf(s))) expect(typeof s).toBe("string");
     }
+    const kinds = Object.keys(groups);
+    if (kinds.includes("course")) expect(kinds[0]).toBe("course");
+  });
+
+  // The review's probe (fix round 1, MINOR 4): ten of every kind, at the per-kind caps.
+  it("ten of every kind — blocks, programmes, courses, watch plans — and every one still named, courses first", async () => {
+    const ids: string[] = [];
+    for (let n = 0; n < 10; n++) {
+      const b = newId();
+      await block(b, `Block ${n}`);
+      const t = newId();
+      await db.insert(schema.trainingPlans).values({ id: t, userId, sourcePlanId: `src-${n}`, name: `Watch plan ${n}`, startDate: day(30), endDate: "2026-12-31", status: "active", createdAt: at(day(30)), updatedAt: at(day(30)) });
+      const c = `course-${newId()}-c${n}`;
+      await course(c, `Course ${n}`, { weekdays: [0, 4] });
+      const p = newId();
+      await db.insert(schema.programs).values({ id: p, userId, kind: "adaptive", name: `Programme ${n}`, status: "active", disciplines: ["strength"], onEnd: "continue", config: adaptiveConfigSchema.parse({}), createdAt: at(day(60)), updatedAt: at(day(60)) });
+      ids.push(b, t, c, p);
+    }
+    const { res, count } = await read();
+    const r = ok(res);
+    expect(count).toBe(1);
+    expect(bytes(r)).toBeLessThanOrEqual(RESULT_BUDGET_BYTES);
+    expect(r.data.morePlans).toBeUndefined();
+    const named = new Set(namedIds(r));
+    expect(ids.filter((id) => !named.has(id))).toEqual([]);
+    expect(Object.keys(r.data.otherPlans ?? {})[0]).toBe("course");
+  });
+
+  it("past the read's cap of 20 a kind, the rest are counted, never dropped unsaid", async () => {
+    for (let n = 0; n < 22; n++) {
+      await db.insert(schema.trainingPlans).values({ id: `tp-cap-${n}`, userId, sourcePlanId: `src-cap-${n}`, name: `W${n}`, startDate: day(30), endDate: "2026-12-31", status: "active", createdAt: at(day(30)), updatedAt: at(day(30)) });
+    }
+    const r = ok((await read()).res);
+    const named = namedIds(r).filter((id) => id.startsWith("tp-cap-"));
+    expect(named.length).toBe(20);
+    expect(r.data.morePlans).toBe(2);
   });
 
   it("read_plans {planId} gives that plan in full, whatever else there is", async () => {

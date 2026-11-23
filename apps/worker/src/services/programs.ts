@@ -22,7 +22,6 @@ import {
   newId,
   parseStoredWorkoutDoc,
   startOfIsoWeek,
-  withCadence,
   type AdaptiveConfig,
 } from "@rg/domain";
 import { CORE_FAMILIES, EXERCISES, isProfileId, PROFILES } from "@rg/exercise-library";
@@ -111,7 +110,7 @@ export async function updateProgram(
   db: Db,
   userId: string,
   id: string,
-  patch: { name?: string; config?: Partial<Omit<AdaptiveConfig, "cadenceFrom">> & { cadenceFrom?: string | null }; status?: "active" | "retired" },
+  patch: { name?: string; config?: Partial<AdaptiveConfig>; status?: "active" | "retired" },
   now: string,
 ): Promise<void> {
   if (await restoreInProgress(db, userId)) return;
@@ -127,12 +126,7 @@ export async function updateProgram(
   if (patch.status !== undefined) set.status = adaptiveStatusSchema.parse(patch.status);
   if (patch.config !== undefined) {
     const changes = Object.fromEntries(Object.entries(patch.config).filter(([, v]) => v !== undefined));
-    const merged = { ...(row.config as Record<string, unknown>), ...changes };
-    // R1.6: every week writes neither rhythm key, whatever was sent (a change back sends 1 and null); a longer one keeps its
-    // anchor on a Monday, and one with no anchor is refused by the schema.
-    const n = typeof merged.everyWeeks === "number" ? merged.everyWeeks : 1;
-    const from = typeof merged.cadenceFrom === "string" ? merged.cadenceFrom : null;
-    set.config = adaptiveConfigSchema.parse(n <= 1 ? withCadence(merged, 1, null) : from === null ? merged : withCadence(merged, n, from));
+    set.config = adaptiveConfigSchema.parse({ ...row.config, ...changes });
   }
   await db.update(programs).set(set).where(and(eq(programs.id, id), eq(programs.userId, userId)));
 }

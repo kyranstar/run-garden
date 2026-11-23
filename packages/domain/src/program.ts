@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { addDays, daysBetween, isLocalDate, isoWeekday, startOfIsoWeek } from "./time.js";
+import { daysBetween, isLocalDate, isoWeekday, startOfIsoWeek } from "./time.js";
 
 // Programs: the one registry of plans (one-workout-system spec §8.1, Phase 1 spec §6). `programs.config` and
 // `program_blocks.intent` are JSON columns; these are what they hold.
@@ -69,10 +69,11 @@ export const sessionModeSchema = z.enum(SESSION_MODES);
 export type SessionMode = z.infer<typeof sessionModeSchema>;
 
 /**
- * A PLAN'S RHYTHM LONGER THAN A WEEK (R1.6): its days every `everyWeeks` weeks (2 to 4), counted from `cadenceFrom`, the Monday
- * of a week it uses. Both keys are stored only when they say something: every week is neither key, never `everyWeeks: 1`, so
- * a row an older worker reads (its schema is strict) is the row it always was. `withCadence` is the one way to write them.
- * Placement asks `onWeek` of each ISO week; a week it doesn't use holds none of the plan's sessions.
+ * A COURSE'S RHYTHM LONGER THAN A WEEK (R1.6): its days every `everyWeeks` weeks (2 to 4), counted from `cadenceFrom`, the Monday
+ * of the first week it uses. Both keys are stored only when they say something: every week is neither key, never
+ * `everyWeeks: 1`, so a row an older worker reads (its schema is strict) is the row it always was. `withCadence` is the one way
+ * to write them. Placement asks `onWeek` of each ISO week; a week it doesn't use holds none of the plan's sessions. A course's
+ * alone: a programme runs every week (`adaptiveConfigSchema`).
  */
 export const EVERY_WEEKS_MAX = 4;
 const cadenceKeys = {
@@ -82,7 +83,7 @@ const cadenceKeys = {
   cadenceFrom: localDate.optional(),
 };
 
-/** The rhythm's rule, on either kind's config: an anchor Monday with every 2 weeks or more, neither key for every week. */
+/** The rhythm's rule on a course's config: an anchor Monday with every 2 weeks or more, neither key for every week. */
 function cadenceRule(c: { everyWeeks?: number | undefined; cadenceFrom?: string | undefined }, ctx: z.RefinementCtx): void {
   const issue = (path: string, message: string) => ctx.addIssue({ code: z.ZodIssueCode.custom, path: [path], message });
   if (c.everyWeeks === 1) issue("everyWeeks", "every week is the default: leave everyWeeks out");
@@ -102,12 +103,16 @@ export function cadenceOf(c: { everyWeeks?: number | undefined; cadenceFrom?: st
   return n > 1 && c.cadenceFrom ? { everyWeeks: n, from: c.cadenceFrom } : { everyWeeks: 1, from: null };
 }
 
-/** Whether the ISO week holding `date` is one the rhythm uses: every week, or a whole number of rhythms from its anchor. */
+/**
+ * Whether the ISO week holding `date` is one the rhythm uses: every week, or a whole number of rhythms on from its anchor. The
+ * anchor is where the rhythm starts (fix round 1): no week before it is one of its weeks, so "from 7 Dec" set on 22 Nov places
+ * nothing before 7 Dec.
+ */
 export function onWeek(date: string, c: { everyWeeks?: number | undefined; cadenceFrom?: string | undefined }): boolean {
   const { everyWeeks: n, from } = cadenceOf(c);
   if (n === 1 || from === null) return true;
   const weeks = Math.round(daysBetween(startOfIsoWeek(from), startOfIsoWeek(date)) / 7);
-  return ((weeks % n) + n) % n === 0;
+  return weeks >= 0 && weeks % n === 0;
 }
 
 /**
@@ -120,19 +125,21 @@ export function withCadence<T extends object>(config: T, everyWeeks: number, fro
   return { ...rest, everyWeeks, cadenceFrom: startOfIsoWeek(from) } as T;
 }
 
-/** The Monday a rhythm counts from when nothing says: the week of the next of its days, today's included. */
-export function cadenceAnchor(today: string, weekdays: readonly number[]): string {
-  for (let i = 0; i < 7; i++) {
-    const date = addDays(today, i);
-    if (weekdays.includes(isoWeekday(date) - 1)) return startOfIsoWeek(date);
-  }
-  return startOfIsoWeek(today);
+/**
+ * The Monday a new rhythm counts from when nothing says (fix round 1, the review's MAJOR 2): the week of the plan's latest done
+ * session, so the next one falls a rhythm after it ("every 2 weeks" the day after Monday's session: the Monday two weeks on);
+ * none done, the current week.
+ */
+export function cadenceAnchor(today: string, lastDone: string | null): string {
+  return startOfIsoWeek(lastDone ?? today);
 }
 
 /**
  * An adaptive program's settings (`programs.config` for `kind = "adaptive"`). Every field has a default, so
- * `adaptiveConfigSchema.parse({})` is a complete config. `adaptiveConfigFields` is the object before the rhythm's rule, for a
- * route's partial.
+ * `adaptiveConfigSchema.parse({})` is a complete config. NO RHYTHM (R1.6 fix round 1): a programme's goal is read per week
+ * wherever it is shown or built from (its row's "1 of 3 this week", its build's mode), so a rhythm longer than a week would read
+ * as falling behind. A programme runs every week; its schema takes neither rhythm key, so nothing writes one. A course can be
+ * spaced out. `adaptiveConfigFields` is the same object, the name a route's partial takes.
  */
 export const adaptiveConfigFields = z
   .object({
@@ -166,10 +173,11 @@ export const adaptiveConfigFields = z
       .default([]),
     /** How many weeks ahead slots are placed. */
     placementWeeksAhead: z.number().int().min(1).max(4).default(2),
-    ...cadenceKeys,
   })
   .strict();
-export const adaptiveConfigSchema = adaptiveConfigFields.superRefine(cadenceRule);
+export const adaptiveConfigSchema = adaptiveConfigFields;
+/** Why a programme takes no rhythm, in the coach's words (change_programme's refusal, the settings route's 422). */
+export const PROGRAMME_EVERY_WEEK = "A programme runs every week; a course can be spaced out.";
 export type AdaptiveConfig = z.infer<typeof adaptiveConfigSchema>;
 
 /**

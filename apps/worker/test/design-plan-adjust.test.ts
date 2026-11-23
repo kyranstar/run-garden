@@ -1338,6 +1338,19 @@ describe("fix round 7: the sanctioned rest the thread coach is held to", () => {
     expect(note(far)).toBeNull();
   });
 
+  // Fix round 1 (the review's untested: the landing day): a skip agreed today for a session ahead lands on that session's day,
+  // as the garden lands it, so it is that week's rest, not today's.
+  it("a skip agreed ahead of its day counts in the week of its day, as the garden lands it", async () => {
+    await planned({ date: day(-5), state: "skipped" });
+    await db.update(plannedWorkouts).set({ sanctionedBy: "coach", resolutionDate: TODAY }).where(eq(plannedWorkouts.effectiveDate, day(-5)));
+    const fri = await planned({ date: day(-9), category: "yoga", origin: "studio" });
+    const res = ok((await adjust(await mainRun({ kind: "auto" }), skip(fri))).res);
+    expect((res.data as { sanctionedRest: unknown }).sanctionedRest).toEqual({ usedThisWeek: 1, inProposal: 1, allowance: 1 });
+    // And today's own week holds none of it.
+    const todays = ok((await adjust(await mainRun({ kind: "auto" }), skip(rich.outlineToday))).res);
+    expect((todays.data as { sanctionedRest: unknown }).sanctionedRest).toEqual({ usedThisWeek: 0, inProposal: 1, allowance: 1 });
+  });
+
   it("a skip ahead counts the skips already resolved in its own week, not this one's", async () => {
     // Resolved today, two days ago: this rolling week's, not the week of a skip ten days on.
     await planned({ date: day(2), state: "skipped" });

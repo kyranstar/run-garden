@@ -22,7 +22,7 @@ import { z, ZodError } from "zod";
 import { asc, desc, eq } from "drizzle-orm";
 import { locations } from "@rg/database";
 import { activeProfileIds, conditionView } from "../services/condition-views.js";
-import { adaptiveConfigFields, adaptiveConfigSchema, nowInstant, todayInZone } from "@rg/domain";
+import { adaptiveConfigSchema, nowInstant, PROGRAMME_EVERY_WEEK, todayInZone } from "@rg/domain";
 import type { AppContext } from "../auth/middleware.js";
 import { requireUser } from "../auth/middleware.js";
 import { loadPreferences, syncCalendar } from "../services/calendar-sync.js";
@@ -53,14 +53,25 @@ const createSchema = z
 const patchSchema = z
   .object({
     name: programNameSchema.optional(),
-    /** Only the keys sent change; the service merges them over the stored config (a rhythm of every week removes its keys). */
-    config: adaptiveConfigFields.partial().strict().optional(),
+    /** Only the keys sent change; the service merges them over the stored config. */
+    config: adaptiveConfigSchema.partial().strict().optional(),
     status: adaptiveStatusSchema.optional(),
   })
   .strict();
 
 function invalid(c: Context<AppContext>, error: ZodError): Response {
   return c.json({ error: "invalid_program", issues: error.issues }, 422);
+}
+
+/**
+ * A rhythm sent for a programme (R1.6 fix round 1): refused in the coach's words rather than as an unknown key, since a
+ * programme runs every week and a course can be spaced out. Null when the body asks for none.
+ */
+function rhythmRefused(c: Context<AppContext>, body: unknown): Response | null {
+  const config = (body as { config?: unknown } | null)?.config;
+  if (!config || typeof config !== "object") return null;
+  const key = (["everyWeeks", "cadenceFrom"] as const).find((k) => Object.prototype.hasOwnProperty.call(config, k));
+  return key ? c.json({ error: "invalid_program", issues: [{ path: ["config", key], message: PROGRAMME_EVERY_WEEK }] }, 422) : null;
 }
 
 /** A request's statements at most (the suites' budget for the free plan's 50). */
@@ -114,7 +125,10 @@ programRoutes.get("/", async (c) => {
 programRoutes.post("/", async (c) => {
   const db = c.get("db");
   const userId = c.get("userId");
-  const parsed = createSchema.safeParse(await c.req.json().catch(() => null));
+  const body: unknown = await c.req.json().catch(() => null);
+  const noRhythm = rhythmRefused(c, body);
+  if (noRhythm) return noRhythm;
+  const parsed = createSchema.safeParse(body);
   if (!parsed.success) return invalid(c, parsed.error);
   const prefs = await loadPreferences(db, userId);
   const today = todayInZone(prefs.timezone);
@@ -134,7 +148,10 @@ programRoutes.patch("/:id", async (c) => {
   const db = c.get("db");
   const userId = c.get("userId");
   const id = c.req.param("id");
-  const parsed = patchSchema.safeParse(await c.req.json().catch(() => null));
+  const body: unknown = await c.req.json().catch(() => null);
+  const noRhythm = rhythmRefused(c, body);
+  if (noRhythm) return noRhythm;
+  const parsed = patchSchema.safeParse(body);
   if (!parsed.success) return invalid(c, parsed.error);
   const prefs = await loadPreferences(db, userId);
   const today = todayInZone(prefs.timezone);
