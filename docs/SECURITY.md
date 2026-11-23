@@ -276,7 +276,10 @@ on the `training-v5` scope only (`apps/worker/src/auth/device-scope.ts`; routes 
   wipe and "Start fresh" spare them, as the switch itself survives both, so a file from before A can't make the account read
   "never on"; and the live switch is the backstop, since a frame can go only while it is on. Both are read inside the
   budget statement each of those calls already makes, so the pin adds no statement. An account that never turned A on is
-  routed exactly as before. The saved-posts import and the music tags read no coach text and are left as they are.
+  routed exactly as before. The music tags read no coach text and are left as they are. **One exception, not pinned:** the
+  saved-posts import's matcher (`saves-match.ts`, Gemini flash-lite, `google/gemini-3.1-flash-lite`) receives the owner's
+  personal move names, including names the coach changed with the owner's approval through `correct_import`; so a name a
+  framed run wrote, once approved, can reach Google when a later saved post shows a similar move.
   **Rolling back:** once switch A has ever been on for an account, don't roll back below R1.5: that account's
   framed-derived text would go unpinned. Roll forward instead. Before A has ever been on, rolling back is safe. LifeOS keeps
   A "Not available yet" until R1.5 is live, so no account has had A on today.

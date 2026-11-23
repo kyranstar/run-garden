@@ -5,7 +5,8 @@
  *  - a restore of a file from before A, and "Start fresh", leave the switch on: the next framed run is pinned, every call;
  *  - both spare the switch's own audit rows, so "ever on" survives them even with the switch now off; a file from after A
  *    lands beside the spared rows with nothing lost or doubled; delete-all spares nothing;
- *  - the live switch alone pins (its audit rows gone by any means), and with neither the account is routed as before;
+ *  - the live switch alone pins (its audit rows gone by any means), any phone of the account's, not only the one set last
+ *    (the re-check 2's m1, its probe Q7); and with neither the account is routed as before;
  *  - the flag over a week with no spend; malformed audit rows neither throw nor pin;
  *  - the wake's and a read's schema repairs, a backfill digest, a run step retried after a provider error, and the weekly
  *    review: all pinned;
@@ -236,6 +237,27 @@ describe("a restore or Start fresh never drops the pin (R1.5 re-check N1)", () =
     expect((await devBudgetStatus(db, userId)).sharesDay).toBe(true);
     expect(await wakeRouting(userId)).toEqual(ONLY);
     // Its rows gone again, the phone off: nothing says A was ever on.
+    await db.update(nativeDeviceSharing).set({ toTraining: false }).where(eq(nativeDeviceSharing.userId, userId));
+    expect(await sharesDay(userId)).toBe(false);
+    expect(await wakeRouting(userId)).toEqual(ORDER);
+  }, 60_000);
+
+  // The R1.5 re-check's m1 (its probe Q7): the live half covers every phone of the account, not the one set last.
+  it("two phones: either one's switch on pins, the one set last off or not; both off, with no audit rows, routed as before", async () => {
+    const { userId } = await seedRichAthlete(db);
+    const [p1, p2] = [`p1-${userId}`, `p2-${userId}`];
+    await setSharing(db, userId, p1, { toTraining: true, disclosureVersion: VERSION }, nowInstant());
+    await setSharing(db, userId, p2, { toTraining: false, disclosureVersion: VERSION }, nowInstant());
+    await db.delete(auditEvents).where(and(eq(auditEvents.userId, userId), eq(auditEvents.kind, SHARING_SET_KIND)));
+    expect(await switchRows(userId)).toBe(0);
+    // Phone 1 on, phone 2 set off after it: still pinned.
+    expect(await sharesDay(userId)).toBe(true);
+    expect(await wakeRouting(userId)).toEqual(ONLY);
+    // The other way round.
+    await db.update(nativeDeviceSharing).set({ toTraining: false }).where(eq(nativeDeviceSharing.deviceId, p1));
+    await db.update(nativeDeviceSharing).set({ toTraining: true }).where(eq(nativeDeviceSharing.deviceId, p2));
+    expect(await sharesDay(userId)).toBe(true);
+    // Both off, and nothing says A was ever on.
     await db.update(nativeDeviceSharing).set({ toTraining: false }).where(eq(nativeDeviceSharing.userId, userId));
     expect(await sharesDay(userId)).toBe(false);
     expect(await wakeRouting(userId)).toEqual(ORDER);
