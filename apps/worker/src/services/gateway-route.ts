@@ -36,8 +36,9 @@ export function loopbackUrl(raw: string | undefined): string | null {
  *
  * `anthropicOnly` (R1.5; DESIGN-3 §3.12.4): Anthropic alone — `only`, never `order`, whatever the model (a non-Claude model
  * is then refused by the gateway, never routed to its own provider). If Anthropic can't serve it, it fails as an ordinary
- * provider error: no fallback. Every coach model call of an account for which LifeOS's switch A has ever been on is sent so
- * (device-sharing.ts `sharesDaySql`): the switch promises "Read by Claude (Anthropic)", and this is what keeps it true.
+ * provider error: no fallback. Every coach model call of an account for which LifeOS's switch A has ever been on, or is on
+ * now, is sent so (device-sharing.ts `sharesDaySql`): the switch promises "Read by Claude (Anthropic)", and this is what
+ * keeps it true.
  */
 export function gatewayRouting(
   model: string,

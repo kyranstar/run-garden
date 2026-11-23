@@ -33,7 +33,7 @@
  * databases holding the same rows agree no matter how the rows got there.
  * `rowid` is deliberately not used: a table rebuild renumbers it.
  */
-import { and, asc, eq, getTableColumns, getTableName, gt, sql, type SQL } from "drizzle-orm";
+import { and, asc, eq, getTableColumns, getTableName, gt, not, sql, type SQL } from "drizzle-orm";
 import { getTableConfig, type SQLiteColumn, type SQLiteTable } from "drizzle-orm/sqlite-core";
 import {
   accountState,
@@ -423,18 +423,26 @@ export function orderColumns(table: SQLiteTable): SQLiteColumn[] {
  * which runs them in order as one transaction — the whole wipe lands or none
  * of it does, and it costs delete-all and a restore one round trip, not one
  * per table.
+ *
+ * `spare` leaves the rows of a table that match its condition (a restore's
+ * wipe spares switch A's audit rows: device-sharing.ts `SWITCH_AUDIT_SPARED`);
+ * the delete stays one statement per table, in the same batch.
  */
 export async function wipeAccountData(
   db: Db,
   userId: string,
-  opts: { keep: readonly string[] },
+  opts: { keep: readonly string[]; spare?: Readonly<Record<string, SQL>> },
 ): Promise<void> {
   const keep = new Set(opts.keep);
   const targets = ACCOUNT_TABLES.filter(
     (t) => (t.scope.kind === "user" || t.scope.kind === "child") && !keep.has(t.name),
   ).sort((a, b) => b.order - a.order);
+  const where = (t: AccountTable): SQL => {
+    const spared = opts.spare?.[t.name];
+    return spared ? and(scopeWhere(t, userId), not(spared))! : scopeWhere(t, userId);
+  };
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  await runAtomically(db, targets.map((t) => db.delete(t.table as any).where(scopeWhere(t, userId))));
+  await runAtomically(db, targets.map((t) => db.delete(t.table as any).where(where(t))));
 }
 
 /**

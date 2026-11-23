@@ -45,8 +45,10 @@ beforeAll(() => {
   db = makeTestDb({ boundVariableCap: 100 });
 });
 
+/** Each account's own phone: `native_device_sharing` is keyed by the device id alone, and a live switch pins its account. */
+const phoneOf = (userId: string) => `d-${userId}`;
 /** The phone's own switch (`PUT /api/native/sharing`'s service): its row and its audit row, in one batch. */
-const switchA = (userId: string, on: boolean, deviceId = "d-1") => setSharing(db, userId, deviceId, { toTraining: on, disclosureVersion: VERSION }, nowInstant());
+const switchA = (userId: string, on: boolean, deviceId = phoneOf(userId)) => setSharing(db, userId, deviceId, { toTraining: on, disclosureVersion: VERSION }, nowInstant());
 
 const frame = (): DayFrame =>
   ({
@@ -82,7 +84,7 @@ async function aTurn(userId: string, o: { title?: string; framed?: boolean; rehe
       request: "Something calm for the hips.",
       conversationId: null,
       ...(o.rehearsal ? { rehearsal: true } : {}),
-      ...(o.framed ? { lifeos: { deviceId: "d-1", frame: frame() } } : {}),
+      ...(o.framed ? { lifeos: { deviceId: phoneOf(userId), frame: frame() } } : {}),
     },
     NOW,
   );
@@ -227,7 +229,7 @@ describe("an account that never turned switch A on: routed exactly as before (R1
   it("a rehearsal run beside a live framed run, on an account whose switch was never on, is routed as before", async () => {
     const { userId } = await seedRichAthlete(db);
     // A framed run left live (asked, never stepped), the switch never on: no route allows it, but no tree's pin spreads.
-    await createRun(db, userId, { scope: { kind: "now" }, request: "Today's run, easier.", lifeos: { deviceId: "d-1", frame: frame() } }, NOW);
+    await createRun(db, userId, { scope: { kind: "now" }, request: "Today's run, easier.", lifeos: { deviceId: phoneOf(userId), frame: frame() } }, NOW);
     const { requests } = await aTurn(userId, { rehearsal: true });
     expect(requests.every((r) => !("anthropicOnly" in r))).toBe(true);
   }, 30_000);

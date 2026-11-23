@@ -334,7 +334,8 @@ export async function generateWeeklyReview(
         body: JSON.stringify({
           model,
           max_tokens: MAX_OUTPUT_TOKENS,
-          ...gatewayRouting(model),
+          // Pinned once switch A has been on, as every coach model call is (device-sharing.ts `sharesDaySql`; R1.5 re-check N2).
+          ...gatewayRouting(model, { anthropicOnly: budget.sharesDay }),
           messages: [
             { role: "system", content: system },
             {

@@ -267,15 +267,19 @@ on the `training-v5` scope only (`apps/worker/src/auth/device-scope.ts`; routes 
   Bedrock or Vertex as fallbacks when Anthropic is down. Once switch A has ever been on for the account, the frame and
   whatever the coach wrote after reading it (a workout's name and notes, a proposal, a receipt, a memory, a read) can be
   anywhere in the account. So the account is pinned, not the text: **every** coach model call for it — a run's every step,
-  its designers' and reviewers', each repair, a new conversation's, a replay, the thread coach's wake, an activity's read,
-  the Studio's plan calls — is sent `only: ["anthropic"]`, no `order`, whatever the model. If Anthropic can't serve it, it
-  fails as an ordinary provider error and is never sent elsewhere. Turning switch A off never unpins: what was derived
-  stays. The pin is derived from the switch's own audit rows (`native_device_sharing_set`, `toTraining: true`), which are the
-  account's: exported, restored and removed by delete-all exactly as they are, so it travels with exactly the data that can
-  hold frame-derived text. It is read inside the budget statement each of those calls already makes, so it adds no statement.
-  An account that never turned A on is routed exactly as before. The saved-posts import and the music tags read no coach
-  text and are left as they are. **Rolling back past R1.5:** turn switch A off first (and stop LifeOS sending frames), as the
-  older code routes every call with `order`.
+  its designers' and reviewers', each repair and retry, a new conversation's, a replay, the thread coach's wake and its
+  repairs, an activity's read and a backfill digest, the Studio's plan calls, the weekly review — is sent
+  `only: ["anthropic"]`, no `order`, whatever the model. One rule, no exceptions. If Anthropic can't serve a call, it fails
+  as an ordinary provider error and is never sent elsewhere. Turning switch A off never unpins: what was derived stays.
+  Pinned = the switch's own audit rows (`native_device_sharing_set`, `toTraining: true`) say A was ever on, **or** a phone's
+  switch A is on now. The audit rows are the account's: exported and restored with it, removed by delete-all. A restore's
+  wipe and "Start fresh" spare them, as the switch itself survives both, so a file from before A can't make the account read
+  "never on"; and the live switch is the backstop, since a frame can go only while it is on. Both are read inside the
+  budget statement each of those calls already makes, so the pin adds no statement. An account that never turned A on is
+  routed exactly as before. The saved-posts import and the music tags read no coach text and are left as they are.
+  **Rolling back:** once switch A has ever been on for an account, don't roll back below R1.5: that account's
+  framed-derived text would go unpinned. Roll forward instead. Before A has ever been on, rolling back is safe. LifeOS keeps
+  A "Not available yet" until R1.5 is live, so no account has had A on today.
 - **What the coach remembers.** A phone reads, edits and deletes the account's memory as the laptop does; it may add one
   stated line (≤ 140 characters, note, fact or rule) only on the owner's tap and only with switch A on under the very
   words the owner accepted (`consent`, as a frame), kept with provenance `lifeos`; it never supersedes what the owner

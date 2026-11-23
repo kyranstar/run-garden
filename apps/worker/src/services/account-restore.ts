@@ -19,7 +19,9 @@
  *          once), then sets the RESTORE MARKER (account_state.restore_id, so
  *          every writer stands down) and wipes ALL of the account's data,
  *          provider connections and cursors included. Only `users`,
- *          `sessions` and `oauth_states` survive. Refused while ANOTHER
+ *          `sessions` and `oauth_states` survive, and switch A's own
+ *          audit rows, which stay with the switch (device-sharing.ts
+ *          `SWITCH_AUDIT_SPARED`; R1.5). Refused while ANOTHER
  *          restore is running (its heartbeat is under two minutes old).
  *   rows   { restoreId, table, rows, token } — insert one checked page into the
  *          restore that is in progress, and beat its heartbeat. Unfinished
@@ -69,6 +71,7 @@ import {
 } from "./account-tables.js";
 import { loadAccountState, patchAccountState, restoreRunning } from "./account-state.js";
 import { chunkIds, type Db } from "./db.js";
+import { SWITCH_AUDIT_SPARED } from "./device-sharing.js";
 
 /** User tables a restore never writes (see the module comment). */
 export const NEVER_RESTORED = ["provider_connections", "provider_cursor_state", "coach_locks"] as const;
@@ -565,7 +568,9 @@ export async function beginRestore(
     // The seq stays monotonic: it only guards a step's clear of the record.
     gardenChangedFrom: null,
   });
-  await wipeAccountData(db, userId, { keep: [] });
+  // Switch A's audit rows stay with the switch, which no restore touches: a file from before A must not make the account
+  // read "never on" and drop the coach's Anthropic pin (device-sharing.ts `SWITCH_AUDIT_SPARED`; R1.5 re-check N1).
+  await wipeAccountData(db, userId, { keep: [], spare: SWITCH_AUDIT_SPARED });
   return { ok: true, restoreId: session.rid, tables: restorableTables().map((t) => t.name) };
 }
 
@@ -937,7 +942,8 @@ export async function startFresh(
   if (input.restoreId !== state.restoreId && restoreRunning(state, now)) {
     return { ok: false, status: 409, error: "restore_running" };
   }
-  await wipeAccountData(db, userId, { keep: [] });
+  // As begin's wipe: switch A's audit rows stay with the switch (R1.5 re-check N1).
+  await wipeAccountData(db, userId, { keep: [], spare: SWITCH_AUDIT_SPARED });
   await patchAccountState(db, userId, {
     restoreId: null,
     restoreStartedAt: null,

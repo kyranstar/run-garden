@@ -20,22 +20,34 @@ import { runAtomicallyRowsAt, type Db } from "./db.js";
 export const SHARING_SET_KIND = "native_device_sharing_set";
 
 /**
- * ONCE SWITCH A HAS BEEN ON, THE ACCOUNT'S COACH IS READ BY ANTHROPIC ONLY (R1.5; DESIGN-3 §3.12.4; the R1.5 review's F1).
- * LifeOS's switch A promises the day frame is "Read by Claude (Anthropic)". Every Claude call asks the gateway for Anthropic
- * first (`order`), keeping Claude on Bedrock or Vertex as fallbacks; once the owner has ever turned A on, the frame — and
- * whatever the coach wrote after reading it: a workout's name and notes, a proposal, a receipt, a memory, a read — can be
+ * ONCE SWITCH A HAS BEEN ON, THE ACCOUNT'S COACH IS READ BY ANTHROPIC ONLY (R1.5; DESIGN-3 §3.12.4; the R1.5 review's F1 and
+ * re-check N1). LifeOS's switch A promises the day frame is "Read by Claude (Anthropic)". Every Claude call asks the gateway for
+ * Anthropic first (`order`), keeping Claude on Bedrock or Vertex as fallbacks; once the owner has ever turned A on, the frame —
+ * and whatever the coach wrote after reading it: a workout's name and notes, a proposal, a receipt, a memory, a read — can be
  * anywhere in the account. So the account, not the text, is pinned: every coach model call for it (a run's every step, its
- * sub-runs and repairs, a replay, the wake, an activity's read, the Studio's plan calls) goes `only: ["anthropic"]`
- * (gateway-route.ts) and fails rather than falls back. Turning A off never unpins: what was derived stays.
+ * sub-runs and repairs, a replay, the wake, an activity's read, the Studio's plan calls, the weekly review) goes
+ * `only: ["anthropic"]` (gateway-route.ts) and fails rather than falls back. Turning A off never unpins: what was derived stays.
  *
- * Derived from the switch's own audit rows (`setSharing` writes one in the switch's batch), which are the account's
- * (`audit_events`, account-tables.ts): exported, restored and removed by delete-all exactly as they are — so the pin travels
- * with exactly the data that can hold frame-derived text. An uncorrelated scalar, read inside the budget statement every coach
- * model call already makes (llm.ts `weekSpentMicros`): no statement more. It stops at the first row that says on; an account
- * that never turned A on reads its way through the table (no `user_id` index yet), which is what keeps it routed as before.
+ * Pinned = the switch's audit rows say A was ever on, OR a phone's switch A is on now. One rule, two sources:
+ *  - The audit rows (`setSharing` writes one in the switch's batch) are the account's (`audit_events`, account-tables.ts):
+ *    exported and restored with it, removed by delete-all — so "ever on" travels with the data that can hold frame-derived
+ *    text. A restore's wipe and "Start fresh" spare them (`SWITCH_AUDIT_SPARED`): the switch itself survives both (a sign-in's
+ *    bookkeeping), so its history does too, and a file from before A can't make the account read "never on".
+ *  - The live switch (`native_device_sharing`, indexed by `user_id`) is the backstop: whatever happened to the audit rows, a
+ *    frame can go only while a phone's switch is on (`frameRefusal`), and then the account is pinned.
+ * Both are read inside the budget statement every coach model call already makes (llm.ts `weekSpentMicros`): no statement
+ * more. The audit scan stops at the first row that says on; an account that never turned A on reads its way through the table
+ * (no `user_id` index yet) and finds no phone on, which is what keeps it routed as before.
  */
 export const sharesDaySql = (userId: string): SQL =>
-  sql`exists (select 1 from audit_events a where a.user_id = ${userId} and a.kind = ${SHARING_SET_KIND} and json_valid(a.detail) and json_extract(a.detail, '$.toTraining') = 1)`;
+  sql`(exists (select 1 from audit_events a where a.user_id = ${userId} and a.kind = ${SHARING_SET_KIND} and json_valid(a.detail) and json_extract(a.detail, '$.toTraining') = 1) or exists (select 1 from native_device_sharing s where s.user_id = ${userId} and s.to_training = 1))`;
+
+/**
+ * What a restore's wipe and "Start fresh" leave of the account (account-tables.ts `wipeAccountData` `spare`): switch A's own
+ * audit rows, which the switch (never wiped) keeps beside it, so the pin's "ever on" survives a file from before A (re-check N1).
+ * Delete-all spares nothing: it removes the switch and its rows with everything else.
+ */
+export const SWITCH_AUDIT_SPARED: Readonly<Record<string, SQL>> = { audit_events: eq(auditEvents.kind, SHARING_SET_KIND) };
 
 export interface SharingState {
   /** Switch A: the owner's day frame may go with a training ask. */
