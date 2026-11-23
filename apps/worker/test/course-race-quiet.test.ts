@@ -189,6 +189,17 @@ describe("the preview's held-back dates", () => {
     expect(out.heldBack).toEqual([{ date: "2026-12-14", reason: "race_quiet" }]);
   });
 
+  // Added for the mutation run's survivor (M4): a session that stays there by the athlete's move holds no slot of that date.
+  it("a session the athlete moved onto a quiet day isn't named: it stays, and is Next", async () => {
+    const p = await seedCourse(INTRO_COURSE.id, { weekdays: [0], placementWeeksAhead: 2 });
+    await placeSlots(db, userId, p, MON23, prefs, MON23_NOW);
+    // Mon 30 Nov's session moved by the athlete to Mon 7 Dec, a quiet day before the race of Sat 12 Dec.
+    await db.update(plannedWorkouts).set({ effectiveDate: "2026-12-07" }).where(eq(plannedWorkouts.id, slotId(p, "2026-11-30")));
+    const out = await preview(p);
+    expect(out.after).toContain("2026-12-07");
+    expect(out.heldBack).toEqual([]);
+  });
+
   it("a session that stays on a quiet day isn't named: today's outline stays through them", async () => {
     const p = await seedCourse(INTRO_COURSE.id, { weekdays: [0], placementWeeksAhead: 1 });
     await placeSlots(db, userId, p, MON23, { ...prefs, raceDate: null }, MON23_NOW);
